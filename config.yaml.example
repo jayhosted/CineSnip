@@ -15,5 +15,11 @@ render_defaults:
   fps: 15
   width: 480
 
+# Embedded-subtitle extraction has no fast seek — it reads sequentially
+# through the whole file. Raise this if you see extraction timeouts on
+# very large files (common over slower mounts, e.g. WSL2-bridged drives).
+subtitle_defaults:
+  extraction_timeout_seconds: 180
+
 worker:
   port: 8000

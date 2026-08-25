@@ -24,6 +24,17 @@ class WorkerConfig(BaseModel):
     port: int = 8000
 
 
+class SubtitleDefaults(BaseModel):
+    # ffmpeg's embedded-subtitle extraction has no equivalent of the -ss
+    # fast seek used for clip rendering — it must read sequentially through
+    # the whole container to demux the subtitle packets. On a large remux
+    # over a slow I/O path (e.g. WSL2-bridged NTFS drives), that can take
+    # well over a minute even though it's a tiny amount of actual subtitle
+    # data. 180s gives real headroom; raise further if you see timeouts on
+    # very large files.
+    extraction_timeout_seconds: float = 180.0
+
+
 class Settings(BaseModel):
     discord_token: str
     plex_url: str
@@ -32,8 +43,10 @@ class Settings(BaseModel):
     movies_library_name: str = "Movies"
     path_mappings: list[PathMapping] = Field(default_factory=list)
     render_defaults: RenderDefaults = Field(default_factory=RenderDefaults)
+    subtitle_defaults: SubtitleDefaults = Field(default_factory=SubtitleDefaults)
     worker: WorkerConfig = Field(default_factory=WorkerConfig)
     scratch_dir: Path = Path("scratch")
+    cache_dir: Path = Path("cache")
 
 
 class SettingsError(RuntimeError):
@@ -84,6 +97,9 @@ def load_settings(
                 PathMapping(**m) for m in raw_config.get("path_mappings", [])
             ],
             render_defaults=RenderDefaults(**raw_config.get("render_defaults", {})),
+            subtitle_defaults=SubtitleDefaults(
+                **raw_config.get("subtitle_defaults", {})
+            ),
             worker=WorkerConfig(**raw_config.get("worker", {})),
         )
     except Exception as exc:
