@@ -54,11 +54,11 @@ def _format_duration(duration_ms: int) -> str:
     return f"{minutes}m {seconds}s"
 
 
-def _error_detail(exc: httpx.HTTPStatusError) -> str:
+def _error_detail(exc: httpx.HTTPError) -> str:
     try:
         return exc.response.json().get("detail", exc.response.text)
     except Exception:
-        return str(exc)
+        return str(exc) or "the worker didn't respond in time"
 
 
 class GifCog(commands.Cog):
@@ -105,7 +105,7 @@ class GifCog(commands.Cog):
 
         try:
             resolved = await self.bot.worker.resolve(rating_key)
-        except httpx.HTTPStatusError as exc:
+        except httpx.HTTPError as exc:
             await interaction.followup.send(
                 f"Couldn't find that film: {_error_detail(exc)}", ephemeral=True
             )
@@ -139,16 +139,13 @@ class GifCog(commands.Cog):
         )
 
         try:
-            chunks = [
-                chunk async for chunk in self.bot.worker.render(rating_key, timecode)
-            ]
-        except httpx.HTTPStatusError as exc:
+            gif_bytes = await self.bot.worker.render(rating_key, timecode)
+        except httpx.HTTPError as exc:
             await interaction.edit_original_response(
                 content=f"Couldn't generate the GIF: {_error_detail(exc)}"
             )
             return
 
-        gif_bytes = b"".join(chunks)
         file = discord.File(io.BytesIO(gif_bytes), filename="clip.gif")
         post_view = PostToChannelView(gif_bytes)
         await interaction.edit_original_response(

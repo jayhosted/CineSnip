@@ -17,6 +17,7 @@ class RenderDefaults(BaseModel):
     duration_seconds: float = 4.0
     fps: int = 15
     width: int = 480
+    timeout_seconds: float = 60.0
 
 
 class WorkerConfig(BaseModel):
