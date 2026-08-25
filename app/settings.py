@@ -47,6 +47,7 @@ class Settings(BaseModel):
     worker: WorkerConfig = Field(default_factory=WorkerConfig)
     scratch_dir: Path = Path("scratch")
     cache_dir: Path = Path("cache")
+    dev_guild_id: int | None = None
 
 
 class SettingsError(RuntimeError):
@@ -62,6 +63,7 @@ def load_settings(
     discord_token = os.environ.get("DISCORD_TOKEN", "").strip()
     plex_url = os.environ.get("PLEX_URL", "").strip()
     plex_token = os.environ.get("PLEX_TOKEN", "").strip()
+    dev_guild_id_raw = os.environ.get("DEV_GUILD_ID", "").strip()
 
     missing = [
         name
@@ -77,6 +79,15 @@ def load_settings(
             f"Missing required .env values: {', '.join(missing)}. "
             f"Copy .env.example to .env and fill them in — see README.md."
         )
+
+    dev_guild_id: int | None = None
+    if dev_guild_id_raw:
+        try:
+            dev_guild_id = int(dev_guild_id_raw)
+        except ValueError as exc:
+            raise SettingsError(
+                f"DEV_GUILD_ID must be a numeric Discord server ID, got '{dev_guild_id_raw}'."
+            ) from exc
 
     if not config_path.exists():
         raise SettingsError(
@@ -101,6 +112,7 @@ def load_settings(
                 **raw_config.get("subtitle_defaults", {})
             ),
             worker=WorkerConfig(**raw_config.get("worker", {})),
+            dev_guild_id=dev_guild_id,
         )
     except Exception as exc:
         raise SettingsError(f"Invalid config.yaml: {exc}") from exc

@@ -31,7 +31,10 @@ async def main() -> None:
     )
     server = uvicorn.Server(server_config)
 
-    bot = build_bot(f"http://127.0.0.1:{settings.worker.port}")
+    bot = build_bot(
+        f"http://127.0.0.1:{settings.worker.port}",
+        dev_guild_id=settings.dev_guild_id,
+    )
 
     async with bot:
         await asyncio.gather(server.serve(), bot.start(settings.discord_token))
