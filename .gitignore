@@ -1,5 +1,6 @@
 # Secrets / local config
 .env
+config.yaml
 
 # Python
 __pycache__/
@@ -12,3 +13,7 @@ venv/
 *.sqlite3
 /tmp/
 /cache/
+/scratch/
+
+# Testing
+.pytest_cache/
