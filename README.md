@@ -67,7 +67,13 @@ folders than the two examples, add more of both.
 
 ## 6. Run it
 
+Create the scratch render directory yourself first — the container runs as
+a non-root user, and if Docker creates this directory for you on first
+launch (because it doesn't exist yet), it'll be owned by `root` and the
+container won't be able to write to it:
+
 ```bash
+mkdir -p scratch
 docker compose up --build
 ```
 
@@ -93,4 +99,6 @@ just you.
 - **Bot fails to log in (401)** — `DISCORD_TOKEN` in `.env` is wrong or was reset since you copied it.
 - **"No path mapping configured for ..." / "File not found on disk"** — your `config.yaml` `path_mappings` don't match what Plex reports or what's actually bind-mounted. Re-check step 5, and confirm the corresponding volume in `docker-compose.yml` points at the right host folder.
 - **ffmpeg errors** — check the container logs for the actual ffmpeg stderr output; this usually means the source file is a format ffmpeg can't read directly, or the mapped path is wrong.
+- **"Couldn't generate the GIF: ... timed out"** — the source file is unusually slow for ffmpeg to seek/decode near that timestamp (raise `render_defaults.timeout_seconds` in `config.yaml` if this happens on files that should be fine), or something is stuck — check `docker compose logs`.
+- **Permission denied writing to `/app/scratch`** — the host `scratch/` directory got created by Docker (as `root`) instead of by you before first run. Stop the container, `rm -rf scratch && mkdir scratch`, then start it again.
 - **Command doesn't show up in Discord** — slash command sync can take a minute to propagate; try restarting Discord or waiting briefly.
