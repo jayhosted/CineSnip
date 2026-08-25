@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import AsyncIterator
 
 import httpx
+
+# Must exceed the worker's own render timeout (config.yaml's
+# render_defaults.timeout_seconds, 60s by default) so the worker's clean
+# error response wins the race instead of this client timing out first
+# with a generic, harder-to-explain exception.
+RENDER_TIMEOUT_SECONDS = 90.0
 
 
 @dataclass
@@ -49,10 +54,11 @@ class WorkerClient:
         response.raise_for_status()
         return ResolveResult(**response.json())
 
-    async def render(self, rating_key: int, timecode: str) -> AsyncIterator[bytes]:
-        async with self._client.stream(
-            "POST", "/render", json={"rating_key": rating_key, "timecode": timecode}
-        ) as response:
-            response.raise_for_status()
-            async for chunk in response.aiter_bytes():
-                yield chunk
+    async def render(self, rating_key: int, timecode: str) -> bytes:
+        response = await self._client.post(
+            "/render",
+            json={"rating_key": rating_key, "timecode": timecode},
+            timeout=RENDER_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        return response.content

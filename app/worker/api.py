@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import os
-from typing import AsyncIterator
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
 from app.settings import Settings
-from app.worker.ffmpeg import ClipRenderer, parse_timecode
+from app.worker.ffmpeg import ClipRenderer, RenderTimeoutError, parse_timecode
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 from app.worker.plex_client import MovieResult, PlexClient
 
@@ -53,7 +51,9 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.settings = settings
     app.state.plex = PlexClient(settings)
     app.state.renderer = ClipRenderer(
-        fps=settings.render_defaults.fps, width=settings.render_defaults.width
+        fps=settings.render_defaults.fps,
+        width=settings.render_defaults.width,
+        timeout_seconds=settings.render_defaults.timeout_seconds,
     )
 
     @app.get("/healthz")
@@ -90,7 +90,7 @@ def create_app(settings: Settings) -> FastAPI:
         )
 
     @app.post("/render")
-    async def render(req: RenderRequest) -> StreamingResponse:
+    async def render(req: RenderRequest) -> Response:
         movie = app.state.plex.get_movie(req.rating_key)
         try:
             container_path = resolve_container_path(
@@ -113,12 +113,15 @@ def create_app(settings: Settings) -> FastAPI:
 
         clip_duration = settings.render_defaults.duration_seconds
 
-        async def stream() -> AsyncIterator[bytes]:
-            async for chunk in app.state.renderer.render_gif(
+        try:
+            gif_bytes = await app.state.renderer.render_gif(
                 container_path, start, clip_duration, settings.scratch_dir
-            ):
-                yield chunk
+            )
+        except RenderTimeoutError as exc:
+            raise HTTPException(status_code=504, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-        return StreamingResponse(stream(), media_type="image/gif")
+        return Response(content=gif_bytes, media_type="image/gif")
 
     return app
