@@ -25,7 +25,7 @@ Inspired by conversation with the developer of [tvgif](https://github.com/warman
 1. **Output format defaults to MP4/WebM, not GIF.** Discord renders both inline like a GIF, at much smaller file sizes for the same quality. Offer GIF as an explicit `format:gif` option, not the default.
 2. **One container, one process to start.** Discord bot layer and worker layer (Plex, subtitles, ffmpeg) run in a single Python process inside a single Docker container. No message queue or microservices for v1.
 3. **Structure the worker as a small internal HTTP API from the start** (e.g. FastAPI), even though the Discord bot is its only client initially. This makes a future local web app (setup wizard + manual GIF-generation UI) a thin second client rather than a rebuild.
-4. **"Confirm the film/show" and "confirm the timestamp" are separate, cheap-to-redo steps** in the Discord flow — users can back up one step without restarting `/gif` from scratch.
+4. **"Confirm the film/show" and "confirm the timestamp" are separate, cheap-to-redo steps** in the Discord flow — users can back up one step without restarting `/cinesnip` from scratch.
 5. **Config split**: `.env` for secrets (Discord bot token, Plex token), `config.yaml` for everything else (per-library path mappings, style presets, GPU toggle, feature flags). Standard self-hosted-app practice — keeps secrets out of anything that might get shared or hand-edited casually.
 6. **Setup wizard and manual-generation UI are the same small local web app**, not two separate builds — a `/setup` route for first-run/reconfiguration, a `/generate` route for browsing/making clips outside Discord. Build the Discord bot and prove the core pipeline first; build this web app as a fast-follow, not alongside. Full spec for the wizard itself: see Section 16.
 
@@ -35,13 +35,15 @@ Inspired by conversation with the developer of [tvgif](https://github.com/warman
 - **Worker layer** — Plex API calls, subtitle lookup/extraction, fuzzy quote search, optional Whisper transcription (cached), ffmpeg orchestration. Exposes a small internal REST API (e.g. `/search`, `/resolve-quote`, `/render`).
 - **Local config store** — SQLite or a flat file for anything not covered by `.env`/`config.yaml` that needs to persist at runtime (e.g. per-guild allowlists once that's built).
 - **Temp processing directory** — scratch space for in-progress renders, cleared aggressively; the `/render` endpoint should stream ffmpeg's output directly rather than always writing a file to disk first.
-- **Transcript/subtitle cache** — persisted per Plex media GUID, so a film's subtitles (or a Whisper transcript) are only ever extracted/generated once.
+- **Transcript/subtitle cache** — persisted per Plex media GUID, so a film's subtitles (or a Whisper transcript) are only ever extracted/generated once. This cache doubles as the corpus for library-wide quote search (Section 5) — it's built up lazily/opportunistically as titles get touched by any flow, never by proactively indexing the whole library up front.
 
 No central database, no cloud API, no message broker.
 
 ## 2. Discord bot UX
 
-- `/gif film:<text> quote:<text-optional> timecode:<text-optional>` for films; an equivalent show/season/episode-aware flow for TV (see Section 4).
+- **Renamed from `/gif` to `/cinesnip`** (decided going into V2). Reasoning: Discord slash commands are namespaced per-application, so there's no actual technical collision risk between bots — but if a server has multiple bots that both register `/gif`, Discord shows a disambiguation picker (bot icon next to the command) before the user can act, which is real friction. `/cinesnip` avoids that and reinforces the product name. Applies everywhere below and to `/gif-diagnose` → `/cinesnip-diagnose` (Section 3).
+- `/cinesnip film:<text> quote:<text-optional> timecode:<text-optional>` for films; an equivalent show/season/episode-aware flow for TV (see Section 4). `film` is required — this is the film-first flow: confirm the title, then confirm a timestamp within it (via quote search or direct timecode).
+- **`/cinesnip-search quote:<text>`** — a separate, dedicated command for **library-wide** quote search (added in V2, see Section 5 for the indexing/caching design behind it). Deliberately a different command, not a "no film given" fallback on `/cinesnip`: the result shape is different (candidates span many titles, each needs its own title/library/quality label, not just surrounding-line context within one film) and the performance profile is different (see Section 5). Selecting a result from `/cinesnip-search` funnels into the same "confirm the film" → "confirm the timestamp" cheap-redo steps as the normal flow (decision #4) — it's just a different on-ramp into the same two steps, not a separate confirmation UI.
 - **Autocomplete on `film`/`show`**: as the user types, query the local Plex library (via the worker's `/search`) and return up to 25 matches — Discord's autocomplete cap.
 - **Confirmation embed**: poster thumbnail, title, year, runtime, and — since multiple libraries can hold the same title — which library/quality it's from, with Confirm/Cancel buttons.
 - **Quote search results**: top match plus surrounding subtitle context and a confidence indicator; Confirm or "show other matches" (select menu of alternatives) if confidence is borderline.
@@ -61,24 +63,28 @@ No central database, no cloud API, no message broker.
 - **Windows-specific note**: Docker Desktop's WSL2 backend handles Windows-path bind mounts (`D:\...` → `/media/...`) cleanly; Docker Desktop only shares the `C:` drive by default, so `D:` and `E:` must be explicitly added under Settings → Resources → File Sharing.
 - **Stream fallback**: if path mapping isn't configured, request Direct Play (not a transcode) through the Plex API.
 - **3D content caveat**: 3D encodes typically store both eyes in a single frame (side-by-side or top/bottom). Naive extraction produces a squished/doubled image — needs explicit handling (crop to one eye) rather than being treated like a normal video file.
-- **Diagnostics**: worth building a `/gif-diagnose` (or web-app equivalent) command that reports what paths the container sees vs. what Plex reports, since path-mapping issues are the single most likely install-time failure for other users.
+- **Diagnostics**: worth building a `/cinesnip-diagnose` (or web-app equivalent) command that reports what paths the container sees vs. what Plex reports, since path-mapping issues are the single most likely install-time failure for other users.
 
 ## 4. TV show support
 
 - Plex structures TV as Show → Season → Episode; treat this as one extra layer on top of the film flow, not a separate system.
 - Two supported patterns:
-  - User specifies an episode directly (`/gif The Office S02E01 "that's what she said"`) — same narrow, fast flow as films.
+  - User specifies an episode directly (`/cinesnip The Office S02E01 "that's what she said"`) — same narrow, fast flow as films.
   - User gives a show + quote with no episode — search across that show's episodes for the line. Slower (more subtitle files to check) and should be on-demand only, never pre-indexing an entire show's library proactively.
 
 ## 5. Finding dialogue automatically
 
-- **Subtitle source priority** (matches this Bazarr-based setup, and is the sensible default generally):
-  1. Look for a separate subtitle file matching the video's filename in the same folder (Bazarr's naming convention is predictable) — no ffmpeg extraction needed, just read the file.
-  2. If none found, check for and extract an embedded subtitle stream (`ffmpeg -map 0:s:N`).
-  3. If neither exists, fall back to local Whisper transcription (`faster-whisper`) — genuinely slow (minutes for a full film on CPU, much faster with the 3070 via GPU-enabled build), so **transcribe once per title and cache the result** keyed by the Plex media GUID; never re-run per query.
+- **Subtitle source priority** (deliberately generic — must work for installs that don't use Bazarr and/or have only embedded subs, not just this developer's setup):
+  1. Look for a separate subtitle file matching the video's filename in the same folder — this covers Bazarr's naming convention (this developer's setup) but is really just "does a sidecar `.srt` exist," which works identically for anyone who drops subtitle files next to their videos by any means, manual or tool-managed. No ffmpeg extraction needed, just read the file.
+  2. If none found, check for and extract an embedded subtitle stream (`ffmpeg -map 0:s:N`) — this is the *primary* path for installs without a sidecar-subtitle tool, not a rare fallback, so it needs to be genuinely well-supported in V2, not an afterthought bolted on later.
+  3. If neither exists, fall back to local Whisper transcription (`faster-whisper`, **V3** — see Section 14) — genuinely slow (minutes for a full film on CPU, much faster with the 3070 via GPU-enabled build), so **transcribe once per title and cache the result** keyed by the Plex media GUID; never re-run per query. Until V3 ships, a title with neither a sidecar file nor an embedded stream simply isn't quote-searchable — timecode input still works via `/cinesnip`, this is an expected, documented V2 gap, not a bug.
 - **Matching**: parse whichever subtitle source into `(start, end, text)` entries; fuzzy-match the typed quote (`rapidfuzz`) after normalizing case/punctuation; return top 2–3 candidates with surrounding context and a confidence score rather than committing silently to the top hit.
 - **Multiple subtitle tracks**: default to original-language, non-SDH; let the user pick if ambiguous.
 - **Realistic expectations**: strong hit rate for well-known lines with a good subtitle track; harder cases include paraphrased quotes, dubbing/translation drift, and lines split across subtitle entries — design the UI around "likely candidates," not guaranteed exact matches.
+- **Library-wide quote search (`/cinesnip-search`, V2)**: searches the subtitle cache described in Section 1, not the live filesystem, so its scope is exactly "titles CineSnip has already parsed via any flow" — which starts small and grows with normal use. Two tiers, so a `/cinesnip-search` call never surprises the user with a multi-minute wait:
+  1. **Default**: search only already-cached titles. Fast (it's just fuzzy-matching against parsed text already in the cache/DB), returns instantly regardless of library size.
+  2. **Explicit opt-in** (a button/flag on the "no more matches in what I've indexed so far" result, not automatic): extend the search to the rest of the library by parsing every not-yet-cached title's subtitles (sidecar → embedded, per the priority above) on the spot. This is the slow path — communicate that plainly in the UI (progress/ETA, not a silent multi-minute hang) — and whatever it parses along the way gets cached, so the corpus is strictly bigger for next time. Never triggered silently; matches the "never pre-indexing proactively" principle already applied to TV search in Section 4, now generalized to the whole library.
+  - Results list each candidate's film title, library/quality (Section 3), matched line, and confidence — since results span titles, this label is mandatory here even though it's optional context in the single-film quote search UI.
 
 ## 6. Video extraction
 
@@ -108,6 +114,7 @@ No central database, no cloud API, no message broker.
 - Plex token and media access stay confined to the worker module even though it's in the same container as the bot, for future auditability if the layers are ever split.
 - No inbound public endpoint needed — outbound-only connection to Discord's Gateway.
 - Anyone with bot access in a server it's added to can browse the library and generate clips from it — recommend an admin-configurable allowlist (roles/users permitted to use the bot) and basic rate-limiting.
+- **Disable "Public Bot" in the Discord Developer Portal (Bot → Authorization Flow).** This is a self-hosted, single-owner bot tied to one person's Plex library (Section 10's "one Docker install = one Plex owner = one bot application" model) — it must never be self-service-invitable by a stranger clicking "Add to Server" on the bot's profile, since that would hand them browse/generate access to this installer's personal media. With Public Bot off, only the application owner can generate a working OAuth2 invite URL; the owner can still invite it to as many servers as they choose (Section 10 is unaffected), it just stops anyone else from doing so. This is cheap, one-click, and should be step one of the Discord setup — documented in the README today and folded into the Section 16 wizard's Discord step once that's built. Combine with the allowlist above as defense-in-depth: Public Bot off stops unwanted *invites*, the allowlist limits misuse *within* servers the owner did invite it to.
 
 ## 10. Multiple servers/users — v1 model
 
@@ -128,7 +135,7 @@ Effectively $0 for the end user beyond hardware they likely already own to run P
 ## 14. Staged development plan
 
 **MVP — ✅ complete**
-- Single `/gif` command, timecode input only, films only
+- Single `/gif` command (renamed `/cinesnip` going into V2 — see Section 2), timecode input only, films only
 - Plex search + confirm via buttons (single library/mapping to start — this developer's primary Movies library)
 - Direct file access only
 - One fixed GIF style, no options menu
@@ -142,9 +149,12 @@ non-obvious bugs hit along the way — worth reading before touching
 same seek/duration logic.
 
 **V2**
-- Bazarr-first subtitle extraction + fuzzy quote search
+- Rename `/gif` → `/cinesnip` (and `/gif-diagnose` → `/cinesnip-diagnose`)
+- Sidecar-subtitle-file + embedded-subtitle-stream extraction (generic — not Bazarr-specific, see Section 5) + fuzzy quote search within a confirmed film
+- `/cinesnip-search` — library-wide quote search across the (lazily-built) subtitle cache, with an explicit opt-in to extend a search into not-yet-cached titles (Section 5)
 - Style preset select menu, MP4/WebM output option
 - Remaining library/drive path mappings (4K, 3D, TV, second drive)
+- Document + confirm "Public Bot" disabled as part of Discord setup (Section 9)
 
 **V3**
 - TV show support (episode-specific and whole-show search)
@@ -221,11 +231,14 @@ Docker path mappings.
    front-end for exactly the same validation.
 2. **Discord step**: inline instructions (with links, not just prose) for
    creating the application in the Developer Portal, enabling the bot,
-   generating the invite URL with the right scopes/permissions, and
-   inviting it to a server. A single token input field, masked like a
-   password field. The wizard validates the token live (attempt a login)
-   before saving, and shows a clear pass/fail — don't let someone finish
-   setup with a token that doesn't actually work.
+   **confirming "Public Bot" is disabled** (Bot → Authorization Flow — see
+   Section 9; this is a single-owner bot tied to one person's Plex library
+   and must not be self-service-invitable by strangers), generating the
+   invite URL with the right scopes/permissions, and inviting it to a
+   server. A single token input field, masked like a password field. The
+   wizard validates the token live (attempt a login) before saving, and
+   shows a clear pass/fail — don't let someone finish setup with a token
+   that doesn't actually work.
 3. **Plex step**: **lead with the PIN-based auth flow already specced in
    Section 3** (request PIN, user approves at plex.tv, wizard polls for
    the token automatically) rather than the manual "View XML" trick this
