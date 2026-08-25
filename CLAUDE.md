@@ -1,4 +1,4 @@
-# Plex GIF/Clip Discord Bot — Technical Architecture & Development Plan
+# CineSnip — Technical Architecture & Development Plan
 *Living reference for Claude Code sessions — also usable as the project's CLAUDE.md*
 
 ## Project summary
