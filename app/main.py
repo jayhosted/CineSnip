@@ -23,6 +23,7 @@ def _clear_scratch_dir(scratch_dir: Path) -> None:
 async def main() -> None:
     settings = load_settings()
     _clear_scratch_dir(settings.scratch_dir)
+    settings.cache_dir.mkdir(parents=True, exist_ok=True)
 
     worker_app = create_app(settings)
     server_config = uvicorn.Config(

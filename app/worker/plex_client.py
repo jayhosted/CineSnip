@@ -15,6 +15,7 @@ class MovieResult:
     duration_ms: int
     thumb_url: str | None
     plex_path: str
+    guid: str
 
 
 class PlexClient:
@@ -44,4 +45,5 @@ class PlexClient:
             duration_ms=movie.duration or 0,
             thumb_url=thumb_url,
             plex_path=part.file,
+            guid=movie.guid,
         )

@@ -9,6 +9,8 @@ from app.settings import Settings
 from app.worker.ffmpeg import ClipRenderer, RenderTimeoutError, parse_timecode
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 from app.worker.plex_client import MovieResult, PlexClient
+from app.worker.subprocess_utils import SubprocessTimeoutError
+from app.worker.subtitles import get_subtitles
 
 
 class MovieResultOut(BaseModel):
@@ -34,6 +36,23 @@ class ResolveResponse(BaseModel):
 class RenderRequest(BaseModel):
     rating_key: int
     timecode: str
+
+
+class SubtitleEntryOut(BaseModel):
+    index: int
+    start: float
+    end: float
+    text: str
+
+
+class SubtitleDiagnosticResponse(BaseModel):
+    rating_key: int
+    guid: str
+    source: str
+    sidecar_path: str | None
+    stream_index: int | None
+    entry_count: int
+    entries: list[SubtitleEntryOut]
 
 
 def _to_out(movie: MovieResult) -> MovieResultOut:
@@ -123,5 +142,51 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         return Response(content=gif_bytes, media_type="image/gif")
+
+    # Diagnostic-only endpoint for manually verifying subtitle extraction
+    # against the real library. Not wired into the Discord bot — a proper
+    # /resolve-quote endpoint with fuzzy matching is a follow-up slice.
+    @app.get("/subtitles/{rating_key}", response_model=SubtitleDiagnosticResponse)
+    async def subtitles(rating_key: int) -> SubtitleDiagnosticResponse:
+        movie = app.state.plex.get_movie(rating_key)
+        try:
+            container_path = resolve_container_path(
+                movie.plex_path, settings.path_mappings
+            )
+        except NoPathMappingError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        if not os.path.exists(container_path):
+            raise HTTPException(
+                status_code=422,
+                detail=f"File not found on disk at mapped path: {container_path}",
+            )
+
+        timeout = settings.subtitle_defaults.extraction_timeout_seconds
+        try:
+            result = await get_subtitles(
+                movie,
+                container_path,
+                settings.cache_dir,
+                ffprobe_timeout=timeout,
+                ffmpeg_timeout=timeout,
+            )
+        except (SubprocessTimeoutError, RuntimeError) as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        return SubtitleDiagnosticResponse(
+            rating_key=movie.rating_key,
+            guid=result.guid,
+            source=result.source.value,
+            sidecar_path=result.sidecar_path,
+            stream_index=result.stream_index,
+            entry_count=len(result.entries),
+            entries=[
+                SubtitleEntryOut(
+                    index=e.index, start=e.start, end=e.end, text=e.text
+                )
+                for e in result.entries
+            ],
+        )
 
     return app

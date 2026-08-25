@@ -19,6 +19,9 @@ Inspired by conversation with the developer of [tvgif](https://github.com/warman
 - Uses **Bazarr**, so the large majority of media has a separate `.srt` subtitle file sitting in the same folder as the video, rather than embedded subtitles. Some older/less-common titles may still only have embedded subs or none at all.
 - Development happens via **Claude Code Desktop, connected over SSH into a Ubuntu WSL2 distro on the server PC** (not the internal `docker-desktop` distro), so that Claude Code can directly run `docker compose`, reach Plex over `host.docker.internal`, and access the mounted media drives, all against the real environment rather than a stand-in.
 - Because the install docs need to work for other people too, **both** a native-host Plex setup (like this one) and a Dockerized-Plex setup must be documented and supported — the only thing that changes between them is how the container reaches Plex on the network.
+- **Confirmed working (2026-08-25)**: a Claude Code session in this WSL2 distro has real, direct access — `.env`/`config.yaml` are already populated with live values (not just the `.example` templates), both media drives are mounted and browsable at `/mnt/d/Plex Additional/Movies` and `/mnt/e/Media/Video/Movies`, and `docker compose` can build/run the real container against the real Plex library. This means new worker-layer features should be verified end-to-end against real media during development, not just unit-tested — that's how the V2 subtitle-extraction work below caught two real bugs synthetic test data never would have.
+- **Docker group gotcha**: the WSL2 user (`jaypw`) is not always in the `docker` group and there's no passwordless `sudo`, so a fresh session may get "permission denied" talking to the Docker daemon. Fix: have the user run `sudo usermod -aG docker jaypw` themselves (needs their password, so Claude Code can't run it directly) — the new group membership then works immediately in the *same* session via `sg docker -c '<command>'`, without needing to restart the whole session.
+- **The worker API is loopback-only inside the container by design** (Section 9 — no inbound public endpoint). To manually hit a worker endpoint (e.g. the `/subtitles/{rating_key}` diagnostic route) from a dev session, use `docker compose exec <service> <command>` to run the request *from inside* the container's network namespace — a plain `curl` from the host/WSL2 side won't reach it, since no port is published in `docker-compose.yml`.
 
 ## Workflow decisions already made (apply these, don't re-litigate)
 
@@ -196,6 +199,44 @@ same seek/duration logic.
   the container's non-root user *before* first `docker compose up`,
   or the container can't write to it. Documented as an explicit setup
   step in `README.md` and the troubleshooting section.
+
+### V2 subtitle-extraction build notes (real bugs hit, fixed, and worth knowing about)
+
+Found via manual end-to-end verification against the real library (not
+synthetic test data) — see the confirmed-access note above for why that
+step matters.
+
+- **Bazarr sidecar filenames chain multiple dot-separated markers, not
+  just a language code** — e.g. `Film.en.hi.srt` (English,
+  hearing-impaired/SDH) as a distinct file from a plain `Film.en.srt`.
+  Treating the whole `en.hi` suffix as an opaque language string breaks
+  the "prefer English" match and, worse, can let alphabetical tie-breaking
+  silently prefer the `.hi.srt` (SDH) file over a plain one that also
+  exists, contradicting the non-SDH-by-default design in Section 5. Fix:
+  parse only the *first* dot-separated segment as the language code, and
+  treat any later segment matching `hi`/`sdh`/`cc` as a hearing-impaired
+  flag — prefer non-hearing-impaired sidecars when both exist, same
+  priority the embedded-stream heuristic already applies. See
+  `app/worker/subtitles.py`'s `_parse_sidecar_suffix()`.
+- **Embedded-subtitle extraction (`ffmpeg -map 0:s:N -f srt`) has no
+  equivalent of clip rendering's `-ss` fast seek** — it must read
+  sequentially through the whole container to demux the subtitle packets,
+  even though the actual subtitle data is tiny. On this environment's
+  WSL2-bridged NTFS drives, extracting from an 11GB remux took ~73
+  seconds — comfortably past a naive 30s timeout, even though nothing was
+  actually hung (the timeout-and-kill mechanism itself worked exactly as
+  designed; the *default value* was just wrong for real file sizes over
+  this I/O path). Fixed by making it a configurable
+  `subtitle_defaults.extraction_timeout_seconds` (default 180s) in
+  `config.yaml`, mirroring how `render_defaults.timeout_seconds` already
+  works — raise it further if you see timeouts on very large files.
+- **Real confirmation of the documented PGS/bitmap-codec gap**: a title in
+  this library (`A Wounded Fawn`) has three embedded subtitle streams —
+  two Chinese, one English — that are *all* `hdmv_pgs_subtitle` (bitmap,
+  not text), so all three are correctly filtered out and the title
+  resolves to "no subtitles available" rather than a garbage extraction.
+  Not a bug, just confirmation the documented limitation is real and
+  already-handled, not hypothetical.
 
 ## 15. Honest difficulty note
 

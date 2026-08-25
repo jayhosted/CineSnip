@@ -8,4 +8,5 @@ services:
       - "/mnt/d/Plex Additional/Movies:/media/movies-d:ro"
       - "/mnt/e/Media/Video/Movies:/media/movies-e:ro"
       - ./scratch:/app/scratch
+      - ./cache:/app/cache
     restart: unless-stopped
