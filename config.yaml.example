@@ -1,0 +1,19 @@
+movies_library_name: "Movies"
+
+# One entry per folder Plex reports files under for this library.
+# plex_prefix must match exactly how Plex reports the path (Windows-style
+# backslashes if Plex runs on Windows). container_path is where that same
+# folder is bind-mounted inside the Docker container (see docker-compose.yml).
+path_mappings:
+  - plex_prefix: "D:\\Plex Additional\\Movies"
+    container_path: "/media/movies-d"
+  - plex_prefix: "E:\\Media\\Video\\Movies"
+    container_path: "/media/movies-e"
+
+render_defaults:
+  duration_seconds: 4
+  fps: 15
+  width: 480
+
+worker:
+  port: 8000

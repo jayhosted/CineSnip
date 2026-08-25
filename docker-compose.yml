@@ -1,0 +1,11 @@
+services:
+  cinesnip:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - "/mnt/d/Plex Additional/Movies:/media/movies-d:ro"
+      - "/mnt/e/Media/Video/Movies:/media/movies-e:ro"
+      - ./scratch:/app/scratch
+    restart: unless-stopped
