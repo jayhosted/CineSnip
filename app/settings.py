@@ -35,6 +35,26 @@ class SubtitleDefaults(BaseModel):
     extraction_timeout_seconds: float = 180.0
 
 
+class QuoteMatchDefaults(BaseModel):
+    # Top-N candidates returned per CLAUDE.md Section 5 ("top 2-3
+    # candidates ... not guaranteed exact matches").
+    candidate_limit: int = 3
+    # Noise floor: rapidfuzz WRatio scores (0-100) below this are dropped
+    # entirely rather than surfaced as a low-confidence result.
+    min_score: float = 50.0
+    # Presentation-only threshold echoed to the bot (which has no access to
+    # Settings) so it can label a match "confident" without duplicating
+    # config — does not affect which matches the engine returns.
+    confident_score: float = 85.0
+    # Adjacent subtitle cues are joined into one match candidate (to catch
+    # a quote split across two lines) only if the gap between them is at
+    # most this many seconds — prevents joining cues across a scene cut.
+    max_window_gap_seconds: float = 3.0
+    # Number of subtitle cues of surrounding context to include before/after
+    # a match in the Discord embed.
+    context_lines: int = 1
+
+
 class Settings(BaseModel):
     discord_token: str
     plex_url: str
@@ -44,6 +64,7 @@ class Settings(BaseModel):
     path_mappings: list[PathMapping] = Field(default_factory=list)
     render_defaults: RenderDefaults = Field(default_factory=RenderDefaults)
     subtitle_defaults: SubtitleDefaults = Field(default_factory=SubtitleDefaults)
+    quote_match: QuoteMatchDefaults = Field(default_factory=QuoteMatchDefaults)
     worker: WorkerConfig = Field(default_factory=WorkerConfig)
     scratch_dir: Path = Path("scratch")
     cache_dir: Path = Path("cache")
@@ -111,6 +132,7 @@ def load_settings(
             subtitle_defaults=SubtitleDefaults(
                 **raw_config.get("subtitle_defaults", {})
             ),
+            quote_match=QuoteMatchDefaults(**raw_config.get("quote_match", {})),
             worker=WorkerConfig(**raw_config.get("worker", {})),
             dev_guild_id=dev_guild_id,
         )

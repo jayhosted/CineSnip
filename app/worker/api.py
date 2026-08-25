@@ -8,9 +8,10 @@ from pydantic import BaseModel
 from app.settings import Settings
 from app.worker.ffmpeg import ClipRenderer, RenderTimeoutError, parse_timecode
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
-from app.worker.plex_client import MovieResult, PlexClient
+from app.worker.plex_client import MovieNotFoundError, MovieResult, PlexClient
+from app.worker.quotes import find_quote_matches
 from app.worker.subprocess_utils import SubprocessTimeoutError
-from app.worker.subtitles import get_subtitles
+from app.worker.subtitles import SubtitleResult, SubtitleSource, get_subtitles
 
 
 class MovieResultOut(BaseModel):
@@ -55,6 +56,32 @@ class SubtitleDiagnosticResponse(BaseModel):
     entries: list[SubtitleEntryOut]
 
 
+class QuoteMatchOut(BaseModel):
+    start: float
+    end: float
+    timecode: str
+    text: str
+    score: float
+    entry_indices: list[int]
+    context_before: list[str]
+    context_after: list[str]
+
+
+class ResolveQuoteResponse(BaseModel):
+    rating_key: int
+    title: str
+    subtitle_source: str
+    confident_score: float
+    matches: list[QuoteMatchOut]
+
+
+def _format_display_timecode(seconds: float) -> str:
+    total_seconds = int(seconds)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}"
+
+
 def _to_out(movie: MovieResult) -> MovieResultOut:
     return MovieResultOut(
         rating_key=movie.rating_key,
@@ -86,7 +113,10 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/resolve/{rating_key}", response_model=ResolveResponse)
     def resolve(rating_key: int) -> ResolveResponse:
-        movie = app.state.plex.get_movie(rating_key)
+        try:
+            movie = app.state.plex.get_movie(rating_key)
+        except MovieNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         try:
             container_path = resolve_container_path(
                 movie.plex_path, settings.path_mappings
@@ -110,7 +140,10 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/render")
     async def render(req: RenderRequest) -> Response:
-        movie = app.state.plex.get_movie(req.rating_key)
+        try:
+            movie = app.state.plex.get_movie(req.rating_key)
+        except MovieNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         try:
             container_path = resolve_container_path(
                 movie.plex_path, settings.path_mappings
@@ -143,12 +176,11 @@ def create_app(settings: Settings) -> FastAPI:
 
         return Response(content=gif_bytes, media_type="image/gif")
 
-    # Diagnostic-only endpoint for manually verifying subtitle extraction
-    # against the real library. Not wired into the Discord bot — a proper
-    # /resolve-quote endpoint with fuzzy matching is a follow-up slice.
-    @app.get("/subtitles/{rating_key}", response_model=SubtitleDiagnosticResponse)
-    async def subtitles(rating_key: int) -> SubtitleDiagnosticResponse:
-        movie = app.state.plex.get_movie(rating_key)
+    async def _load_subtitles(rating_key: int) -> tuple[MovieResult, SubtitleResult]:
+        try:
+            movie = app.state.plex.get_movie(rating_key)
+        except MovieNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         try:
             container_path = resolve_container_path(
                 movie.plex_path, settings.path_mappings
@@ -174,6 +206,16 @@ def create_app(settings: Settings) -> FastAPI:
         except (SubprocessTimeoutError, RuntimeError) as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+        return movie, result
+
+    # Diagnostic endpoint for manually inspecting the raw parsed cues for a
+    # title — useful on its own for verifying extraction against the real
+    # library, and as a companion to /resolve-quote for picking/verifying
+    # test quotes and finding cue boundaries.
+    @app.get("/subtitles/{rating_key}", response_model=SubtitleDiagnosticResponse)
+    async def subtitles(rating_key: int) -> SubtitleDiagnosticResponse:
+        movie, result = await _load_subtitles(rating_key)
+
         return SubtitleDiagnosticResponse(
             rating_key=movie.rating_key,
             guid=result.guid,
@@ -186,6 +228,59 @@ def create_app(settings: Settings) -> FastAPI:
                     index=e.index, start=e.start, end=e.end, text=e.text
                 )
                 for e in result.entries
+            ],
+        )
+
+    @app.get("/resolve-quote/{rating_key}", response_model=ResolveQuoteResponse)
+    async def resolve_quote(rating_key: int, quote: str) -> ResolveQuoteResponse:
+        movie, result = await _load_subtitles(rating_key)
+
+        if result.source is SubtitleSource.NONE or not result.entries:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"No usable subtitles for '{movie.title}' (no sidecar .srt "
+                    "and no text subtitle stream). Quote search isn't available "
+                    "for this title — use timecode instead."
+                ),
+            )
+
+        qm = settings.quote_match
+        matches = find_quote_matches(
+            result.entries,
+            quote,
+            limit=qm.candidate_limit,
+            min_score=qm.min_score,
+            max_window_gap_seconds=qm.max_window_gap_seconds,
+            context_lines=qm.context_lines,
+        )
+
+        if not matches:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"No subtitle line in '{movie.title}' resembled that quote. "
+                    "Try a shorter, more distinctive phrase."
+                ),
+            )
+
+        return ResolveQuoteResponse(
+            rating_key=movie.rating_key,
+            title=movie.title,
+            subtitle_source=result.source.value,
+            confident_score=qm.confident_score,
+            matches=[
+                QuoteMatchOut(
+                    start=m.start,
+                    end=m.end,
+                    timecode=_format_display_timecode(m.start),
+                    text=m.text,
+                    score=m.score,
+                    entry_indices=list(m.entry_indices),
+                    context_before=list(m.context_before),
+                    context_after=list(m.context_after),
+                )
+                for m in matches
             ],
         )
 

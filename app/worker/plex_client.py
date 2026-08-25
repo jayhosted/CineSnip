@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from plexapi.exceptions import NotFound
 from plexapi.server import PlexServer
 
 from app.settings import Settings
+
+
+class MovieNotFoundError(RuntimeError):
+    def __init__(self, rating_key: int):
+        super().__init__(f"No film found with rating_key {rating_key}.")
+        self.rating_key = rating_key
 
 
 @dataclass
@@ -28,7 +35,10 @@ class PlexClient:
         return [self._to_result(m) for m in movies]
 
     def get_movie(self, rating_key: int) -> MovieResult:
-        movie = self._server.fetchItem(rating_key)
+        try:
+            movie = self._server.fetchItem(rating_key)
+        except NotFound as exc:
+            raise MovieNotFoundError(rating_key) from exc
         return self._to_result(movie)
 
     @staticmethod
