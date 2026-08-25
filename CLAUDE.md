@@ -19,7 +19,7 @@ Inspired by conversation with the developer of [tvgif](https://github.com/warman
 - Uses **Bazarr**, so the large majority of media has a separate `.srt` subtitle file sitting in the same folder as the video, rather than embedded subtitles. Some older/less-common titles may still only have embedded subs or none at all.
 - Development happens via **Claude Code Desktop, connected over SSH into a Ubuntu WSL2 distro on the server PC** (not the internal `docker-desktop` distro), so that Claude Code can directly run `docker compose`, reach Plex over `host.docker.internal`, and access the mounted media drives, all against the real environment rather than a stand-in.
 - Because the install docs need to work for other people too, **both** a native-host Plex setup (like this one) and a Dockerized-Plex setup must be documented and supported — the only thing that changes between them is how the container reaches Plex on the network.
-- **Confirmed working (2026-08-25)**: a Claude Code session in this WSL2 distro has real, direct access — `.env`/`config.yaml` are already populated with live values (not just the `.example` templates), both media drives are mounted and browsable at `/mnt/d/Plex Additional/Movies` and `/mnt/e/Media/Video/Movies`, and `docker compose` can build/run the real container against the real Plex library. This means new worker-layer features should be verified end-to-end against real media during development, not just unit-tested — that's how the V2 subtitle-extraction work below caught two real bugs synthetic test data never would have.
+- **A Claude Code session in this WSL2 distro has real, direct access**: `.env`/`config.yaml` are populated with live values (not just the `.example` templates), both media drives are mounted and browsable at `/mnt/d/Plex Additional/Movies` and `/mnt/e/Media/Video/Movies`, and `docker compose` can build/run the real container against the real Plex library. **Verify worker-layer changes end-to-end against real media during development, not just with unit tests** — real subtitle/media files surface bugs synthetic test data doesn't.
 - **Docker group gotcha**: the WSL2 user (`jaypw`) is not always in the `docker` group and there's no passwordless `sudo`, so a fresh session may get "permission denied" talking to the Docker daemon. Fix: have the user run `sudo usermod -aG docker jaypw` themselves (needs their password, so Claude Code can't run it directly) — the new group membership then works immediately in the *same* session via `sg docker -c '<command>'`, without needing to restart the whole session.
 - **The worker API is loopback-only inside the container by design** (Section 9 — no inbound public endpoint). To manually hit a worker endpoint (e.g. the `/subtitles/{rating_key}` diagnostic route) from a dev session, use `docker compose exec <service> <command>` to run the request *from inside* the container's network namespace — a plain `curl` from the host/WSL2 side won't reach it, since no port is published in `docker-compose.yml`.
 
@@ -30,7 +30,7 @@ Inspired by conversation with the developer of [tvgif](https://github.com/warman
 3. **Structure the worker as a small internal HTTP API from the start** (e.g. FastAPI), even though the Discord bot is its only client initially. This makes a future local web app (setup wizard + manual GIF-generation UI) a thin second client rather than a rebuild.
 4. **"Confirm the film/show" and "confirm the timestamp" are separate, cheap-to-redo steps** in the Discord flow — users can back up one step without restarting `/cinesnip` from scratch.
 5. **Config split**: `.env` for secrets (Discord bot token, Plex token), `config.yaml` for everything else (per-library path mappings, style presets, GPU toggle, feature flags). Standard self-hosted-app practice — keeps secrets out of anything that might get shared or hand-edited casually.
-6. **Setup wizard and manual-generation UI are the same small local web app**, not two separate builds — a `/setup` route for first-run/reconfiguration, a `/generate` route for browsing/making clips outside Discord. Build the Discord bot and prove the core pipeline first; build this web app as a fast-follow, not alongside. Full spec for the wizard itself: see Section 16.
+6. **Setup wizard and manual-generation UI are the same small local web app**, not two separate builds — a `/setup` route for first-run/reconfiguration, a `/generate` route for browsing/making clips outside Discord. Build the Discord bot and prove the core pipeline first; build this web app as a fast-follow, not alongside. Full spec for the wizard itself: see Section 14.
 
 ## 1. Overall architecture
 
@@ -80,7 +80,7 @@ No central database, no cloud API, no message broker.
 - **Subtitle source priority** (deliberately generic — must work for installs that don't use Bazarr and/or have only embedded subs, not just this developer's setup):
   1. Look for a separate subtitle file matching the video's filename in the same folder — this covers Bazarr's naming convention (this developer's setup) but is really just "does a sidecar `.srt` exist," which works identically for anyone who drops subtitle files next to their videos by any means, manual or tool-managed. No ffmpeg extraction needed, just read the file.
   2. If none found, check for and extract an embedded subtitle stream (`ffmpeg -map 0:s:N`) — this is the *primary* path for installs without a sidecar-subtitle tool, not a rare fallback, so it needs to be genuinely well-supported in V2, not an afterthought bolted on later.
-  3. If neither exists, fall back to local Whisper transcription (`faster-whisper`, **V3** — see Section 14) — genuinely slow (minutes for a full film on CPU, much faster with the 3070 via GPU-enabled build), so **transcribe once per title and cache the result** keyed by the Plex media GUID; never re-run per query. Until V3 ships, a title with neither a sidecar file nor an embedded stream simply isn't quote-searchable — timecode input still works via `/cinesnip`, this is an expected, documented V2 gap, not a bug.
+  3. If neither exists, fall back to local Whisper transcription (`faster-whisper`, **V3** — see Section 13) — genuinely slow (minutes for a full film on CPU, much faster with the 3070 via GPU-enabled build), so **transcribe once per title and cache the result** keyed by the Plex media GUID; never re-run per query. Until V3 ships, a title with neither a sidecar file nor an embedded stream simply isn't quote-searchable — timecode input still works via `/cinesnip`, this is an expected, documented V2 gap, not a bug.
 - **Matching**: parse whichever subtitle source into `(start, end, text)` entries; fuzzy-match the typed quote (`rapidfuzz`) after normalizing case/punctuation; return top 2–3 candidates with surrounding context and a confidence score rather than committing silently to the top hit.
 - **Multiple subtitle tracks**: default to original-language, non-SDH; let the user pick if ambiguous.
 - **Realistic expectations**: strong hit rate for well-known lines with a good subtitle track; harder cases include paraphrased quotes, dubbing/translation drift, and lines split across subtitle entries — design the UI around "likely candidates," not guaranteed exact matches.
@@ -117,7 +117,7 @@ No central database, no cloud API, no message broker.
 - Plex token and media access stay confined to the worker module even though it's in the same container as the bot, for future auditability if the layers are ever split.
 - No inbound public endpoint needed — outbound-only connection to Discord's Gateway.
 - Anyone with bot access in a server it's added to can browse the library and generate clips from it — recommend an admin-configurable allowlist (roles/users permitted to use the bot) and basic rate-limiting.
-- **Disable "Public Bot" in the Discord Developer Portal (Bot → Authorization Flow).** This is a self-hosted, single-owner bot tied to one person's Plex library (Section 10's "one Docker install = one Plex owner = one bot application" model) — it must never be self-service-invitable by a stranger clicking "Add to Server" on the bot's profile, since that would hand them browse/generate access to this installer's personal media. With Public Bot off, only the application owner can generate a working OAuth2 invite URL; the owner can still invite it to as many servers as they choose (Section 10 is unaffected), it just stops anyone else from doing so. This is cheap, one-click, and should be step one of the Discord setup — documented in the README today and folded into the Section 16 wizard's Discord step once that's built. Combine with the allowlist above as defense-in-depth: Public Bot off stops unwanted *invites*, the allowlist limits misuse *within* servers the owner did invite it to.
+- **Disable "Public Bot" in the Discord Developer Portal (Bot → Authorization Flow).** This is a self-hosted, single-owner bot tied to one person's Plex library (Section 10's "one Docker install = one Plex owner = one bot application" model) — it must never be self-service-invitable by a stranger clicking "Add to Server" on the bot's profile, since that would hand them browse/generate access to this installer's personal media. With Public Bot off, only the application owner can generate a working OAuth2 invite URL; the owner can still invite it to as many servers as they choose (Section 10 is unaffected), it just stops anyone else from doing so. ✅ Documented in the README as step one of Discord setup; also fold into the Section 14 wizard's Discord step once that's built. Combine with the allowlist above as defense-in-depth: Public Bot off stops unwanted *invites*, the allowlist limits misuse *within* servers the owner did invite it to.
 
 ## 10. Multiple servers/users — v1 model
 
@@ -125,17 +125,13 @@ One Docker install = one Plex owner = one bot application, invited to whichever 
 
 ## 11. Hosting model
 
-Only Option A (bot + processing entirely on the installer's own machine) fits the stated privacy goal and is the only one worth building for — see prior discussion for why centrally-hosted variants don't actually reduce exposure and add ongoing maintenance burden.
+Bot + processing run entirely on the installer's own machine — no centrally-hosted variant. A shared/hosted option would reintroduce the third-party data exposure this project exists to avoid, plus ongoing maintenance burden, for no real benefit.
 
-## 12. Costs
-
-Effectively $0 for the end user beyond hardware they likely already own to run Plex: Discord, Plex, python-plexapi, ffmpeg, and Docker are all free; local Whisper costs only electricity; storage/bandwidth is negligible (temp files plus a small transcript cache).
-
-## 13. Recommended stack
+## 12. Recommended stack
 
 **Python**: `discord.py`/`Pycord` for the bot layer, `python-plexapi` for Plex, `subprocess` calls to the ffmpeg CLI directly, `faster-whisper` for optional transcription, `rapidfuzz` for subtitle matching, FastAPI for the internal worker API, SQLite for the small config/cache store.
 
-## 14. Staged development plan
+## 13. Staged development plan
 
 **MVP — ✅ complete**
 - Single `/gif` command (renamed `/cinesnip` going into V2 — see Section 2), timecode input only, films only
@@ -143,30 +139,26 @@ Effectively $0 for the end user beyond hardware they likely already own to run P
 - Direct file access only
 - One fixed GIF style, no options menu
 - One Docker container, tested against one Discord server
-- Goal: prove the full pipeline end-to-end
 
-Built and verified end-to-end against real Plex libraries on both `D:` and
-`E:` (both Movies path mappings exercised). See "MVP build notes" below for
-non-obvious bugs hit along the way — worth reading before touching
-`app/worker/ffmpeg.py` again, since V2's quote-search rendering reuses the
-same seek/duration logic.
+See "MVP build notes" below before touching `app/worker/ffmpeg.py` — the
+quote-search rendering path reuses the same seek/duration logic.
 
 **V2**
-- Rename `/gif` → `/cinesnip` (and `/gif-diagnose` → `/cinesnip-diagnose`)
-- Sidecar-subtitle-file + embedded-subtitle-stream extraction (generic — not Bazarr-specific, see Section 5) + fuzzy quote search within a confirmed film
+- ✅ Rename `/gif` → `/cinesnip` (and `/gif-diagnose` → `/cinesnip-diagnose`)
+- ✅ Sidecar-subtitle-file + embedded-subtitle-stream extraction (generic — not Bazarr-specific, see Section 5) + fuzzy quote search within a confirmed film
 - `/cinesnip-search` — library-wide quote search across the (lazily-built) subtitle cache, with an explicit opt-in to extend a search into not-yet-cached titles (Section 5)
 - Style preset select menu, MP4/WebM output option
-- Remaining library/drive path mappings (4K, 3D, TV, second drive)
-- Document + confirm "Public Bot" disabled as part of Discord setup (Section 9)
+- Remaining library/drive path mappings (4K, 3D, TV — both Movies drives are done)
+- ✅ Document + confirm "Public Bot" disabled as part of Discord setup (Section 9)
 
 **V3**
 - TV show support (episode-specific and whole-show search)
 - Whisper fallback (cached, lazy)
 - NVENC/GPU hardware acceleration option
-- Local web app: setup wizard + manual generation UI (see Section 16 for the onboarding wizard spec)
+- Local web app: setup wizard + manual generation UI (see Section 14 for the onboarding wizard spec)
 - Allowlists/rate-limiting, multi-server polish, distribution docs for other self-hosters (both Plex-hosting patterns documented)
 
-### MVP build notes (real bugs hit, fixed, and worth knowing about)
+### MVP build notes (non-obvious bugs — read before touching `app/worker/ffmpeg.py`)
 
 - **ffmpeg `-t` must be an input option, not an output option.** Placing
   `-t <duration>` *after* `-i` only bounds the output stream's
@@ -174,16 +166,12 @@ same seek/duration logic.
   `paletteuse` that emit a single frame at the very end of the filter
   graph. With `-t` as an output option, ffmpeg keeps decoding and feeding
   frames into the filter for the rest of the file, since there's no
-  rolling output PTS for it to cut off against (confirmed via `-loglevel
-  verbose`: a 4-second clip request decoded 6354 frames — the whole rest
-  of the file — instead of ~100). Fix: put `-ss` and `-t` **together,
-  both before `-i`** — as input options, `-t` bounds how much is actually
-  *read*, which is what stops it. See `app/worker/ffmpeg.py`'s
+  rolling output PTS for it to cut off against. Fix: put `-ss` and `-t`
+  **together, both before `-i`** — as input options, `-t` bounds how much
+  is actually *read*, which is what stops it. See `app/worker/ffmpeg.py`'s
   `build_seek_args()` and its docstring/regression test.
 - **The `image2` muxer needs `-update 1`** to write a single still image
-  (e.g. the GIF palette PNG) rather than expecting a `%d` sequence
-  pattern. This was masked for a while by the bug above, since the
-  runaway decode never reached the point of finalizing the file.
+  (e.g. the GIF palette PNG) rather than expecting a `%d` sequence pattern.
 - **Always drain both `stdout` and `stderr`** from an ffmpeg subprocess
   (`communicate()`, not a manual read loop on one pipe) — ffmpeg writes
   verbose progress to `stderr`, and reading only `stdout` risks a
@@ -200,11 +188,7 @@ same seek/duration logic.
   or the container can't write to it. Documented as an explicit setup
   step in `README.md` and the troubleshooting section.
 
-### V2 subtitle-extraction build notes (real bugs hit, fixed, and worth knowing about)
-
-Found via manual end-to-end verification against the real library (not
-synthetic test data) — see the confirmed-access note above for why that
-step matters.
+### V2 subtitle-extraction build notes (non-obvious bugs — read before touching `app/worker/subtitles.py`)
 
 - **Bazarr sidecar filenames chain multiple dot-separated markers, not
   just a language code** — e.g. `Film.en.hi.srt` (English,
@@ -224,25 +208,23 @@ step matters.
   even though the actual subtitle data is tiny. On this environment's
   WSL2-bridged NTFS drives, extracting from an 11GB remux took ~73
   seconds — comfortably past a naive 30s timeout, even though nothing was
-  actually hung (the timeout-and-kill mechanism itself worked exactly as
-  designed; the *default value* was just wrong for real file sizes over
-  this I/O path). Fixed by making it a configurable
+  actually hung; the *default value* was just wrong for real file sizes
+  over this I/O path. Fixed by making it a configurable
   `subtitle_defaults.extraction_timeout_seconds` (default 180s) in
   `config.yaml`, mirroring how `render_defaults.timeout_seconds` already
-  works — raise it further if you see timeouts on very large files.
-- **Real confirmation of the documented PGS/bitmap-codec gap**: a title in
-  this library (`A Wounded Fawn`) has three embedded subtitle streams —
-  two Chinese, one English — that are *all* `hdmv_pgs_subtitle` (bitmap,
-  not text), so all three are correctly filtered out and the title
-  resolves to "no subtitles available" rather than a garbage extraction.
-  Not a bug, just confirmation the documented limitation is real and
-  already-handled, not hypothetical.
+  works — raise it further if you see timeouts on very large files. (Any
+  new endpoint that triggers extraction on a cold cache — e.g.
+  `/resolve-quote` — needs its own client-side timeout set higher than
+  this value, or the client aborts before the worker's clean error does;
+  see `RESOLVE_QUOTE_TIMEOUT_SECONDS` in `app/bot/worker_client.py`.)
+- **PGS/bitmap subtitle streams (`hdmv_pgs_subtitle`) are bitmap, not
+  text — ffmpeg can't mux them to SRT.** `choose_subtitle_stream()`
+  filters these out; a title with only bitmap embedded streams and no
+  sidecar correctly resolves to "no subtitles available" rather than a
+  garbage extraction. This is the documented V2 gap in Section 5, not a
+  bug — don't try to "fix" a title that hits this path.
 
-## 15. Honest difficulty note
-
-This spans async programming, Docker networking across host/container/WSL2 boundaries, third-party API auth, and optionally local ML inference — genuinely multi-domain, not a first project. Given hands-on experience with Discord bots/webhooks, Docker, and Plex already, the ops-side debugging (Docker networking, Plex connectivity, testing) should feel familiar; the main friction point will be application-logic bugs surfaced through Claude Code's own error output, which is a normal and manageable iterative loop, not a blocker. Build and prove the MVP before adding TV support, Whisper, or the web app — each of those is a real, separable stage, not a detail to bolt on early.
-
-## 16. Onboarding Wizard (Setup UX)
+## 14. Onboarding Wizard (Setup UX)
 
 **Why this matters**: the MVP's setup path (README steps: hand-create a
 Discord app, hand-fetch a Plex token, hand-edit `.env`/`config.yaml`,
@@ -282,13 +264,12 @@ Docker path mappings.
    that doesn't actually work.
 3. **Plex step**: **lead with the PIN-based auth flow already specced in
    Section 3** (request PIN, user approves at plex.tv, wizard polls for
-   the token automatically) rather than the manual "View XML" trick this
-   developer used during MVP testing — that trick is unintuitive, and
-   during MVP development this developer also discovered that
-   Plex "sign out" in the web UI doesn't reliably invalidate/rotate a
-   token, which made manual token hygiene confusing even for a technical
-   user. A wizard-driven PIN flow sidesteps all of that. Manual token
-   paste stays as an advanced-user fallback only.
+   the token automatically) rather than manually viewing Plex's XML API
+   response for a token — that trick is unintuitive, and Plex's web UI
+   "sign out" doesn't reliably invalidate/rotate a token, which makes
+   manual token hygiene confusing even for a technical user. A
+   wizard-driven PIN flow sidesteps both problems. Manual token paste
+   stays as an advanced-user fallback only.
 4. **Library/path-mapping step**: once Plex is authenticated, auto-enumerate
    libraries via the API and let the user pick which one(s) to enable.
    For each, auto-suggest path mappings by comparing the Plex-reported
@@ -318,17 +299,13 @@ Docker path mappings.
   backend must never log full request/response bodies** for the
   token-submission endpoints, even in debug/verbose logging modes — a
   logged request body is just as much a leak as printing the token to the
-  UI. This is a real, concrete risk, not a theoretical one: during MVP
-  development, an unrelated file-change-tracking mechanism in the coding
-  assistant being used ended up displaying the contents of a freshly
-  edited `.env` (including both live tokens) back into that session's
-  transcript, purely as a side effect of the assistant having previously
-  touched that file path — an unintended, avoidable leak that a
-  carelessly-logged wizard backend could reproduce just as easily. Design
-  the wizard so no code path — logging, error handling, debug tooling —
-  ever has a reason to echo a submitted token back out anywhere other than
-  the config file it belongs in.
-- Once written, tokens are read from `.env`/`config.yaml` exactly like the
-  MVP does today (`app/settings.py`) — the wizard is purely a friendlier
-  way to produce those same two files, not a new runtime secret-handling
-  path.
+  UI. This is a real, concrete risk: a coding assistant's own
+  file-change-tracking can echo a previously-touched file's full contents
+  (e.g. a live `.env`) back into its transcript as a side effect of having
+  touched that path before, with no code in this project doing so
+  intentionally — design the wizard so no code path (logging, error
+  handling, debug tooling) ever has a reason to echo a submitted token
+  back out anywhere other than the config file it belongs in.
+- Once written, tokens are read from `.env`/`config.yaml` exactly like
+  `app/settings.py` already does — the wizard is purely a friendlier way
+  to produce those same two files, not a new runtime secret-handling path.
