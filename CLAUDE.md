@@ -27,7 +27,7 @@ Inspired by conversation with the developer of [tvgif](https://github.com/warman
 3. **Structure the worker as a small internal HTTP API from the start** (e.g. FastAPI), even though the Discord bot is its only client initially. This makes a future local web app (setup wizard + manual GIF-generation UI) a thin second client rather than a rebuild.
 4. **"Confirm the film/show" and "confirm the timestamp" are separate, cheap-to-redo steps** in the Discord flow — users can back up one step without restarting `/gif` from scratch.
 5. **Config split**: `.env` for secrets (Discord bot token, Plex token), `config.yaml` for everything else (per-library path mappings, style presets, GPU toggle, feature flags). Standard self-hosted-app practice — keeps secrets out of anything that might get shared or hand-edited casually.
-6. **Setup wizard and manual-generation UI are the same small local web app**, not two separate builds — a `/setup` route for first-run/reconfiguration, a `/generate` route for browsing/making clips outside Discord. Build the Discord bot and prove the core pipeline first; build this web app as a fast-follow, not alongside.
+6. **Setup wizard and manual-generation UI are the same small local web app**, not two separate builds — a `/setup` route for first-run/reconfiguration, a `/generate` route for browsing/making clips outside Discord. Build the Discord bot and prove the core pipeline first; build this web app as a fast-follow, not alongside. Full spec for the wizard itself: see Section 16.
 
 ## 1. Overall architecture
 
@@ -127,13 +127,19 @@ Effectively $0 for the end user beyond hardware they likely already own to run P
 
 ## 14. Staged development plan
 
-**MVP**
+**MVP — ✅ complete**
 - Single `/gif` command, timecode input only, films only
 - Plex search + confirm via buttons (single library/mapping to start — this developer's primary Movies library)
 - Direct file access only
 - One fixed GIF style, no options menu
 - One Docker container, tested against one Discord server
 - Goal: prove the full pipeline end-to-end
+
+Built and verified end-to-end against real Plex libraries on both `D:` and
+`E:` (both Movies path mappings exercised). See "MVP build notes" below for
+non-obvious bugs hit along the way — worth reading before touching
+`app/worker/ffmpeg.py` again, since V2's quote-search rendering reuses the
+same seek/duration logic.
 
 **V2**
 - Bazarr-first subtitle extraction + fuzzy quote search
@@ -144,9 +150,131 @@ Effectively $0 for the end user beyond hardware they likely already own to run P
 - TV show support (episode-specific and whole-show search)
 - Whisper fallback (cached, lazy)
 - NVENC/GPU hardware acceleration option
-- Local web app: setup wizard + manual generation UI
+- Local web app: setup wizard + manual generation UI (see Section 16 for the onboarding wizard spec)
 - Allowlists/rate-limiting, multi-server polish, distribution docs for other self-hosters (both Plex-hosting patterns documented)
+
+### MVP build notes (real bugs hit, fixed, and worth knowing about)
+
+- **ffmpeg `-t` must be an input option, not an output option.** Placing
+  `-t <duration>` *after* `-i` only bounds the output stream's
+  timestamps — which does nothing for filters like `palettegen`/
+  `paletteuse` that emit a single frame at the very end of the filter
+  graph. With `-t` as an output option, ffmpeg keeps decoding and feeding
+  frames into the filter for the rest of the file, since there's no
+  rolling output PTS for it to cut off against (confirmed via `-loglevel
+  verbose`: a 4-second clip request decoded 6354 frames — the whole rest
+  of the file — instead of ~100). Fix: put `-ss` and `-t` **together,
+  both before `-i`** — as input options, `-t` bounds how much is actually
+  *read*, which is what stops it. See `app/worker/ffmpeg.py`'s
+  `build_seek_args()` and its docstring/regression test.
+- **The `image2` muxer needs `-update 1`** to write a single still image
+  (e.g. the GIF palette PNG) rather than expecting a `%d` sequence
+  pattern. This was masked for a while by the bug above, since the
+  runaway decode never reached the point of finalizing the file.
+- **Always drain both `stdout` and `stderr`** from an ffmpeg subprocess
+  (`communicate()`, not a manual read loop on one pipe) — ffmpeg writes
+  verbose progress to `stderr`, and reading only `stdout` risks a
+  deadlock once `stderr`'s OS pipe buffer fills and ffmpeg blocks trying
+  to write to it.
+- **Always wrap ffmpeg subprocess calls in a timeout that kills the
+  process** on expiry. A pathological or unusually slow-to-seek source
+  file should fail cleanly with a clear error, never hang the request
+  indefinitely.
+- **Docker auto-creates missing bind-mount source directories as
+  `root`.** The scratch/render temp dir (`./scratch:/app/scratch` in
+  `docker-compose.yml`) needs to exist and be owned by the same UID as
+  the container's non-root user *before* first `docker compose up`,
+  or the container can't write to it. Documented as an explicit setup
+  step in `README.md` and the troubleshooting section.
 
 ## 15. Honest difficulty note
 
 This spans async programming, Docker networking across host/container/WSL2 boundaries, third-party API auth, and optionally local ML inference — genuinely multi-domain, not a first project. Given hands-on experience with Discord bots/webhooks, Docker, and Plex already, the ops-side debugging (Docker networking, Plex connectivity, testing) should feel familiar; the main friction point will be application-logic bugs surfaced through Claude Code's own error output, which is a normal and manageable iterative loop, not a blocker. Build and prove the MVP before adding TV support, Whisper, or the web app — each of those is a real, separable stage, not a detail to bolt on early.
+
+## 16. Onboarding Wizard (Setup UX)
+
+**Why this matters**: the MVP's setup path (README steps: hand-create a
+Discord app, hand-fetch a Plex token, hand-edit `.env`/`config.yaml`,
+`docker compose up`) is fine for this developer, but is a real barrier for
+a less technical person installing CineSnip fresh from GitHub. The whole
+point of building this as a distributable self-hosted tool (see Project
+summary) is undermined if only technical users can actually get it running.
+This section is the spec for the `/setup` route of the local web app named
+in decision #6 — not a new component, the detailed design for one already
+planned.
+
+### Goal
+
+Someone who has never used a terminal beyond `docker compose up` should be
+able to go from "cloned the repo" to "bot working in my server" by
+following an on-screen wizard — no hand-editing YAML, no hunting through
+Plex's UI for a token via undocumented tricks, no manually reasoning about
+Docker path mappings.
+
+### Flow
+
+1. **First-run detection**: if `.env`/`config.yaml` are missing or
+   incomplete at container startup, serve *only* the setup wizard on a
+   local port (not the Discord bot or the full worker API) until setup is
+   validated complete. This reuses the "fail fast with actionable errors"
+   behavior already in `app/settings.py` — the wizard is the friendly
+   front-end for exactly the same validation.
+2. **Discord step**: inline instructions (with links, not just prose) for
+   creating the application in the Developer Portal, enabling the bot,
+   generating the invite URL with the right scopes/permissions, and
+   inviting it to a server. A single token input field, masked like a
+   password field. The wizard validates the token live (attempt a login)
+   before saving, and shows a clear pass/fail — don't let someone finish
+   setup with a token that doesn't actually work.
+3. **Plex step**: **lead with the PIN-based auth flow already specced in
+   Section 3** (request PIN, user approves at plex.tv, wizard polls for
+   the token automatically) rather than the manual "View XML" trick this
+   developer used during MVP testing — that trick is unintuitive, and
+   during MVP development this developer also discovered that
+   Plex "sign out" in the web UI doesn't reliably invalidate/rotate a
+   token, which made manual token hygiene confusing even for a technical
+   user. A wizard-driven PIN flow sidesteps all of that. Manual token
+   paste stays as an advanced-user fallback only.
+4. **Library/path-mapping step**: once Plex is authenticated, auto-enumerate
+   libraries via the API and let the user pick which one(s) to enable.
+   For each, auto-suggest path mappings by comparing the Plex-reported
+   file path (from a sample media item) against what's actually visible
+   under the container's mounted volumes — effectively automating the
+   `/gif-diagnose` diagnostic from Section 3 into the setup flow itself,
+   instead of requiring the user to manually read XML and hand-edit YAML.
+5. **Validation step**: before declaring setup complete, confirm: Plex is
+   reachable, at least one sample file resolves through the chosen path
+   mapping and actually exists on disk from the container's point of view,
+   and the Discord bot can log in. Only then start the real bot/worker.
+6. Manual `.env`/`config.yaml` editing (the current README flow) stays
+   documented as the advanced/fallback path for technical users who'd
+   rather skip the UI — the wizard doesn't replace it, it's the
+   friendlier default for everyone else.
+
+### Security requirements (non-negotiable, not just nice-to-have)
+
+- Tokens are written **directly to local `.env`/`config.yaml` on disk by
+  the wizard's own backend** — never transmitted anywhere external, never
+  logged, never included in any error reporting (there is none — no
+  telemetry exists or should exist in this project).
+- The wizard's web UI **binds to localhost only by default**; exposing it
+  on the LAN is an explicit opt-in, never the default, since it's handling
+  raw secrets during setup.
+- Token input fields are masked in the UI, and **the wizard's own
+  backend must never log full request/response bodies** for the
+  token-submission endpoints, even in debug/verbose logging modes — a
+  logged request body is just as much a leak as printing the token to the
+  UI. This is a real, concrete risk, not a theoretical one: during MVP
+  development, an unrelated file-change-tracking mechanism in the coding
+  assistant being used ended up displaying the contents of a freshly
+  edited `.env` (including both live tokens) back into that session's
+  transcript, purely as a side effect of the assistant having previously
+  touched that file path — an unintended, avoidable leak that a
+  carelessly-logged wizard backend could reproduce just as easily. Design
+  the wizard so no code path — logging, error handling, debug tooling —
+  ever has a reason to echo a submitted token back out anywhere other than
+  the config file it belongs in.
+- Once written, tokens are read from `.env`/`config.yaml` exactly like the
+  MVP does today (`app/settings.py`) — the wizard is purely a friendlier
+  way to produce those same two files, not a new runtime secret-handling
+  path.
