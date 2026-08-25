@@ -83,7 +83,7 @@ class GifCog(commands.Cog):
         return choices
 
     @app_commands.command(
-        name="gif", description="Generate a GIF clip from a film at a timecode."
+        name="cinesnip", description="Generate a GIF clip from a film at a timecode."
     )
     @app_commands.describe(
         film="The film to search for", timecode="Timestamp, e.g. 1:23:45"

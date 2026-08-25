@@ -2,7 +2,7 @@
 
 Generate GIF clips from your own Plex library, straight into Discord.
 
-This is the **MVP**: one `/gif` command, films only, timecode input only
+This is the **MVP**: one `/cinesnip` command, films only, timecode input only
 (e.g. "generate a GIF starting at 1:23:45"), one Plex library, one Docker
 container. See [CLAUDE.md](CLAUDE.md) for the full project plan and
 later-stage features.
@@ -17,11 +17,12 @@ later-stage features.
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**.
 2. Open the **Bot** tab → **Reset Token** → copy the token (you'll paste this into `.env` in step 4). Keep it secret — treat it like a password.
-3. No privileged intents are needed for the MVP (it's slash-command-only).
-4. Open **OAuth2 → URL Generator**:
+3. **On the same Bot tab, under Authorization Flow, turn OFF "Public Bot."** This is important: CineSnip is tied to *your* Plex library, and a public bot can be added to any server by anyone via the "Add to Server" button on its profile — which would hand them browse/generate access to your media. With Public Bot off, only you can generate a working invite URL; you can still invite it to as many of your own servers as you like, it just can't be self-service-invited by someone else.
+4. No privileged intents are needed for the MVP (it's slash-command-only).
+5. Open **OAuth2 → URL Generator**:
    - Scopes: `bot`, `applications.commands`
    - Bot permissions: `Send Messages`, `Attach Files`, `Use Slash Commands`
-5. Open the generated URL in your browser and invite the bot to your test Discord server.
+6. Open the generated URL in your browser and invite the bot to your test Discord server.
 
 ## 3. Get a Plex token
 
@@ -87,7 +88,7 @@ container, and the bot only makes outbound connections to Discord.
 In your Discord server:
 
 ```
-/gif film:<start typing a title> timecode:1:23:45
+/cinesnip film:<start typing a title> timecode:1:23:45
 ```
 
 Pick a film from the autocomplete suggestions, confirm the embed, and
