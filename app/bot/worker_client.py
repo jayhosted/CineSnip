@@ -10,6 +10,12 @@ import httpx
 # with a generic, harder-to-explain exception.
 RENDER_TIMEOUT_SECONDS = 90.0
 
+# Must exceed the worker's subtitle extraction timeout (config.yaml's
+# subtitle_defaults.extraction_timeout_seconds, 180s by default) — on a
+# cold cache /resolve-quote demuxes an embedded subtitle stream, which has
+# no fast seek. The shared 30s client default would abort first.
+RESOLVE_QUOTE_TIMEOUT_SECONDS = 200.0
+
 
 @dataclass
 class MovieResult:
@@ -27,6 +33,27 @@ class ResolveResult:
     year: int | None
     duration_ms: int
     thumb_url: str | None
+
+
+@dataclass
+class QuoteMatchResult:
+    start: float
+    end: float
+    timecode: str
+    text: str
+    score: float
+    entry_indices: list[int]
+    context_before: list[str]
+    context_after: list[str]
+
+
+@dataclass
+class ResolveQuoteResult:
+    rating_key: int
+    title: str
+    subtitle_source: str
+    confident_score: float
+    matches: list[QuoteMatchResult]
 
 
 class WorkerClient:
@@ -53,6 +80,22 @@ class WorkerClient:
         response = await self._client.get(f"/resolve/{rating_key}")
         response.raise_for_status()
         return ResolveResult(**response.json())
+
+    async def resolve_quote(self, rating_key: int, quote: str) -> ResolveQuoteResult:
+        response = await self._client.get(
+            f"/resolve-quote/{rating_key}",
+            params={"quote": quote},
+            timeout=RESOLVE_QUOTE_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return ResolveQuoteResult(
+            rating_key=payload["rating_key"],
+            title=payload["title"],
+            subtitle_source=payload["subtitle_source"],
+            confident_score=payload["confident_score"],
+            matches=[QuoteMatchResult(**m) for m in payload["matches"]],
+        )
 
     async def render(self, rating_key: int, timecode: str) -> bytes:
         response = await self._client.post(

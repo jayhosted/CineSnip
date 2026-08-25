@@ -21,5 +21,16 @@ render_defaults:
 subtitle_defaults:
   extraction_timeout_seconds: 180
 
+# Fuzzy quote-search tuning. min_score is a noise floor (candidates scoring
+# below it are dropped entirely); confident_score is presentation-only — it
+# only controls whether the Discord UI treats the top match as good enough
+# to lead with, or opens straight to "show other matches".
+quote_match:
+  candidate_limit: 3
+  min_score: 50
+  confident_score: 85
+  max_window_gap_seconds: 3
+  context_lines: 1
+
 worker:
   port: 8000
