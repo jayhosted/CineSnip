@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
@@ -50,6 +51,8 @@ class RenderRequest(BaseModel):
     # parse_timecode() as `timecode` — kept server-side so timecode format
     # support only lives in one place.
     end_timecode: str | None = None
+    # None uses render_defaults.format.
+    format: Literal["gif", "mp4", "webm"] | None = None
 
 
 class SubtitleEntryOut(BaseModel):
@@ -219,16 +222,31 @@ def create_app(settings: Settings) -> FastAPI:
             clip_duration = req.duration if req.duration is not None else rd.duration_seconds
             clip_duration = max(rd.min_duration_seconds, min(rd.max_duration_seconds, clip_duration))
 
+        clip_format = req.format if req.format is not None else rd.format
+
         try:
-            gif_bytes = await app.state.renderer.render_gif(
-                container_path, start, clip_duration, settings.scratch_dir
+            clip_bytes = await app.state.renderer.render_clip(
+                container_path, start, clip_duration, settings.scratch_dir, clip_format
             )
         except RenderTimeoutError as exc:
             raise HTTPException(status_code=504, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-        return Response(content=gif_bytes, media_type="image/gif")
+        media_type = {
+            "gif": "image/gif",
+            "mp4": "video/mp4",
+            "webm": "video/webm",
+        }[clip_format]
+        # Bot doesn't know settings.render_defaults.format, so it can't
+        # infer the right file extension for a request it left format
+        # unset on — echo back what was actually used instead of the bot
+        # guessing/duplicating the config default client-side.
+        return Response(
+            content=clip_bytes,
+            media_type=media_type,
+            headers={"X-Clip-Format": clip_format},
+        )
 
     async def _load_subtitles(rating_key: int) -> tuple[MovieResult, SubtitleResult]:
         movie = await _get_movie(rating_key)

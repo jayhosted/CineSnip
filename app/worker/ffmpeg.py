@@ -79,13 +79,40 @@ def build_seek_args(start: float, duration: float) -> list[str]:
     return ["-ss", _format_timecode(start), "-t", _format_timecode(duration)]
 
 
+# No audio in any clip format (CLAUDE.md Section 6). mp4/webm are
+# single-pass encodes to a scratch file rather than pipe:1 — mp4 in
+# particular needs +faststart for Discord/browsers to play it inline
+# progressively, which requires seeking back to rewrite the moov atom
+# after encoding, something a stdout pipe can't do. webm doesn't strictly
+# need this, but a scratch file keeps both non-GIF formats on one path.
+_VIDEO_CODEC_ARGS: dict[str, list[str]] = {
+    "mp4": ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+    "webm": [
+        "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "32",
+        "-deadline", "realtime", "-cpu-used", "5",
+    ],
+}
+
+
 class ClipRenderer:
     def __init__(self, fps: int, width: int, timeout_seconds: float = 60.0):
         self._fps = fps
         self._width = width
         self._timeout_seconds = timeout_seconds
 
-    async def render_gif(
+    async def render_clip(
+        self,
+        input_path: str,
+        start: float,
+        duration: float,
+        scratch_dir: Path,
+        fmt: str = "gif",
+    ) -> bytes:
+        if fmt == "gif":
+            return await self._render_gif(input_path, start, duration, scratch_dir)
+        return await self._render_video(input_path, start, duration, scratch_dir, fmt)
+
+    async def _render_gif(
         self,
         input_path: str,
         start: float,
@@ -135,6 +162,61 @@ class ClipRenderer:
             return gif_bytes or b""
         finally:
             palette_path.unlink(missing_ok=True)
+
+    async def _render_video(
+        self,
+        input_path: str,
+        start: float,
+        duration: float,
+        scratch_dir: Path,
+        fmt: str,
+    ) -> bytes:
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+        out_path = scratch_dir / f"clip-{uuid.uuid4().hex}.{fmt}"
+        scale_filter = f"scale={self._width}:-1:flags=lanczos"
+
+        try:
+            await self._run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    *build_seek_args(start, duration),
+                    "-i",
+                    input_path,
+                    # Explicit video-only mapping, not just -an: without it,
+                    # ffmpeg's default stream selection can pull in a
+                    # subtitle stream some source files have (Matroska/webm
+                    # muxing is more willing to auto-include one than mp4
+                    # is). Demuxing that stream has no fast-seek — same
+                    # class of bug as embedded-subtitle extraction (Section
+                    # 5) — so it stalls trying to read through the whole
+                    # file instead of just the requested span, confirmed via
+                    # a real hang against this project's own test library.
+                    "-map",
+                    "0:v:0",
+                    # -map alone doesn't stop ffmpeg's mp4 muxer copying the
+                    # source's chapter list by default (chapters aren't a
+                    # "stream" -map controls) — confirmed on this project's
+                    # own library: a 2s clip request produced a second
+                    # "data" track whose duration matched the full film's
+                    # runtime, not the clip's. -map_metadata -1 also strips
+                    # title/encoder tags so the clip file doesn't carry the
+                    # source film's metadata either.
+                    "-map_chapters",
+                    "-1",
+                    "-map_metadata",
+                    "-1",
+                    "-vf",
+                    f"fps={self._fps},{scale_filter}",
+                    "-an",
+                    *_VIDEO_CODEC_ARGS[fmt],
+                    str(out_path),
+                ],
+                error_prefix=f"ffmpeg {fmt} encode",
+            )
+            return out_path.read_bytes()
+        finally:
+            out_path.unlink(missing_ok=True)
 
     async def _run(
         self, args: list[str], error_prefix: str, capture_stdout: bool = False

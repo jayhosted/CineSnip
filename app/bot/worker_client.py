@@ -64,6 +64,12 @@ class ResolveQuoteResult:
     matches: list[QuoteMatchResult]
 
 
+@dataclass
+class RenderResult:
+    content: bytes
+    format: str
+
+
 class WorkerClient:
     """Talks to the worker's FastAPI app over real loopback HTTP.
 
@@ -106,7 +112,8 @@ class WorkerClient:
         timecode: str,
         duration: float | None = None,
         end_timecode: str | None = None,
-    ) -> bytes:
+        format: str | None = None,
+    ) -> RenderResult:
         response = await self._client.post(
             "/render",
             json={
@@ -114,8 +121,12 @@ class WorkerClient:
                 "timecode": timecode,
                 "duration": duration,
                 "end_timecode": end_timecode,
+                "format": format,
             },
             timeout=RENDER_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
-        return response.content
+        return RenderResult(
+            content=response.content,
+            format=response.headers["X-Clip-Format"],
+        )

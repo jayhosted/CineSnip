@@ -14,12 +14,16 @@ path_mappings:
 # instead uses the matched subtitle line's own start/end, clamped to
 # [min_duration_seconds, max_duration_seconds] — duration_seconds itself
 # is clamped to that same range too.
+# format is the default output when the user doesn't pick one via
+# /cinesnip's format: option ("gif", "mp4", or "webm") — mp4/webm give the
+# same visual quality at a much smaller file size than gif.
 render_defaults:
   duration_seconds: 4
   fps: 15
   width: 480
   min_duration_seconds: 1
   max_duration_seconds: 15
+  format: mp4
 
 # Embedded-subtitle extraction has no fast seek — it reads sequentially
 # through the whole file. Raise this if you see extraction timeouts on

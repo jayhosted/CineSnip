@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from dotenv import load_dotenv
@@ -18,6 +19,12 @@ class RenderDefaults(BaseModel):
     fps: int = 15
     width: int = 480
     timeout_seconds: float = 60.0
+    # CLAUDE.md decision #1: MP4/WebM by default, GIF only when explicitly
+    # asked for — same visual quality at a much smaller file size. mp4
+    # (H.264) is the default over webm since it encodes faster on CPU
+    # (no NVENC yet — Section 6) and is the more universally-compatible
+    # container.
+    format: Literal["gif", "mp4", "webm"] = "mp4"
     # A quote-driven clip uses the matched subtitle line's own start/end
     # instead of duration_seconds (so the clip is exactly that line, no
     # more), but that raw span still needs bounds: a one-word cue is too

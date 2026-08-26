@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from typing import Literal
 
 import discord
 import httpx
@@ -160,15 +161,16 @@ class QuoteMatchView(discord.ui.View):
 
 
 class PostToChannelView(discord.ui.View):
-    def __init__(self, gif_bytes: bytes) -> None:
+    def __init__(self, content: bytes, filename: str) -> None:
         super().__init__(timeout=300)
-        self._gif_bytes = gif_bytes
+        self._content = content
+        self._filename = filename
 
     @discord.ui.button(label="Post to channel", style=discord.ButtonStyle.primary)
     async def post(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        file = discord.File(io.BytesIO(self._gif_bytes), filename="clip.gif")
+        file = discord.File(io.BytesIO(self._content), filename=self._filename)
         await interaction.channel.send(file=file)
         button.disabled = True
         await interaction.response.edit_message(view=self)
@@ -209,6 +211,7 @@ class GifCog(commands.Cog):
         quote: str | None,
         timecode: str | None,
         end_timecode: str | None,
+        format: str | None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
@@ -302,33 +305,36 @@ class GifCog(commands.Cog):
             )
 
         try:
-            gif_bytes = await self.bot.worker.render(
+            render_result = await self.bot.worker.render(
                 rating_key,
                 render_timecode,
                 duration=render_duration,
                 end_timecode=end_timecode if not quote else None,
+                format=format,
             )
         except httpx.HTTPError as exc:
             await interaction.edit_original_response(
-                content=f"Couldn't generate the GIF: {_error_detail(exc)}"
+                content=f"Couldn't generate the clip: {_error_detail(exc)}"
             )
             return
 
-        file = discord.File(io.BytesIO(gif_bytes), filename="clip.gif")
-        post_view = PostToChannelView(gif_bytes)
+        filename = f"clip.{render_result.format}"
+        file = discord.File(io.BytesIO(render_result.content), filename=filename)
+        post_view = PostToChannelView(render_result.content, filename)
         await interaction.edit_original_response(
             content=None, attachments=[file], view=post_view
         )
 
     @app_commands.command(
         name="cinesnip",
-        description="Generate a GIF clip from a film at a quote or timecode.",
+        description="Generate a clip from a film at a quote or timecode.",
     )
     @app_commands.describe(
         film="The film to search for",
         quote="A line of dialogue to find (fuzzy — close is fine)",
         timecode="Timestamp, e.g. 1:23:45 or 1h23m45s",
         end_timecode="Custom clip end (timecode only, not quote) — same formats as timecode",
+        format="Output format (default: mp4 — smaller files than gif at the same quality)",
     )
     @app_commands.autocomplete(film=film_autocomplete)
     async def cinesnip(
@@ -338,18 +344,20 @@ class GifCog(commands.Cog):
         quote: str | None = None,
         timecode: str | None = None,
         end_timecode: str | None = None,
+        format: Literal["gif", "mp4", "webm"] | None = None,
     ) -> None:
-        await self._generate(interaction, film, quote, timecode, end_timecode)
+        await self._generate(interaction, film, quote, timecode, end_timecode, format)
 
     @app_commands.command(
         name="snip",
-        description="Generate a GIF clip from a film at a quote or timecode.",
+        description="Generate a clip from a film at a quote or timecode.",
     )
     @app_commands.describe(
         film="The film to search for",
         quote="A line of dialogue to find (fuzzy — close is fine)",
         timecode="Timestamp, e.g. 1:23:45 or 1h23m45s",
         end_timecode="Custom clip end (timecode only, not quote) — same formats as timecode",
+        format="Output format (default: mp4 — smaller files than gif at the same quality)",
     )
     @app_commands.autocomplete(film=film_autocomplete)
     async def snip(
@@ -359,5 +367,6 @@ class GifCog(commands.Cog):
         quote: str | None = None,
         timecode: str | None = None,
         end_timecode: str | None = None,
+        format: Literal["gif", "mp4", "webm"] | None = None,
     ) -> None:
-        await self._generate(interaction, film, quote, timecode, end_timecode)
+        await self._generate(interaction, film, quote, timecode, end_timecode, format)
