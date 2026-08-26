@@ -8,7 +8,7 @@ import httpx
 from discord import app_commands
 from discord.ext import commands
 
-from app.bot.worker_client import QuoteMatchResult
+from app.bot.worker_client import LibraryQuoteMatchResult, QuoteMatchResult
 
 
 def _confidence_label(score: float, min_score: float, confident_score: float) -> str:
@@ -283,6 +283,62 @@ def _error_detail(exc: httpx.HTTPError) -> str:
         return str(exc) or "the worker didn't respond in time"
 
 
+def _library_results_embed(quote: str, matches: list[LibraryQuoteMatchResult]) -> discord.Embed:
+    embed = discord.Embed(
+        title=f'Results for "{quote}"',
+        description="Pick a film below to generate a clip from that line.",
+    )
+    for i, m in enumerate(matches, start=1):
+        snippet = m.text if len(m.text) <= 200 else m.text[:197] + "..."
+        embed.add_field(
+            name=f"{i}. {m.title} — {m.library_name}",
+            value=f"> {snippet}\n{m.timecode} · {m.score:.0f}%",
+            inline=False,
+        )
+    return embed
+
+
+class LibrarySearchView(discord.ui.View):
+    """Shown by /cinesnip-search: pick a film from library-wide matches, then
+    funnel into the normal film -> quote-confirm -> render pipeline
+    (CLAUDE.md Section 2: "just a different on-ramp into the same two
+    steps, not a separate confirmation UI") via GifCog._generate.
+    """
+
+    def __init__(
+        self, cog: "GifCog", quote: str, matches: list[LibraryQuoteMatchResult]
+    ) -> None:
+        super().__init__(timeout=120)
+        self._cog = cog
+        self._quote = quote
+        self._matches = matches
+
+        options = [
+            discord.SelectOption(
+                label=(m.title if len(m.title) <= 100 else m.title[:97] + "..."),
+                description=f"{m.library_name} · {m.timecode} · {m.score:.0f}%",
+                value=str(i),
+            )
+            for i, m in enumerate(matches)
+        ]
+        select = discord.ui.Select(placeholder="Choose a film", options=options)
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        for item in list(self.children):
+            if isinstance(item, discord.ui.Select):
+                match = self._matches[int(item.values[0])]
+                break
+        else:
+            return
+
+        self.stop()
+        await self._cog._generate(
+            interaction, str(match.rating_key), self._quote, None, None, None
+        )
+
+
 class GifCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -493,3 +549,34 @@ class GifCog(commands.Cog):
         format: Literal["gif", "mp4", "webm"] | None = None,
     ) -> None:
         await self._generate(interaction, film, quote, timecode, end_timecode, format)
+
+    @app_commands.command(
+        name="cinesnip-search",
+        description="Search your whole library for a quote, no film needed.",
+    )
+    @app_commands.describe(
+        quote="A line of dialogue to find across every film CineSnip has already read"
+    )
+    async def cinesnip_search(self, interaction: discord.Interaction, quote: str) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            result = await self.bot.worker.search_quote(quote)
+        except httpx.HTTPError as exc:
+            await interaction.followup.send(
+                f"Couldn't search the library: {_error_detail(exc)}", ephemeral=True
+            )
+            return
+
+        if not result.matches:
+            await interaction.followup.send(
+                "No matches in what CineSnip has indexed so far. Try `/cinesnip` on a "
+                "specific film first to add it, or rephrase your quote.",
+                ephemeral=True,
+            )
+            return
+
+        view = LibrarySearchView(self, quote, result.matches)
+        await interaction.followup.send(
+            embed=_library_results_embed(quote, result.matches), view=view, ephemeral=True
+        )
