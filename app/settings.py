@@ -62,9 +62,17 @@ class SubtitleDefaults(BaseModel):
     # the whole container to demux the subtitle packets. On a large remux
     # over a slow I/O path (e.g. WSL2-bridged NTFS drives), that can take
     # well over a minute even though it's a tiny amount of actual subtitle
-    # data. 180s gives real headroom; raise further if you see timeouts on
-    # very large files.
-    extraction_timeout_seconds: float = 180.0
+    # data. 180s was the original default but proved too tight against a
+    # real file: a 39GB 2160p HDR remux (Akira) measured at 251.6s for a
+    # full extraction on this developer's real library — raised to 300s for
+    # genuine headroom over that measured case, not just a guess. Still just
+    # a default: raise further if you see timeouts on very large files (a
+    # 2160p remux well past 40-50GB is plausible and would need more). If
+    # you raise this, also raise RESOLVE_QUOTE_TIMEOUT_SECONDS and
+    # RENDER_TIMEOUT_SECONDS in app/bot/worker_client.py — both must stay
+    # comfortably above whatever this is set to, or the bot's own client
+    # times out first with a generic error instead of the worker's clean one.
+    extraction_timeout_seconds: float = 300.0
 
 
 class QuoteMatchDefaults(BaseModel):
