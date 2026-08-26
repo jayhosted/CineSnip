@@ -97,10 +97,10 @@ No central database, no cloud API, no message broker.
 - Standard two-step ffmpeg seek: fast `-ss` before `-i` for keyframe positioning, then a short precisely-timed re-encode of just the needed span.
 - Direct file access preferred over Plex stream to avoid double-transcoding; Direct Play if falling back to a stream.
 - No audio needed for GIF/short-clip output.
-- Subtitle burn-in via ffmpeg's `subtitles`/`ass` filter (libass), not `drawtext` — gives real font styling/positioning matching the style presets.
+- **✅ Subtitle burn-in via ffmpeg's `subtitles`/`ass` filter (libass), not `drawtext`** — gives real font styling/positioning matching the style presets. See Section 7 for the style catalog and build notes.
 - **Hardware acceleration (NVENC, via the 3070)**: optional `docker-compose.gpu.yml` override requiring the Nvidia Container Toolkit inside WSL2 — build and test this after the CPU-only path works, not before. Matters most for full-film Whisper transcription speed; the GIF-cut step itself is already fast on CPU alone.
 - Typical timing: a few seconds for a 4s/480px clip on CPU; Whisper transcription of a full film is the genuinely slow step, mitigated entirely by caching.
-- **Flagged, not yet diagnosed: possible sync drift.** Manual testing of quote-driven clips against known lines suggested the clip may not always start exactly on the line — but there's no subtitle burn-in yet, so this was judged by eye against no on-screen reference, and could equally be the source `.srt` not being perfectly synced to this specific rip (a common, per-title issue independent of CineSnip) rather than a bug in the seek itself. Revisit once burn-in ships (Section 7) — at that point a burned-in line landing visibly off the audio would confirm a real seek/timing bug; text and audio matching would clear it.
+- **Flagged, not yet diagnosed: possible sync drift.** Manual testing of quote-driven clips against known lines suggested the clip may not always start exactly on the line — originally judged by eye with no on-screen reference, so it could equally have been the source `.srt` not being perfectly synced to that specific rip (a common, per-title issue independent of CineSnip) rather than a bug in the seek itself. Burn-in has now shipped (Section 7) — **still not re-checked against a burned-in line vs. the audio**, which is what would actually distinguish "seek bug" from "source subtitle drift." Worth a real pass now that the tool to diagnose it exists.
 
 ## 7. GIF/clip generation & subtitle styles
 
@@ -108,7 +108,7 @@ No central database, no cloud API, no message broker.
 - **Every non-GIF encode explicitly sets `-map 0:v:0 -map_chapters -1 -map_metadata -1`** — do not remove these, even though the command "works" without them on many files. Confirmed via real bugs on this project's own library (see build notes below): without `-map 0:v:0`, ffmpeg's default stream selection can silently pull in a subtitle track, which has no fast-seek and can hang; without `-map_chapters -1`, the mp4 muxer copies the source's chapter list into the output as a stray data track regardless of `-map`, leaking the full film's duration into a supposedly-short clip's metadata.
 - Defaults: 15fps, 480px width, no crop, subtitles on when triggered by a quote search. **Duration**: a bare timecode uses the fixed `render_defaults.duration_seconds` (4s, silently clamped to `[min_duration_seconds, max_duration_seconds]`, 1s–15s by default); a quote-driven clip uses the matched line's own start/end instead (same silent clamp — a UX nicety, not something the user typed); a timecode **with** an explicit `end_timecode` uses exactly that span, but *rejects* (clear error, not a silent clamp) a span outside `[min_duration_seconds, max_duration_seconds]` — the user chose that span deliberately, so giving them something shorter/longer than asked for without saying so would be worse than just telling them the bounds.
 - Auto-downscale resolution/fps if the estimated output would exceed Discord's attachment size limit — much more forgiving with MP4/WebM than GIF, reinforcing the format default in decision #1 above.
-- Style presets: Classic (white/black outline), Boxed (white on black box), Cinematic (yellow), Meme (large bold caps), Original (mirrors source subtitle styling).
+- **✅ Style presets** (Discord options step, Section 2): Classic (white, black outline), Boxed (white on solid black box), Cinematic (yellow), Meme (bold caps), Original, No Subtitles. Presets are Python constants in `app/worker/subtitle_render.py`'s `STYLE_PRESETS` (ASS style fields — font, size, colours, outline/box, margins), not `config.yaml` — same precedent as `ffmpeg.py`'s `_VIDEO_CODEC_ARGS` for a multi-field per-preset catalog. **Original doesn't actually mirror source subtitle styling yet** — a plain sidecar/embedded SRT carries no style data to mirror, and embedded ASS/SSA style extraction isn't built (same class of V2 gap as the rest of Section 5); it currently falls back to the same neutral look as Classic. A style requested on a title with no usable subtitles for the clip's own window degrades to a plain render (no burn-in) rather than erroring — the worker echoes what was *actually* used via an `X-Clip-Style` response header (mirrors the existing `X-Clip-Format` pattern) so the bot can tell the user when their choice got silently downgraded.
 - **Future: interactive clip editor, not yet built.** `/render`'s explicit `end_timecode` (above) covers picking an exact span up front for a *timecode-driven* clip, and `QuoteMatchView` lets you pick among precomputed quote-match candidates — but there's still no way to *adjust* a clip after seeing it (nudge start/end in small increments once you've got a result, or merge in the next/previous subtitle line for a longer multi-line clip from a quote match). tvgif's UI is a useful reference point (`Previous Sub`/`Next Sub`/`Merge Next Sub`/`Set Num Merged` buttons, time-nudge buttons, format toggles), though CineSnip doesn't need to copy it exactly — worth a real design pass on what's most intuitive here, not a bolt-on to `QuoteMatchView`. This is a bigger scope than picking among precomputed candidates: it needs a stateful edit session and a live preview re-render on each adjustment (cheap per Section 6's "a few seconds for a 4s/480px clip on CPU" timing, but real request volume against the worker). Natural fit alongside decision #6's local web app and Section 2's "modal for advanced overrides" idea — may make more sense there than as a Discord button grid.
 - **Future: audio-only clip output, not yet built.** Idea: an audio-only `format` (mp3/ogg) reusing the exact same quote/timecode resolution pipeline, just `-vn` + an audio codec instead of `-an` + a video one — small, self-contained, no new Discord permissions, and works as a normal attachment through the existing flow. Two genuinely different features hide under this idea, though — don't conflate them:
   1. **Audio clip as attachment** — the small version above. No duration cap beyond the existing `render_defaults` bounds.
@@ -156,7 +156,7 @@ quote-search rendering path reuses the same seek/duration logic.
 - ✅ Rename `/gif` → `/cinesnip` (and `/gif-diagnose` → `/cinesnip-diagnose`)
 - ✅ Sidecar-subtitle-file + embedded-subtitle-stream extraction (generic — not Bazarr-specific, see Section 5) + fuzzy quote search within a confirmed film
 - `/cinesnip-search` — library-wide quote search across the (lazily-built) subtitle cache, with an explicit opt-in to extend a search into not-yet-cached titles (Section 5)
-- Style preset select menu (subtitle burn-in still needed first — Section 7)
+- ✅ Subtitle burn-in + style preset select menu (Section 7)
 - ✅ MP4/WebM output option (`format:` on `/cinesnip`/`/snip`, default mp4)
 - Remaining library/drive path mappings (4K, 3D, TV — both Movies drives are done)
 - ✅ Document + confirm "Public Bot" disabled as part of Discord setup (Section 9)
@@ -263,6 +263,51 @@ quote-search rendering path reuses the same seek/duration logic.
   actual output, not just "did it complete without erroring" — both bugs
   here produced a file that looked superficially fine (non-empty,
   playable) while carrying data it shouldn't have.
+
+### V2 subtitle burn-in build notes (real bugs — read before touching `app/worker/subtitle_render.py` or the container's font setup)
+
+- **The base `python:3.12-slim-bookworm` image has exactly one font family
+  (DejaVu) — neither "Arial" nor "Impact" (the fonts the style presets
+  originally asked for) are actually installed.** libass doesn't error on
+  an unresolvable font name, it silently substitutes via fontconfig — and
+  that substitution isn't necessarily even the right *kind* of font:
+  confirmed on this project's own container, `fc-match Impact` resolved to
+  **a monospace face**, which would have rendered the "Meme" preset in a
+  typewriter font with no error or warning anywhere. Fixed by installing
+  `fonts-liberation` in the Dockerfile (Liberation Sans is a metric-compatible
+  Arial substitute with the fontconfig alias already wired up) and pointing
+  every preset directly at the real installed family name (`"Liberation
+  Sans"`) rather than a name that only resolves via an alias — verified via
+  `fc-match`/`fc-list` inside the built container, then confirmed visually
+  (see below). No true Impact-alike is installed (proprietary, not in
+  Debian's repos); Meme uses Liberation Sans + bold + all-caps instead.
+- **ASS alpha is inverted from the usual convention — `00` is fully opaque,
+  `FF` is fully transparent.** The Boxed preset's first cut used
+  `&H80000000` (roughly 50%) expecting a visibly translucent box; against
+  real footage with a light background it was nearly invisible in a
+  rendered test frame. Fixed by using `&H00000000` (fully opaque) for a
+  real "black box," matching what the preset name promises.
+- **Burned-in text size depends on `PlayResX`/`PlayResY` matching the
+  clip's actual output frame size, not the source file's.** libass scales
+  a style's font size/margins relative to these two fields; get them wrong
+  and the text is the wrong size for the frame, not just mispositioned.
+  `_write_ass_file()` in `app/worker/ffmpeg.py` probes the source's
+  width/height via a new `probe_video_dimensions()` ffprobe call and
+  computes the *actual* scaled output height itself — which required
+  switching the scale filter from `scale={width}:-1` to `scale={width}:-2`
+  (guarantees an even height) so the manual calculation and ffmpeg's own
+  scaling agree. Do not reintroduce `-1` here without re-deriving this.
+- **Verification for this feature meant actually looking at rendered
+  pixels, not just checking the render succeeded.** Both bugs above
+  (wrong font, invisible box) produced a 200 response and a playable file
+  — "it rendered" told us nothing. Caught by rendering real quote-driven
+  clips against this project's own library at a known subtitle line,
+  extracting a still frame (`ffmpeg -update 1 -frames:v 1 out.png` — same
+  `image2` muxer gotcha as the MVP's palette-PNG step, see MVP build notes
+  above), and visually inspecting it. Repeat this check for any future
+  change to `STYLE_PRESETS` or the ASS-building code — a `ffprobe` pass
+  can't catch "the text is the wrong font/color/size," only a rendered
+  frame can.
 
 ## 14. Onboarding Wizard (Setup UX)
 

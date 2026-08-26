@@ -68,6 +68,7 @@ class ResolveQuoteResult:
 class RenderResult:
     content: bytes
     format: str
+    style: str
 
 
 class WorkerClient:
@@ -113,6 +114,7 @@ class WorkerClient:
         duration: float | None = None,
         end_timecode: str | None = None,
         format: str | None = None,
+        style: str | None = None,
     ) -> RenderResult:
         response = await self._client.post(
             "/render",
@@ -122,6 +124,7 @@ class WorkerClient:
                 "duration": duration,
                 "end_timecode": end_timecode,
                 "format": format,
+                "style": style,
             },
             timeout=RENDER_TIMEOUT_SECONDS,
         )
@@ -129,4 +132,5 @@ class WorkerClient:
         return RenderResult(
             content=response.content,
             format=response.headers["X-Clip-Format"],
+            style=response.headers["X-Clip-Style"],
         )

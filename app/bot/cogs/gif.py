@@ -160,6 +160,68 @@ class QuoteMatchView(discord.ui.View):
         self.stop()
 
 
+# (value, label) — value is what the worker's /render `style` field
+# expects; "none" is a real, explicit choice ("No Subtitles"), not the
+# absence of one. Order matches CLAUDE.md Section 2's listed preset order.
+_STYLE_OPTIONS: list[tuple[str, str]] = [
+    ("classic", "Classic (white, black outline)"),
+    ("boxed", "Boxed (white on black box)"),
+    ("cinematic", "Cinematic (yellow)"),
+    ("meme", "Meme (bold caps)"),
+    ("original", "Original (mirrors source style)"),
+    ("none", "No Subtitles"),
+]
+
+
+class StyleSelectView(discord.ui.View):
+    """Options step (CLAUDE.md Section 2): pick a subtitle style before
+    generating. A default is pre-selected so hitting Generate immediately
+    still works — this doesn't require touching the dropdown."""
+
+    def __init__(self, default_style: str) -> None:
+        super().__init__(timeout=120)
+        self.style = default_style
+        self.value: bool | None = None
+        self._add_select()
+
+    def _add_select(self) -> None:
+        options = [
+            discord.SelectOption(label=label, value=value, default=(value == self.style))
+            for value, label in _STYLE_OPTIONS
+        ]
+        select = discord.ui.Select(placeholder="Choose a subtitle style", options=options)
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        # Same rebuild-on-select pattern as QuoteMatchView._on_select —
+        # SelectOption.default is fixed at construction time, so the item
+        # has to be replaced for the shown default to track self.style.
+        for item in list(self.children):
+            if isinstance(item, discord.ui.Select):
+                self.style = item.values[0]
+                self.remove_item(item)
+                self._add_select()
+                break
+        await interaction.response.edit_message(view=self)
+
+    @discord.ui.button(label="Generate", style=discord.ButtonStyle.success)
+    async def generate(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.value = True
+        await interaction.response.defer()
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        self.value = False
+        await interaction.response.defer()
+        self.stop()
+
+
 class PostToChannelView(discord.ui.View):
     def __init__(self, content: bytes, filename: str) -> None:
         super().__init__(timeout=300)
@@ -293,16 +355,42 @@ class GifCog(commands.Cog):
             selected = match_view.selected
             render_timecode = str(selected.start)
             render_duration = selected.end - selected.start
-
-            await interaction.edit_original_response(
-                content="Generating…", embed=None, view=None
-            )
+            # A quote match came from real subtitle text, so burn-in has
+            # something to show by default (CLAUDE.md Section 7: "subtitles
+            # on when triggered by a quote search").
+            default_style = "classic"
         else:
             render_timecode = timecode
             render_duration = None
+            # A bare timecode has no known subtitle availability — default
+            # to off rather than guessing at burn-in the user didn't ask for.
+            default_style = "none"
             await interaction.followup.send(
-                content=f"Generating a clip from {resolved.title}…", ephemeral=True
+                content=f"Found {resolved.title}…", ephemeral=True
             )
+
+        style_view = StyleSelectView(default_style)
+        await interaction.edit_original_response(
+            content="Choose a subtitle style, or hit Generate to use the default.",
+            embed=None,
+            view=style_view,
+        )
+        await style_view.wait()
+
+        if style_view.value is None:
+            await interaction.edit_original_response(
+                content="Timed out.", embed=None, view=None
+            )
+            return
+        if style_view.value is False:
+            await interaction.edit_original_response(
+                content="Cancelled.", embed=None, view=None
+            )
+            return
+
+        await interaction.edit_original_response(
+            content="Generating…", embed=None, view=None
+        )
 
         try:
             render_result = await self.bot.worker.render(
@@ -311,6 +399,7 @@ class GifCog(commands.Cog):
                 duration=render_duration,
                 end_timecode=end_timecode if not quote else None,
                 format=format,
+                style=style_view.style,
             )
         except httpx.HTTPError as exc:
             await interaction.edit_original_response(
@@ -320,9 +409,14 @@ class GifCog(commands.Cog):
 
         filename = f"clip.{render_result.format}"
         file = discord.File(io.BytesIO(render_result.content), filename=filename)
+        style_note = (
+            "No subtitles available for this title — generated without burn-in."
+            if style_view.style != "none" and render_result.style == "none"
+            else ""
+        )
         post_view = PostToChannelView(render_result.content, filename)
         await interaction.edit_original_response(
-            content=None, attachments=[file], view=post_view
+            content=style_note or None, attachments=[file], view=post_view
         )
 
     @app_commands.command(
