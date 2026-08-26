@@ -13,3 +13,9 @@ services:
       - ./scratch:/app/scratch
       - ./cache:/app/cache
     restart: unless-stopped
+    labels:
+      # This image is built locally (`build: .`), not pulled from a
+      # registry — Watchtower's default "monitor everything" mode tries
+      # to `docker pull` it anyway and fails, since there's nothing to
+      # pull from. This label is Watchtower's standard opt-out.
+      - "com.centurylinklabs.watchtower.enable=false"
