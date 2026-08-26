@@ -10,28 +10,6 @@ from discord.ext import commands
 from app.bot.worker_client import QuoteMatchResult
 
 
-class ConfirmView(discord.ui.View):
-    def __init__(self) -> None:
-        super().__init__(timeout=120)
-        self.value: bool | None = None
-
-    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
-    async def confirm(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        self.value = True
-        await interaction.response.defer()
-        self.stop()
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
-    async def cancel(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        self.value = False
-        await interaction.response.defer()
-        self.stop()
-
-
 def _confidence_label(score: float, min_score: float, confident_score: float) -> str:
     if score >= confident_score:
         return "high"
@@ -196,15 +174,6 @@ class PostToChannelView(discord.ui.View):
         await interaction.response.edit_message(view=self)
 
 
-def _format_duration(duration_ms: int) -> str:
-    total_seconds = duration_ms // 1000
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    if hours:
-        return f"{hours}h {minutes}m"
-    return f"{minutes}m {seconds}s"
-
-
 def _error_detail(exc: httpx.HTTPError) -> str:
     try:
         return exc.response.json().get("detail", exc.response.text)
@@ -275,41 +244,21 @@ class GifCog(commands.Cog):
             )
             return
 
-        embed = discord.Embed(title=resolved.title)
-        if resolved.year:
-            embed.add_field(name="Year", value=str(resolved.year))
-        embed.add_field(name="Runtime", value=_format_duration(resolved.duration_ms))
+        # No separate "confirm the film" step: autocomplete already pins an
+        # exact rating_key (title + year shown right there), and CineSnip
+        # only searches one Plex library today, so there's nothing left to
+        # disambiguate. Revisit once multi-library search ships (CLAUDE.md
+        # Section 3) — a same-titled result from a different library would
+        # need surfacing again at that point.
         if quote:
-            embed.add_field(name="Quote", value=quote, inline=False)
-            if timecode:
-                embed.add_field(
-                    name="Note",
-                    value="Both `quote` and `timecode` were given — searching by quote.",
-                    inline=False,
-                )
-        else:
-            embed.add_field(name="Timecode", value=timecode, inline=False)
-        if resolved.thumb_url:
-            embed.set_thumbnail(url=resolved.thumb_url)
-
-        view = ConfirmView()
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-        await view.wait()
-
-        if view.value is None:
-            await interaction.edit_original_response(
-                content="Timed out.", embed=None, view=None
+            note = (
+                " (both `quote` and `timecode` were given — searching by quote)"
+                if timecode
+                else ""
             )
-            return
-        if view.value is False:
-            await interaction.edit_original_response(
-                content="Cancelled.", embed=None, view=None
-            )
-            return
-
-        if quote:
-            await interaction.edit_original_response(
-                content="Searching subtitles…", embed=None, view=None
+            await interaction.followup.send(
+                content=f"Searching {resolved.title}'s subtitles…{note}",
+                ephemeral=True,
             )
             try:
                 resolved_quote = await self.bot.worker.resolve_quote(rating_key, quote)
@@ -344,13 +293,16 @@ class GifCog(commands.Cog):
             selected = match_view.selected
             render_timecode = str(selected.start)
             render_duration = selected.end - selected.start
+
+            await interaction.edit_original_response(
+                content="Generating…", embed=None, view=None
+            )
         else:
             render_timecode = timecode
             render_duration = None
-
-        await interaction.edit_original_response(
-            content="Generating…", embed=None, view=None
-        )
+            await interaction.followup.send(
+                content=f"Generating a clip from {resolved.title}…", ephemeral=True
+            )
 
         try:
             gif_bytes = await self.bot.worker.render(
