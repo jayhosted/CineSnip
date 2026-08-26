@@ -100,7 +100,7 @@ or a direct timecode:
 /cinesnip film:<start typing a title> timecode:1:23:45
 ```
 
-Pick a film from the autocomplete suggestions and confirm the embed. With a
+Pick a film from the autocomplete suggestions. With a
 quote, CineSnip fuzzy-matches it against the film's subtitles (sidecar
 `.srt` or an embedded subtitle stream — see [CLAUDE.md](CLAUDE.md) Section 5
 for what happens when neither exists) and shows the best match with
