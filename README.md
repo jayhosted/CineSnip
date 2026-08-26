@@ -1,6 +1,6 @@
 # CineSnip
 
-Generate GIF clips from your own Plex library, straight into Discord.
+Generate short clips from your own Plex library, straight into Discord.
 
 One `/cinesnip` command: give it a film and either a `quote` (fuzzy-matched
 against the film's subtitles) or a `timecode` (e.g. `1:23:45`), films only,
@@ -116,8 +116,14 @@ for what happens when neither exists), uses the matched line's own length
 for the clip, and shows the best match with surrounding context and a
 confidence score; if it's not confident, or you want a different line, use
 "Show other matches" to pick from the next-best candidates. Either way
-you'll get a GIF back — with a "Post to channel" button to share it beyond
+you'll get a clip back — with a "Post to channel" button to share it beyond
 just you.
+
+Add `format:mp4`/`format:webm`/`format:gif` to pick the output — mp4 is the
+default (`render_defaults.format` in `config.yaml`) since it's much smaller
+than an equivalent gif at the same visual quality, and faster to encode on
+CPU than webm. Discord renders all three inline the same way, so `gif` is
+only worth picking if you specifically want a real animated GIF file.
 
 ## Troubleshooting
 

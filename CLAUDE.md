@@ -25,7 +25,7 @@ Inspired by conversation with the developer of [tvgif](https://github.com/warman
 
 ## Workflow decisions already made (apply these, don't re-litigate)
 
-1. **Output format defaults to MP4/WebM, not GIF.** Discord renders both inline like a GIF, at much smaller file sizes for the same quality. Offer GIF as an explicit `format:gif` option, not the default.
+1. **✅ Output format defaults to MP4/WebM, not GIF.** Discord renders both inline like a GIF, at much smaller file sizes for the same quality (~55KB mp4 / ~27KB webm vs. ~5.7MB gif for an identical 4s/480px clip, confirmed against the real library). Default is mp4 specifically (`render_defaults.format`) — faster to encode on CPU than webm's VP9 (no NVENC yet — Section 6) and the more universally-compatible container. `format:gif` on `/cinesnip`/`/snip` is the explicit opt-out.
 2. **One container, one process to start.** Discord bot layer and worker layer (Plex, subtitles, ffmpeg) run in a single Python process inside a single Docker container. No message queue or microservices for v1.
 3. **Structure the worker as a small internal HTTP API from the start** (e.g. FastAPI), even though the Discord bot is its only client initially. This makes a future local web app (setup wizard + manual GIF-generation UI) a thin second client rather than a rebuild.
 4. **No separate "confirm the film" step for movies** — reversed from the original decision after real usage showed it was pure friction: autocomplete already pins an exact `rating_key` (title + year shown right in the picker), and CineSnip currently only searches one Plex library, so there's nothing left to disambiguate by the time the command runs. **Revisit once multi-library search ships** (Section 3) — a same-titled result from a different library would need surfacing again at that point, likely back as a lightweight non-interactive note rather than a click-gated step. **"Confirm the timestamp" still stands** as its own step (`QuoteMatchView` in `app/bot/cogs/gif.py`) — for a quote match this is real disambiguation (which candidate line, at what confidence), not restating a choice already made. Its Cancel currently ends the whole interaction rather than "backing up" to anything — with the film-confirm step gone, there's nothing before it to back up to; a full `/cinesnip` restart is what backing out means today.
@@ -104,7 +104,8 @@ No central database, no cloud API, no message broker.
 
 ## 7. GIF/clip generation & subtitle styles
 
-- Two-pass palette generation (`palettegen`/`paletteuse`) for actual GIF output.
+- Two-pass palette generation (`palettegen`/`paletteuse`) for GIF output; mp4 (`libx264`)/webm (`libvpx-vp9`) are a single-pass encode straight to a scratch file instead (not `pipe:1` — mp4's `+faststart` needs to seek back and rewrite the moov atom after encoding, which a stdout pipe can't do; webm doesn't strictly need this but shares the same code path for simplicity). No audio in any format (`-an`).
+- **Every non-GIF encode explicitly sets `-map 0:v:0 -map_chapters -1 -map_metadata -1`** — do not remove these, even though the command "works" without them on many files. Confirmed via real bugs on this project's own library (see build notes below): without `-map 0:v:0`, ffmpeg's default stream selection can silently pull in a subtitle track, which has no fast-seek and can hang; without `-map_chapters -1`, the mp4 muxer copies the source's chapter list into the output as a stray data track regardless of `-map`, leaking the full film's duration into a supposedly-short clip's metadata.
 - Defaults: 15fps, 480px width, no crop, subtitles on when triggered by a quote search. **Duration**: a bare timecode uses the fixed `render_defaults.duration_seconds` (4s, silently clamped to `[min_duration_seconds, max_duration_seconds]`, 1s–15s by default); a quote-driven clip uses the matched line's own start/end instead (same silent clamp — a UX nicety, not something the user typed); a timecode **with** an explicit `end_timecode` uses exactly that span, but *rejects* (clear error, not a silent clamp) a span outside `[min_duration_seconds, max_duration_seconds]` — the user chose that span deliberately, so giving them something shorter/longer than asked for without saying so would be worse than just telling them the bounds.
 - Auto-downscale resolution/fps if the estimated output would exceed Discord's attachment size limit — much more forgiving with MP4/WebM than GIF, reinforcing the format default in decision #1 above.
 - Style presets: Classic (white/black outline), Boxed (white on black box), Cinematic (yellow), Meme (large bold caps), Original (mirrors source subtitle styling).
@@ -152,7 +153,8 @@ quote-search rendering path reuses the same seek/duration logic.
 - ✅ Rename `/gif` → `/cinesnip` (and `/gif-diagnose` → `/cinesnip-diagnose`)
 - ✅ Sidecar-subtitle-file + embedded-subtitle-stream extraction (generic — not Bazarr-specific, see Section 5) + fuzzy quote search within a confirmed film
 - `/cinesnip-search` — library-wide quote search across the (lazily-built) subtitle cache, with an explicit opt-in to extend a search into not-yet-cached titles (Section 5)
-- Style preset select menu, MP4/WebM output option
+- Style preset select menu (subtitle burn-in still needed first — Section 7)
+- ✅ MP4/WebM output option (`format:` on `/cinesnip`/`/snip`, default mp4)
 - Remaining library/drive path mappings (4K, 3D, TV — both Movies drives are done)
 - ✅ Document + confirm "Public Bot" disabled as part of Discord setup (Section 9)
 
@@ -228,6 +230,36 @@ quote-search rendering path reuses the same seek/duration logic.
   sidecar correctly resolves to "no subtitles available" rather than a
   garbage extraction. This is the documented V2 gap in Section 5, not a
   bug — don't try to "fix" a title that hits this path.
+
+### V2 MP4/WebM output build notes (real bugs — read before touching `_render_video` in `app/worker/ffmpeg.py`)
+
+- **Without explicit `-map 0:v:0`, ffmpeg's default stream selection can
+  silently include a source subtitle track in the output — and demuxing
+  it has no fast-seek, so it can hang the whole render.** Reproduced on
+  this project's own library: a webm request for a title with a forced
+  German subtitle track hung past the 60s render timeout; the *video*
+  portion actually finished in under a second, but ffmpeg kept blocking
+  trying to read subtitle packets across the whole remaining file before
+  it would finalize the output. mp4 didn't reproduce the *hang* on this
+  same file (its muxer's default stream selection is less willing to
+  auto-include a subtitle track than webm/Matroska's is) — but relying on
+  that container-specific behavior would be fragile, so `-map 0:v:0` is
+  unconditional for every non-GIF encode, not just webm.
+- **`-map 0:v:0` alone doesn't stop the mp4 muxer copying the source's
+  chapter list into the output.** Chapters aren't a "stream" `-map`
+  controls, so even with clean video-only stream mapping, a 2-4 second
+  mp4 clip request still produced a second "data" track whose duration
+  matched the *source film's* full runtime — harmless in that it didn't
+  hang (chapter metadata is cheap to copy, unlike an actual subtitle
+  stream), but real, confirmed output pollution: it leaked the full
+  film's duration into a clip that should have no idea how long its
+  source is. Fixed with `-map_chapters -1 -map_metadata -1` alongside
+  `-map 0:v:0` — the latter also strips title/encoder tags so the output
+  file doesn't carry the source film's metadata either. Verify any future
+  change to this ffmpeg command with `ffprobe -show_streams` on the
+  actual output, not just "did it complete without erroring" — both bugs
+  here produced a file that looked superficially fine (non-empty,
+  playable) while carrying data it shouldn't have.
 
 ## 14. Onboarding Wizard (Setup UX)
 
