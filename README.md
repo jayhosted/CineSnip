@@ -146,6 +146,18 @@ as a real video player (play button, volume slider) instead, so they're
 worth picking only if you specifically want the smaller file and don't mind
 clicking play.
 
+### Searching without picking a film first
+
+`/cinesnip-search quote:<text>` searches for a line across every film
+CineSnip has *already read subtitles for* — from any prior `/cinesnip`,
+`/snip`, or `/cinesnip-search` use — instead of requiring you to pick a
+film up front. It's fast (no re-parsing, no Plex calls), but its scope is
+exactly what's been touched so far: a title you've never generated a clip
+from won't show up yet. Pick a result from the list and it funnels straight
+into the same quote-confirm step as the normal flow. If nothing's indexed
+yet, run `/cinesnip` on a specific film first (or just start using the bot
+normally — the searchable set grows automatically as you go).
+
 ## Troubleshooting
 
 - **Bot fails to log in (401)** — `DISCORD_TOKEN` in `.env` is wrong or was reset since you copied it.
