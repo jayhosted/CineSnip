@@ -450,6 +450,7 @@ def create_app(settings: Settings) -> FastAPI:
             min_score=qm.min_score,
             max_window_gap_seconds=qm.max_window_gap_seconds,
             context_lines=qm.context_lines,
+            per_title_limit=qm.library_per_title_limit,
         )
 
         return LibrarySearchResponse(

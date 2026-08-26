@@ -56,6 +56,7 @@ class QuoteMatchView(discord.ui.View):
         matches: list[QuoteMatchResult],
         min_score: float,
         confident_score: float,
+        initial_index: int = 0,
     ) -> None:
         super().__init__(timeout=120)
         self._title = title
@@ -63,12 +64,18 @@ class QuoteMatchView(discord.ui.View):
         self.min_score = min_score
         self.confident_score = confident_score
         self.value: bool | None = None
-        self.index = 0
+        # Defaults to the top-scored candidate (0), but a caller that already
+        # knows which specific line the user wants (e.g. LibrarySearchView,
+        # which re-runs this per-film search purely to get a fresh
+        # start/end/context for a line the user already picked by its exact
+        # text) can pre-select it instead of silently defaulting back to
+        # whichever line this fresh search happens to rank first.
+        self.index = initial_index
 
         self._show_others_button: discord.ui.Button | None = None
 
         if len(matches) > 1:
-            if matches[0].score >= confident_score:
+            if matches[self.index].score >= confident_score:
                 self._add_show_others_button()
             else:
                 # Borderline top match: open straight to the alternatives
@@ -313,15 +320,16 @@ class LibrarySearchView(discord.ui.View):
         self._quote = quote
         self._matches = matches
 
-        options = [
-            discord.SelectOption(
-                label=(m.title if len(m.title) <= 100 else m.title[:97] + "..."),
-                description=f"{m.library_name} · {m.timecode} · {m.score:.0f}%",
-                value=str(i),
+        options = []
+        for i, m in enumerate(matches):
+            label = m.text if len(m.text) <= 100 else m.text[:97] + "..."
+            description = f"{m.title} — {m.library_name} · {m.timecode} · {m.score:.0f}%"
+            if len(description) > 100:
+                description = description[:97] + "..."
+            options.append(
+                discord.SelectOption(label=label, description=description, value=str(i))
             )
-            for i, m in enumerate(matches)
-        ]
-        select = discord.ui.Select(placeholder="Choose a film", options=options)
+        select = discord.ui.Select(placeholder="Choose a quote", options=options)
         select.callback = self._on_select
         self.add_item(select)
 
@@ -335,7 +343,13 @@ class LibrarySearchView(discord.ui.View):
 
         self.stop()
         await self._cog._generate(
-            interaction, str(match.rating_key), self._quote, None, None, None
+            interaction,
+            str(match.rating_key),
+            self._quote,
+            None,
+            None,
+            None,
+            preferred_start=match.start,
         )
 
 
@@ -369,35 +383,35 @@ class GifCog(commands.Cog):
         timecode: str | None,
         end_timecode: str | None,
         format: str | None,
+        preferred_start: float | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
         try:
             rating_key = int(film)
         except ValueError:
-            await interaction.followup.send(
-                "Please select a film from the autocomplete suggestions.",
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content="Please select a film from the autocomplete suggestions."
             )
             return
 
         if not quote and not timecode:
-            await interaction.followup.send(
-                "Give either a `quote:` or a `timecode:`.", ephemeral=True
+            await interaction.edit_original_response(
+                content="Give either a `quote:` or a `timecode:`."
             )
             return
 
         if end_timecode and not timecode:
-            await interaction.followup.send(
-                "`end_timecode` needs a `timecode` to start from.", ephemeral=True
+            await interaction.edit_original_response(
+                content="`end_timecode` needs a `timecode` to start from."
             )
             return
 
         try:
             resolved = await self.bot.worker.resolve(rating_key)
         except httpx.HTTPError as exc:
-            await interaction.followup.send(
-                f"Couldn't find that film: {_error_detail(exc)}", ephemeral=True
+            await interaction.edit_original_response(
+                content=f"Couldn't find that film: {_error_detail(exc)}"
             )
             return
 
@@ -413,9 +427,8 @@ class GifCog(commands.Cog):
                 if timecode
                 else ""
             )
-            await interaction.followup.send(
-                content=f"Searching {resolved.title}'s subtitles{library_note}…{note}",
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content=f"Searching {resolved.title}'s subtitles{library_note}…{note}"
             )
             try:
                 resolved_quote = await self.bot.worker.resolve_quote(rating_key, quote)
@@ -425,11 +438,24 @@ class GifCog(commands.Cog):
                 )
                 return
 
+            initial_index = 0
+            if preferred_start is not None and resolved_quote.matches:
+                # LibrarySearchView already told us exactly which line the
+                # user picked (by its start time) — find that same line in
+                # this fresh per-film search instead of silently defaulting
+                # to whatever this search ranks first, which need not be
+                # the same line (see CLAUDE.md's library-search build notes).
+                initial_index = min(
+                    range(len(resolved_quote.matches)),
+                    key=lambda i: abs(resolved_quote.matches[i].start - preferred_start),
+                )
+
             match_view = QuoteMatchView(
                 resolved.title,
                 resolved_quote.matches,
                 resolved_quote.min_score,
                 resolved_quote.confident_score,
+                initial_index=initial_index,
             )
             await interaction.edit_original_response(
                 content=None, embed=match_view.embed(), view=match_view
@@ -463,9 +489,8 @@ class GifCog(commands.Cog):
             # A bare timecode has no known subtitle availability — default
             # to off rather than guessing at burn-in the user didn't ask for.
             default_style = "none"
-            await interaction.followup.send(
-                content=f"Generating a clip from {resolved.title}{library_note}…",
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content=f"Generating a clip from {resolved.title}{library_note}…"
             )
 
         render_end_timecode = end_timecode if not quote else None
@@ -563,20 +588,19 @@ class GifCog(commands.Cog):
         try:
             result = await self.bot.worker.search_quote(quote)
         except httpx.HTTPError as exc:
-            await interaction.followup.send(
-                f"Couldn't search the library: {_error_detail(exc)}", ephemeral=True
+            await interaction.edit_original_response(
+                content=f"Couldn't search the library: {_error_detail(exc)}"
             )
             return
 
         if not result.matches:
-            await interaction.followup.send(
-                "No matches in what CineSnip has indexed so far. Try `/cinesnip` on a "
-                "specific film first to add it, or rephrase your quote.",
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content="No matches in what CineSnip has indexed so far. Try `/cinesnip` on a "
+                "specific film first to add it, or rephrase your quote."
             )
             return
 
         view = LibrarySearchView(self, quote, result.matches)
-        await interaction.followup.send(
-            embed=_library_results_embed(quote, result.matches), view=view, ephemeral=True
+        await interaction.edit_original_response(
+            embed=_library_results_embed(quote, result.matches), view=view
         )
