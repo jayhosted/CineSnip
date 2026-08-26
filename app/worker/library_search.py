@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.worker.quote_index import CachedTitle
-from app.worker.quotes import QuoteMatch, find_quote_matches
+from app.worker.quotes import QuoteMatch, find_quote_matches, get_or_build_candidates
 from app.worker.subtitles import read_cached_subtitles
 
 
@@ -53,6 +53,9 @@ def search_cached_library(
         if subtitle_result is None or not subtitle_result.entries:
             continue
 
+        precomputed = get_or_build_candidates(
+            cache_dir, cached.guid, subtitle_result.entries, max_window_gap_seconds
+        )
         matches = find_quote_matches(
             subtitle_result.entries,
             quote,
@@ -60,6 +63,7 @@ def search_cached_library(
             min_score=min_score,
             max_window_gap_seconds=max_window_gap_seconds,
             context_lines=context_lines,
+            precomputed=precomputed,
         )
 
         for rank, match in enumerate(matches):

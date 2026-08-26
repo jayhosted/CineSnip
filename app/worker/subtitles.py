@@ -246,7 +246,7 @@ async def extract_embedded_subtitle(
 # --- Cache ----------------------------------------------------------------
 
 
-def _cache_path_for_guid(cache_dir: Path, guid: str) -> Path:
+def cache_path_for_guid(cache_dir: Path, guid: str) -> Path:
     digest = hashlib.sha256(guid.encode("utf-8")).hexdigest()
     return cache_dir / f"{digest}.json"
 
@@ -281,7 +281,7 @@ def read_cached_subtitles(
     unrelated file (e.g. a sidecar appearing next to a title cached as
     EMBEDDED) wrongly invalidating it. Omitting *both* arguments skips the
     freshness check entirely (the pre-existing, cache-forever behavior)."""
-    path = _cache_path_for_guid(cache_dir, guid)
+    path = cache_path_for_guid(cache_dir, guid)
     if not path.exists():
         return None
 
@@ -321,7 +321,7 @@ def write_cached_subtitles(
     cache_dir: Path, result: SubtitleResult, source_path: Path | None = None
 ) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
-    final_path = _cache_path_for_guid(cache_dir, result.guid)
+    final_path = cache_path_for_guid(cache_dir, result.guid)
 
     payload = {
         "guid": result.guid,
