@@ -283,6 +283,21 @@ class ClipResultView(discord.ui.View):
         await interaction.response.edit_message(view=self)
 
 
+def _validate_quote_or_timecode(
+    quote: str | None, timecode: str | None, end_timecode: str | None
+) -> str | None:
+    """Shared by /snip and /snip-tv so these checks can't drift between the
+    two commands — the exact class of bug CLAUDE.md's library-search
+    preferred_start fix (Section 2) already hit once from duplicated logic.
+    Returns an error message, or None if valid.
+    """
+    if not quote and not timecode:
+        return "Give either a `quote:` or a `timecode:`."
+    if end_timecode and not timecode:
+        return "`end_timecode` needs a `timecode` to start from."
+    return None
+
+
 def _error_detail(exc: httpx.HTTPError) -> str:
     try:
         return exc.response.json().get("detail", exc.response.text)
@@ -290,11 +305,12 @@ def _error_detail(exc: httpx.HTTPError) -> str:
         return str(exc) or "the worker didn't respond in time"
 
 
-def _library_results_embed(quote: str, matches: list[LibraryQuoteMatchResult]) -> discord.Embed:
-    embed = discord.Embed(
-        title=f'Results for "{quote}"',
-        description="Pick a film below to generate a clip from that line.",
-    )
+def _library_results_embed(
+    quote: str,
+    matches: list[LibraryQuoteMatchResult],
+    description: str = "Pick a film below to generate a clip from that line.",
+) -> discord.Embed:
+    embed = discord.Embed(title=f'Results for "{quote}"', description=description)
     for i, m in enumerate(matches, start=1):
         snippet = m.text if len(m.text) <= 200 else m.text[:197] + "..."
         embed.add_field(
@@ -306,10 +322,13 @@ def _library_results_embed(quote: str, matches: list[LibraryQuoteMatchResult]) -
 
 
 class LibrarySearchView(discord.ui.View):
-    """Shown by /cinesnip-search: pick a film from library-wide matches, then
-    funnel into the normal film -> quote-confirm -> render pipeline
-    (CLAUDE.md Section 2: "just a different on-ramp into the same two
-    steps, not a separate confirmation UI") via GifCog._generate.
+    """Shown by /snip-search (films) and /snip-tv's show-wide search
+    (episodes): pick a result from cross-title matches, then funnel into the
+    normal quote-confirm -> render pipeline (CLAUDE.md Section 2: "just a
+    different on-ramp into the same two steps, not a separate confirmation
+    UI") via GifCog._generate. Reused as-is for episodes — an episode's
+    MovieResult.title already reads as "Show — S02E01 — Title", so no
+    TV-specific formatting is needed here.
     """
 
     def __init__(
@@ -375,6 +394,24 @@ class GifCog(commands.Cog):
             )
         return choices
 
+    async def show_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        if not current:
+            return []
+        try:
+            results = await self.bot.worker.search_shows(current)
+        except httpx.HTTPError:
+            return []
+        choices = []
+        for show in results[:25]:
+            label = f"{show.title} ({show.year})" if show.year else show.title
+            label = f"{label} — {show.library_name}"
+            choices.append(
+                app_commands.Choice(name=label[:100], value=str(show.rating_key))
+            )
+        return choices
+
     async def _generate(
         self,
         interaction: discord.Interaction,
@@ -391,20 +428,13 @@ class GifCog(commands.Cog):
             rating_key = int(film)
         except ValueError:
             await interaction.edit_original_response(
-                content="Please select a film from the autocomplete suggestions."
+                content="Please select a result from the autocomplete suggestions."
             )
             return
 
-        if not quote and not timecode:
-            await interaction.edit_original_response(
-                content="Give either a `quote:` or a `timecode:`."
-            )
-            return
-
-        if end_timecode and not timecode:
-            await interaction.edit_original_response(
-                content="`end_timecode` needs a `timecode` to start from."
-            )
+        validation_error = _validate_quote_or_timecode(quote, timecode, end_timecode)
+        if validation_error:
+            await interaction.edit_original_response(content=validation_error)
             return
 
         try:
@@ -530,29 +560,6 @@ class GifCog(commands.Cog):
         )
 
     @app_commands.command(
-        name="cinesnip",
-        description="Generate a clip from a film at a quote or timecode.",
-    )
-    @app_commands.describe(
-        film="The film to search for",
-        quote="A line of dialogue to find (fuzzy — close is fine)",
-        timecode="Timestamp, e.g. 1:23:45 or 1h23m45s",
-        end_timecode="Custom clip end (timecode only, not quote) — same formats as timecode",
-        format="Output format (default: gif — mp4/webm are smaller but do not autoplay in Discord)",
-    )
-    @app_commands.autocomplete(film=film_autocomplete)
-    async def cinesnip(
-        self,
-        interaction: discord.Interaction,
-        film: str,
-        quote: str | None = None,
-        timecode: str | None = None,
-        end_timecode: str | None = None,
-        format: Literal["gif", "mp4", "webm"] | None = None,
-    ) -> None:
-        await self._generate(interaction, film, quote, timecode, end_timecode, format)
-
-    @app_commands.command(
         name="snip",
         description="Generate a clip from a film at a quote or timecode.",
     )
@@ -576,13 +583,13 @@ class GifCog(commands.Cog):
         await self._generate(interaction, film, quote, timecode, end_timecode, format)
 
     @app_commands.command(
-        name="cinesnip-search",
+        name="snip-search",
         description="Search your whole library for a quote, no film needed.",
     )
     @app_commands.describe(
         quote="A line of dialogue to find across every film CineSnip has already read"
     )
-    async def cinesnip_search(self, interaction: discord.Interaction, quote: str) -> None:
+    async def snip_search(self, interaction: discord.Interaction, quote: str) -> None:
         await interaction.response.defer(ephemeral=True)
 
         try:
@@ -595,7 +602,7 @@ class GifCog(commands.Cog):
 
         if not result.matches:
             await interaction.edit_original_response(
-                content="No matches in what CineSnip has indexed so far. Try `/cinesnip` on a "
+                content="No matches in what CineSnip has indexed so far. Try `/snip` on a "
                 "specific film first to add it, or rephrase your quote."
             )
             return
@@ -603,4 +610,105 @@ class GifCog(commands.Cog):
         view = LibrarySearchView(self, quote, result.matches)
         await interaction.edit_original_response(
             embed=_library_results_embed(quote, result.matches), view=view
+        )
+
+    @app_commands.command(
+        name="snip-tv",
+        description="Generate a clip from a TV episode at a quote or timecode.",
+    )
+    @app_commands.describe(
+        show="The show to search for",
+        season="Season number (requires episode)",
+        episode="Episode number within the season (requires season)",
+        quote="A line of dialogue to find (fuzzy — close is fine); omit season/episode to "
+        "search the whole show",
+        timecode="Timestamp, e.g. 1:23:45 or 1h23m45s — requires season/episode",
+        end_timecode="Custom clip end (timecode only, not quote) — same formats as timecode",
+        format="Output format (default: gif — mp4/webm are smaller but do not autoplay in Discord)",
+    )
+    @app_commands.autocomplete(show=show_autocomplete)
+    async def snip_tv(
+        self,
+        interaction: discord.Interaction,
+        show: str,
+        season: int | None = None,
+        episode: int | None = None,
+        quote: str | None = None,
+        timecode: str | None = None,
+        end_timecode: str | None = None,
+        format: Literal["gif", "mp4", "webm"] | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            show_rating_key = int(show)
+        except ValueError:
+            await interaction.edit_original_response(
+                content="Please select a show from the autocomplete suggestions."
+            )
+            return
+
+        if (season is None) != (episode is None):
+            await interaction.edit_original_response(
+                content="Give both `season` and `episode`, or neither (to search the "
+                "whole show)."
+            )
+            return
+
+        validation_error = _validate_quote_or_timecode(quote, timecode, end_timecode)
+        if validation_error:
+            await interaction.edit_original_response(content=validation_error)
+            return
+
+        if timecode and season is None:
+            # There's no "the show's timeline" to seek within — a timecode
+            # only makes sense once a specific episode is pinned.
+            await interaction.edit_original_response(
+                content="A `timecode` needs a specific episode — give `season` and "
+                "`episode`, or use `quote` to search the whole show."
+            )
+            return
+
+        if season is not None:
+            try:
+                resolved = await self.bot.worker.resolve_episode(show_rating_key, season, episode)
+            except httpx.HTTPError as exc:
+                await interaction.edit_original_response(
+                    content=f"Couldn't find that episode: {_error_detail(exc)}"
+                )
+                return
+            await self._generate(
+                interaction, str(resolved.rating_key), quote, timecode, end_timecode, format
+            )
+            return
+
+        # No episode given — quote is guaranteed at this point (a bare
+        # timecode with no episode was already rejected above, and quote
+        # XOR timecode was already validated).
+        await interaction.edit_original_response(
+            content=f'Searching every episode for "{quote}" — this can take a moment for '
+            "episodes not seen before…"
+        )
+        try:
+            result = await self.bot.worker.search_episodes_quote(show_rating_key, quote)
+        except httpx.HTTPError as exc:
+            await interaction.edit_original_response(
+                content=f"Couldn't search that show: {_error_detail(exc)}"
+            )
+            return
+
+        if not result.matches:
+            await interaction.edit_original_response(
+                content="No matching line found in that show's episodes."
+            )
+            return
+
+        view = LibrarySearchView(self, quote, result.matches)
+        await interaction.edit_original_response(
+            embed=_library_results_embed(
+                quote,
+                result.matches,
+                description="Pick an episode below to generate a clip from that line.",
+            ),
+            view=view,
         )

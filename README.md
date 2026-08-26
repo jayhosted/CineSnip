@@ -2,8 +2,8 @@
 
 Generate short clips from your own Plex library, straight into Discord.
 
-One `/cinesnip` command: give it a film and either a `quote` (fuzzy-matched
-against the film's subtitles) or a `timecode` (e.g. `1:23:45`), films only,
+`/snip` for films, `/snip-tv` for TV episodes: give it a title and either a
+`quote` (fuzzy-matched against subtitles) or a `timecode` (e.g. `1:23:45`),
 one Docker container. Searches across every Plex library you configure.
 See [CLAUDE.md](CLAUDE.md) for the full project plan and later-stage
 features.
@@ -98,17 +98,16 @@ container, and the bot only makes outbound connections to Discord.
 
 ## 7. Try it
 
-`/cinesnip` and its shorter alias `/snip` do the same thing — use whichever
-you prefer. In your Discord server, either give a quote:
+In your Discord server, either give a quote:
 
 ```
-/cinesnip film:<start typing a title> quote:here's johnny
+/snip film:<start typing a title> quote:here's johnny
 ```
 
 or a direct timecode:
 
 ```
-/cinesnip film:<start typing a title> timecode:1:23:45
+/snip film:<start typing a title> timecode:1:23:45
 ```
 
 Timecodes accept `1:23:45`/`23:45`/a plain number of seconds, or
@@ -148,15 +147,29 @@ clicking play.
 
 ### Searching without picking a film first
 
-`/cinesnip-search quote:<text>` searches for a line across every film
-CineSnip has *already read subtitles for* — from any prior `/cinesnip`,
-`/snip`, or `/cinesnip-search` use — instead of requiring you to pick a
-film up front. It's fast (no re-parsing, no Plex calls), but its scope is
-exactly what's been touched so far: a title you've never generated a clip
-from won't show up yet. Pick a result from the list and it funnels straight
-into the same quote-confirm step as the normal flow. If nothing's indexed
-yet, run `/cinesnip` on a specific film first (or just start using the bot
-normally — the searchable set grows automatically as you go).
+`/snip-search quote:<text>` searches for a line across every film CineSnip
+has *already read subtitles for* — from any prior `/snip` or `/snip-search`
+use — instead of requiring you to pick a film up front. It's fast (no
+re-parsing, no Plex calls), but its scope is exactly what's been touched so
+far: a title you've never generated a clip from won't show up yet. Pick a
+result from the list and it funnels straight into the same quote-confirm
+step as the normal flow. If nothing's indexed yet, run `/snip` on a specific
+film first (or just start using the bot normally — the searchable set grows
+automatically as you go).
+
+### TV episodes
+
+`/snip-tv` works the same way, one layer deeper: pick a `show` from
+autocomplete, then either give `season`/`episode` together with a `quote` or
+`timecode` for a specific episode (same rules as `/snip` from there — clip
+length, styles, format all work identically), or give just a `quote` with no
+`season`/`episode` to search across the *whole show* for that line. A
+whole-show search checks every episode CineSnip has already read subtitles
+for instantly, and extracts subtitles on the spot for any episode it
+hasn't seen yet — which can take a little while the first time through a
+show, faster on repeat searches. A bare `timecode` needs a specific episode
+to seek within, so `season`/`episode` are required whenever you're not using
+`quote`.
 
 ## Troubleshooting
 

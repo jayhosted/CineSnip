@@ -23,6 +23,14 @@ RENDER_TIMEOUT_SECONDS = 90.0
 # extraction_timeout_seconds past this in config.yaml, raise this too.
 RESOLVE_QUOTE_TIMEOUT_SECONDS = 300.0
 
+# /search-episodes-quote may serially cold-extract several never-touched
+# episodes in one request, each up to subtitle_defaults.extraction_timeout_seconds
+# (180s default) in the worst case. Generous headroom above that for a
+# show with many uncached episodes, mirroring RESOLVE_QUOTE_TIMEOUT_SECONDS's
+# reasoning — the worker's own per-episode timeout-and-skip should always
+# win the race, not this client timing out first.
+SEARCH_EPISODES_TIMEOUT_SECONDS = 600.0
+
 
 @dataclass
 class MovieResult:
@@ -118,6 +126,30 @@ class WorkerClient:
         response = await self._client.get(f"/resolve/{rating_key}")
         response.raise_for_status()
         return ResolveResult(**response.json())
+
+    async def search_shows(self, query: str) -> list[MovieResult]:
+        response = await self._client.get("/search-shows", params={"query": query})
+        response.raise_for_status()
+        return [MovieResult(**r) for r in response.json()["results"]]
+
+    async def resolve_episode(self, show_rating_key: int, season: int, episode: int) -> ResolveResult:
+        response = await self._client.get(
+            f"/resolve-episode/{show_rating_key}",
+            params={"season": season, "episode": episode},
+        )
+        response.raise_for_status()
+        return ResolveResult(**response.json())
+
+    async def search_episodes_quote(self, show_rating_key: int, quote: str) -> LibrarySearchResult:
+        response = await self._client.get(
+            f"/search-episodes-quote/{show_rating_key}",
+            params={"quote": quote},
+            timeout=SEARCH_EPISODES_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        payload["matches"] = [LibraryQuoteMatchResult(**m) for m in payload["matches"]]
+        return LibrarySearchResult(**payload)
 
     async def resolve_quote(self, rating_key: int, quote: str) -> ResolveQuoteResult:
         response = await self._client.get(

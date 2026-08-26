@@ -33,7 +33,7 @@ def search_cached_library(
     fast (no Plex/filesystem calls per title), at the cost of occasionally
     matching against a title whose subtitles changed since caching. That
     trade-off matches this feature's "instant" design goal; an individual
-    /cinesnip flow on that title still re-validates freshness as normal.
+    /snip flow on that title still re-validates freshness as normal.
 
     Diversity-first ranking, not a hard one-per-title cap: every title's
     best-scoring line competes for a slot (ranked by score) before any
