@@ -20,6 +20,13 @@ class LibraryConfig(BaseModel):
     # item's librarySectionTitle is compared against.
     name: str
     path_mappings: list[PathMapping] = Field(default_factory=list)
+    # 3D encodes pack both eyes into a single frame. This is a property of
+    # how a *library* was encoded/organized (CLAUDE.md Section 3), not
+    # something to detect per-file — real files in this project's own 3D
+    # library use both packings, so a single hardcoded crop doesn't work
+    # across a whole library. "none" (default) applies no crop, for any
+    # normal flat-video library.
+    three_d_format: Literal["none", "side_by_side", "over_under"] = "none"
 
 
 class RenderDefaults(BaseModel):
@@ -113,14 +120,20 @@ class Settings(BaseModel):
         # configure separately from cache_dir itself.
         return self.cache_dir / "quote_index.db"
 
-    def path_mappings_for(self, library_name: str) -> list[PathMapping]:
+    def _library_config_for(self, library_name: str) -> LibraryConfig:
         for library in self.libraries:
             if library.name == library_name:
-                return library.path_mappings
+                return library
         raise SettingsError(
             f"'{library_name}' is not a configured library. Add it under "
             f"libraries in config.yaml."
         )
+
+    def path_mappings_for(self, library_name: str) -> list[PathMapping]:
+        return self._library_config_for(library_name).path_mappings
+
+    def three_d_format_for(self, library_name: str) -> str:
+        return self._library_config_for(library_name).three_d_format
 
 
 class SettingsError(RuntimeError):

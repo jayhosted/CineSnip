@@ -8,6 +8,16 @@
 # backslashes if Plex runs on Windows). container_path is where that same
 # folder is bind-mounted inside the Docker container (see docker-compose.yml).
 # A library that only lives in one folder needs only one entry.
+#
+# three_d_format (optional, default "none") tags a library as containing
+# 3D encodes that pack both eyes into a single frame — "side_by_side" or
+# "over_under". Without this, a 3D file renders as a squished/doubled
+# frame instead of a normal flat clip. Files that carry their own packing
+# tag (e.g. a Matroska StereoMode element) are auto-detected at render
+# time and override this default — it's only the fallback for untagged
+# files, which real-world 3D rips often are. If your library's files use
+# more than one packing and some are untagged, there's currently no
+# per-file override beyond this library-wide default.
 libraries:
   - name: "Movies"
     path_mappings:

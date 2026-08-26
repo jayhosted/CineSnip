@@ -98,6 +98,61 @@ _VIDEO_CODEC_ARGS: dict[str, list[str]] = {
 
 _PROBE_TIMEOUT_SECONDS = 30.0
 
+# 3D encodes pack both eyes into one frame; crop to a single eye before any
+# scaling/subtitle work so the rest of the pipeline sees a normal flat frame.
+# Defaults to the left/top eye — no per-request override yet (CLAUDE.md
+# Section 3 flags picking the other eye as a follow-on design question, not
+# blocking for getting a usable flat clip out at all).
+_THREE_D_CROP_FILTERS: dict[str, str] = {
+    "side_by_side": "crop=iw/2:ih:0:0",
+    "over_under": "crop=iw:ih/2:0:0",
+}
+
+# ffmpeg's own Stereo3D side-data type names, when a file actually carries
+# them (e.g. Matroska's StereoMode element). Confirmed against this
+# project's own 3D library: a "Full-SBS" release had this tagged
+# (side_data_type "Stereo 3D", type "side by side"), but a plain untagged
+# rip of a different title in the same library had none — real-world
+# per-file packing genuinely varies within one library (CLAUDE.md Section
+# 3), so a per-file tag, when present, is trusted over the library's
+# configured default rather than the other way around.
+_STEREO3D_TYPE_MAP: dict[str, str] = {
+    "side by side": "side_by_side",
+    "top and bottom": "over_under",
+}
+
+
+async def probe_stereo_format(input_path: str) -> str | None:
+    """Returns the file's own tagged stereo packing ('side_by_side' /
+    'over_under'), or None if the file carries no such tag (most rips
+    don't) — callers should fall back to the library's configured default
+    in that case."""
+    stdout = await run_and_capture(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream_side_data_list",
+            "-of",
+            "json",
+            input_path,
+        ],
+        _PROBE_TIMEOUT_SECONDS,
+        error_prefix="ffprobe stereo mode",
+        capture_stdout=True,
+    )
+    data = json.loads(stdout or b"{}")
+    streams = data.get("streams") or [{}]
+    for side_data in streams[0].get("side_data_list", []):
+        if side_data.get("side_data_type") == "Stereo 3D":
+            detected = _STEREO3D_TYPE_MAP.get(side_data.get("type"))
+            if detected is not None:
+                return detected
+    return None
+
 
 async def probe_video_dimensions(input_path: str) -> tuple[int, int]:
     stdout = await run_and_capture(
@@ -145,18 +200,32 @@ class ClipRenderer:
         fmt: str = "gif",
         subtitle_entries: list[SubtitleEntry] | None = None,
         style: StylePreset | None = None,
+        three_d_format: str = "none",
     ) -> bytes:
+        # Only probe files in a library that's configured as 3D at all —
+        # avoids an extra ffprobe call on every render for the (much more
+        # common) normal flat-video libraries, which never carry this tag
+        # anyway. When a file *is* tagged, trust the tag over the library
+        # default: real files in the same 3D library have been confirmed to
+        # use different packings from each other.
+        if three_d_format != "none":
+            detected = await probe_stereo_format(input_path)
+            if detected is not None:
+                three_d_format = detected
+
         ass_path: Path | None = None
         if subtitle_entries and style is not None:
             ass_path = await self._write_ass_file(
-                input_path, start, duration, subtitle_entries, style, scratch_dir
+                input_path, start, duration, subtitle_entries, style, scratch_dir, three_d_format
             )
 
         try:
             if fmt == "gif":
-                return await self._render_gif(input_path, start, duration, scratch_dir, ass_path)
+                return await self._render_gif(
+                    input_path, start, duration, scratch_dir, ass_path, three_d_format
+                )
             return await self._render_video(
-                input_path, start, duration, scratch_dir, fmt, ass_path
+                input_path, start, duration, scratch_dir, fmt, ass_path, three_d_format
             )
         finally:
             if ass_path is not None:
@@ -170,8 +239,17 @@ class ClipRenderer:
         entries: list[SubtitleEntry],
         style: StylePreset,
         scratch_dir: Path,
+        three_d_format: str = "none",
     ) -> Path:
         src_width, src_height = await probe_video_dimensions(input_path)
+        # A 3D source's *encoded* frame packs both eyes together — the
+        # single-eye frame the crop filter actually hands to scale/subtitles
+        # has different dimensions, and PlayResY must match what libass will
+        # actually render against, not the raw source frame.
+        if three_d_format == "side_by_side":
+            src_width //= 2
+        elif three_d_format == "over_under":
+            src_height //= 2
         out_width = self._width
         out_height = round(out_width * src_height / src_width)
         out_height -= out_height % 2  # matches the -2 (even-height) scale filter below
@@ -184,15 +262,21 @@ class ClipRenderer:
         ass_path.write_text(doc, encoding="utf-8")
         return ass_path
 
-    def _scale_and_subtitle_filter(self, ass_path: Path | None) -> str:
+    def _scale_and_subtitle_filter(
+        self, ass_path: Path | None, three_d_format: str = "none"
+    ) -> str:
         # -2 (not -1) guarantees an even output height, matching the
         # rounding _write_ass_file uses to compute PlayResY — a mismatch
         # there would make burned-in text the wrong size relative to the
         # actual frame, not just misplaced.
-        scale_filter = f"scale={self._width}:-2:flags=lanczos"
-        if ass_path is None:
-            return scale_filter
-        return f"{scale_filter},subtitles={_escape_filter_path(ass_path)}"
+        filters = []
+        crop_filter = _THREE_D_CROP_FILTERS.get(three_d_format)
+        if crop_filter is not None:
+            filters.append(crop_filter)
+        filters.append(f"scale={self._width}:-2:flags=lanczos")
+        if ass_path is not None:
+            filters.append(f"subtitles={_escape_filter_path(ass_path)}")
+        return ",".join(filters)
 
     async def _render_gif(
         self,
@@ -201,10 +285,11 @@ class ClipRenderer:
         duration: float,
         scratch_dir: Path,
         ass_path: Path | None = None,
+        three_d_format: str = "none",
     ) -> bytes:
         scratch_dir.mkdir(parents=True, exist_ok=True)
         palette_path = scratch_dir / f"palette-{uuid.uuid4().hex}.png"
-        scale_filter = self._scale_and_subtitle_filter(ass_path)
+        scale_filter = self._scale_and_subtitle_filter(ass_path, three_d_format)
 
         try:
             await self._run(
@@ -254,10 +339,11 @@ class ClipRenderer:
         scratch_dir: Path,
         fmt: str,
         ass_path: Path | None = None,
+        three_d_format: str = "none",
     ) -> bytes:
         scratch_dir.mkdir(parents=True, exist_ok=True)
         out_path = scratch_dir / f"clip-{uuid.uuid4().hex}.{fmt}"
-        scale_filter = self._scale_and_subtitle_filter(ass_path)
+        scale_filter = self._scale_and_subtitle_filter(ass_path, three_d_format)
 
         try:
             await self._run(

@@ -307,6 +307,7 @@ def create_app(settings: Settings) -> FastAPI:
                 clip_format,
                 subtitle_entries=subtitle_entries,
                 style=style_preset,
+                three_d_format=settings.three_d_format_for(movie.library_name),
             )
         except RenderTimeoutError as exc:
             raise HTTPException(status_code=504, detail=str(exc)) from exc
