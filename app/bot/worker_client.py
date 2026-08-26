@@ -31,6 +31,7 @@ class MovieResult:
     year: int | None
     duration_ms: int
     thumb_url: str | None
+    library_name: str
 
 
 @dataclass
@@ -40,6 +41,7 @@ class ResolveResult:
     year: int | None
     duration_ms: int
     thumb_url: str | None
+    library_name: str
 
 
 @dataclass

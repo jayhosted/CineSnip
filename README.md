@@ -4,14 +4,15 @@ Generate short clips from your own Plex library, straight into Discord.
 
 One `/cinesnip` command: give it a film and either a `quote` (fuzzy-matched
 against the film's subtitles) or a `timecode` (e.g. `1:23:45`), films only,
-one Plex library, one Docker container. See [CLAUDE.md](CLAUDE.md) for the
-full project plan and later-stage features.
+one Docker container. Searches across every Plex library you configure.
+See [CLAUDE.md](CLAUDE.md) for the full project plan and later-stage
+features.
 
 ## 1. Prerequisites
 
 - Docker + Docker Compose
 - A running Plex server, reachable from the machine running Docker
-- The films you want to clip already in your Plex "Movies" library
+- The films you want to clip already in a Plex movie library
 
 ## 2. Create a Discord bot application
 
@@ -51,20 +52,29 @@ Fill in:
 cp config.yaml.example config.yaml
 ```
 
-`path_mappings` tells CineSnip how to translate the file path Plex reports
-into the path the container actually sees (via the bind mounts in
-`docker-compose.yml`). For each folder your Movies library spans:
+`libraries` lists every Plex library CineSnip should search, each with its
+own `path_mappings` telling CineSnip how to translate the file path Plex
+reports into the path the container actually sees (via the bind mounts in
+`docker-compose.yml`). CineSnip searches across all configured libraries by
+default — if the same title exists in more than one (e.g. a regular Movies
+library and a separate 4K one), results are labeled with which library they
+came from.
 
-1. In Plex, open a movie → **...** → **Get Info** → **View XML**, and note
-   the `file="..."` path Plex reports for its media part.
-2. Add (or edit) a `path_mappings` entry where `plex_prefix` is that path's
-   folder prefix (exactly as Plex reports it, backslashes and all if Plex
-   runs on Windows), and `container_path` matches the mount target for that
-   same folder in `docker-compose.yml`.
+For each library you want CineSnip to search:
 
-If your Movies library only lives in one folder, delete the unused entry
-(and its matching volume line in `docker-compose.yml`). If it spans more
-folders than the two examples, add more of both.
+1. Add a `libraries` entry with `name` matching that library's title in
+   Plex exactly (case-sensitive).
+2. For each folder that library spans, in Plex open a title in it → **...**
+   → **Get Info** → **View XML**, and note the `file="..."` path Plex
+   reports for its media part.
+3. Add a `path_mappings` entry under that library where `plex_prefix` is
+   that path's folder prefix (exactly as Plex reports it, backslashes and
+   all if Plex runs on Windows), and `container_path` matches the mount
+   target for that same folder in `docker-compose.yml`.
+
+If a library only lives in one folder, it only needs one `path_mappings`
+entry. If it spans more folders than the examples, add more of both (and a
+matching bind mount in `docker-compose.yml` for each new folder).
 
 ## 6. Run it
 
@@ -139,7 +149,8 @@ clicking play.
 ## Troubleshooting
 
 - **Bot fails to log in (401)** — `DISCORD_TOKEN` in `.env` is wrong or was reset since you copied it.
-- **"No path mapping configured for ..." / "File not found on disk"** — your `config.yaml` `path_mappings` don't match what Plex reports or what's actually bind-mounted. Re-check step 5, and confirm the corresponding volume in `docker-compose.yml` points at the right host folder.
+- **"No path mapping configured for ..." / "File not found on disk"** — that library's `path_mappings` in `config.yaml` don't match what Plex reports or what's actually bind-mounted. Re-check step 5, and confirm the corresponding volume in `docker-compose.yml` points at the right host folder.
+- **"'X' is not a configured library"** — a title resolved to a Plex library that isn't listed under `libraries` in `config.yaml`. Add an entry for it (step 5).
 - **ffmpeg errors** — check the container logs for the actual ffmpeg stderr output; this usually means the source file is a format ffmpeg can't read directly, or the mapped path is wrong.
 - **"Couldn't generate the GIF: ... timed out"** — the source file is unusually slow for ffmpeg to seek/decode near that timestamp (raise `render_defaults.timeout_seconds` in `config.yaml` if this happens on files that should be fine), or something is stuck — check `docker compose logs`.
 - **Permission denied writing to `/app/scratch` or `/app/cache`** — the host `scratch/`/`cache/` directory got created by Docker (as `root`) instead of by you before first run. Stop the container, `rm -rf scratch cache && mkdir scratch cache`, then start it again. (Unlike `scratch/`, it's safe to leave `cache/` in place across restarts — only delete it if you actually want to force re-extraction of all subtitles.)

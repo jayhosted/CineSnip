@@ -7,7 +7,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
-from app.settings import Settings
+from app.settings import Settings, SettingsError
 from app.worker.ffmpeg import ClipRenderer, RenderTimeoutError, parse_timecode
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 from app.worker.plex_client import MovieNotFoundError, MovieResult, PlexClient
@@ -23,6 +23,7 @@ class MovieResultOut(BaseModel):
     year: int | None
     duration_ms: int
     thumb_url: str | None
+    library_name: str
 
 
 class SearchResponse(BaseModel):
@@ -35,6 +36,7 @@ class ResolveResponse(BaseModel):
     year: int | None
     duration_ms: int
     thumb_url: str | None
+    library_name: str
 
 
 class RenderRequest(BaseModel):
@@ -105,6 +107,18 @@ def _format_display_timecode(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{secs:02d}"
 
 
+def _resolve_container_path(movie: MovieResult, settings: Settings) -> str:
+    try:
+        mappings = settings.path_mappings_for(movie.library_name)
+    except SettingsError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    try:
+        return resolve_container_path(movie.plex_path, mappings)
+    except NoPathMappingError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 def _to_out(movie: MovieResult) -> MovieResultOut:
     return MovieResultOut(
         rating_key=movie.rating_key,
@@ -112,6 +126,7 @@ def _to_out(movie: MovieResult) -> MovieResultOut:
         year=movie.year,
         duration_ms=movie.duration_ms,
         thumb_url=movie.thumb_url,
+        library_name=movie.library_name,
     )
 
 
@@ -146,12 +161,7 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/resolve/{rating_key}", response_model=ResolveResponse)
     async def resolve(rating_key: int) -> ResolveResponse:
         movie = await _get_movie(rating_key)
-        try:
-            container_path = resolve_container_path(
-                movie.plex_path, settings.path_mappings
-            )
-        except NoPathMappingError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        container_path = _resolve_container_path(movie, settings)
 
         if not os.path.exists(container_path):
             raise HTTPException(
@@ -165,17 +175,13 @@ def create_app(settings: Settings) -> FastAPI:
             year=movie.year,
             duration_ms=movie.duration_ms,
             thumb_url=movie.thumb_url,
+            library_name=movie.library_name,
         )
 
     @app.post("/render")
     async def render(req: RenderRequest) -> Response:
         movie = await _get_movie(req.rating_key)
-        try:
-            container_path = resolve_container_path(
-                movie.plex_path, settings.path_mappings
-            )
-        except NoPathMappingError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        container_path = _resolve_container_path(movie, settings)
 
         if not os.path.exists(container_path):
             raise HTTPException(
@@ -288,12 +294,7 @@ def create_app(settings: Settings) -> FastAPI:
 
     async def _load_subtitles(rating_key: int) -> tuple[MovieResult, SubtitleResult]:
         movie = await _get_movie(rating_key)
-        try:
-            container_path = resolve_container_path(
-                movie.plex_path, settings.path_mappings
-            )
-        except NoPathMappingError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        container_path = _resolve_container_path(movie, settings)
 
         if not os.path.exists(container_path):
             raise HTTPException(

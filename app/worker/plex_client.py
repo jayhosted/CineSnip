@@ -24,6 +24,7 @@ class MovieResult:
     thumb_url: str | None
     plex_path: str
     guid: str
+    library_name: str
 
 
 class PlexClient:
@@ -36,12 +37,20 @@ class PlexClient:
 
     def __init__(self, settings: Settings):
         self._server = PlexServer(settings.plex_url, settings.plex_token)
-        self._section = self._server.library.section(settings.movies_library_name)
+        # Only sections whose type is "movie" are searched for films — a
+        # configured TV Shows library still gets its section resolved (its
+        # path mappings are stored in settings for future use) but isn't
+        # part of film search/autocomplete today.
+        sections = [self._server.library.section(lib.name) for lib in settings.libraries]
+        self._movie_sections = [s for s in sections if s.type == "movie"]
         self._movie_cache: dict[int, tuple[float, MovieResult]] = {}
 
     def search_movies(self, query: str, limit: int = 25) -> list[MovieResult]:
-        movies = self._section.search(title=query, libtype="movie")[:limit]
-        return [self._to_result(m) for m in movies]
+        results: list[MovieResult] = []
+        for section in self._movie_sections:
+            movies = section.search(title=query, libtype="movie")
+            results.extend(self._to_result(m) for m in movies)
+        return results[:limit]
 
     def get_movie(self, rating_key: int) -> MovieResult:
         cached = self._movie_cache.get(rating_key)
@@ -74,4 +83,5 @@ class PlexClient:
             thumb_url=thumb_url,
             plex_path=part.file,
             guid=movie.guid,
+            library_name=movie.librarySectionTitle,
         )
