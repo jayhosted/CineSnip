@@ -18,6 +18,14 @@ class RenderDefaults(BaseModel):
     fps: int = 15
     width: int = 480
     timeout_seconds: float = 60.0
+    # A quote-driven clip uses the matched subtitle line's own start/end
+    # instead of duration_seconds (so the clip is exactly that line, no
+    # more), but that raw span still needs bounds: a one-word cue is too
+    # short to be a usable clip, and a long merged multi-line match
+    # shouldn't produce an oversized render. duration_seconds itself is
+    # also clamped to this range as a safety net against misconfiguration.
+    min_duration_seconds: float = 1.0
+    max_duration_seconds: float = 15.0
 
 
 class WorkerConfig(BaseModel):
@@ -36,9 +44,12 @@ class SubtitleDefaults(BaseModel):
 
 
 class QuoteMatchDefaults(BaseModel):
-    # Top-N candidates returned per CLAUDE.md Section 5 ("top 2-3
-    # candidates ... not guaranteed exact matches").
-    candidate_limit: int = 3
+    # Top-N candidates returned. CLAUDE.md Section 5 originally specced
+    # "top 2-3", but real usage showed 3 too tight to browse — 8 still
+    # comfortably fits Discord's 25-option select limit alongside the
+    # Confirm/Cancel buttons, and match quality drops off fast past the
+    # top handful anyway.
+    candidate_limit: int = 8
     # Noise floor: rapidfuzz WRatio scores (0-100) below this are dropped
     # entirely rather than surfaced as a low-confidence result.
     min_score: float = 50.0
