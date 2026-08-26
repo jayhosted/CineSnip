@@ -115,9 +115,19 @@ quote, CineSnip fuzzy-matches it against the film's subtitles (sidecar
 for what happens when neither exists), uses the matched line's own length
 for the clip, and shows the best match with surrounding context and a
 confidence score; if it's not confident, or you want a different line, use
-"Show other matches" to pick from the next-best candidates. Either way
-you'll get a clip back — with a "Post to channel" button to share it beyond
-just you.
+"Show other matches" to pick from the next-best candidates.
+
+Either way, you'll then get a subtitle-style picker — Classic, Boxed,
+Cinematic, Meme, Original, or No Subtitles — before the clip renders. A
+sensible default is pre-selected (Classic after a quote match, since there's
+a known line to show; No Subtitles for a bare timecode, since there's no
+guarantee that title even has usable subtitles) — hit Generate to accept it,
+or pick a different style first. If you ask for a style on a title with no
+usable subtitles, CineSnip still renders the clip, just without burned-in
+text, and says so.
+
+You'll get a clip back either way, with a "Post to channel" button to share
+it beyond just you.
 
 Add `format:mp4`/`format:webm`/`format:gif` to pick the output — mp4 is the
 default (`render_defaults.format` in `config.yaml`) since it's much smaller

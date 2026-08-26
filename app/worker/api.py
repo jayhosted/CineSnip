@@ -13,6 +13,7 @@ from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 from app.worker.plex_client import MovieNotFoundError, MovieResult, PlexClient
 from app.worker.quotes import find_quote_matches
 from app.worker.subprocess_utils import SubprocessTimeoutError
+from app.worker.subtitle_render import STYLE_PRESETS
 from app.worker.subtitles import SubtitleResult, SubtitleSource, get_subtitles
 
 
@@ -53,6 +54,11 @@ class RenderRequest(BaseModel):
     end_timecode: str | None = None
     # None uses render_defaults.format.
     format: Literal["gif", "mp4", "webm"] | None = None
+    # None/"none" means no subtitle burn-in. A style requested on a title
+    # with no usable subtitles for the clip's own window degrades to plain
+    # (no burn-in) rather than erroring — echoed back via X-Clip-Style so
+    # the caller can tell the difference from what it asked for.
+    style: Literal["classic", "boxed", "cinematic", "meme", "original", "none"] | None = None
 
 
 class SubtitleEntryOut(BaseModel):
@@ -223,10 +229,41 @@ def create_app(settings: Settings) -> FastAPI:
             clip_duration = max(rd.min_duration_seconds, min(rd.max_duration_seconds, clip_duration))
 
         clip_format = req.format if req.format is not None else rd.format
+        requested_style = req.style or "none"
+
+        subtitle_entries = None
+        style_preset = None
+        if requested_style != "none":
+            timeout = settings.subtitle_defaults.extraction_timeout_seconds
+            try:
+                subtitle_result = await get_subtitles(
+                    movie,
+                    container_path,
+                    settings.cache_dir,
+                    ffprobe_timeout=timeout,
+                    ffmpeg_timeout=timeout,
+                )
+            except (SubprocessTimeoutError, RuntimeError) as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+            # A title with no usable subtitles (Section 5's documented gap)
+            # degrades to a plain render rather than erroring — the user
+            # still gets *a* clip, just without burn-in text.
+            if subtitle_result.source is not SubtitleSource.NONE and subtitle_result.entries:
+                subtitle_entries = subtitle_result.entries
+                style_preset = STYLE_PRESETS[requested_style]
+
+        resolved_style = requested_style if style_preset is not None else "none"
 
         try:
             clip_bytes = await app.state.renderer.render_clip(
-                container_path, start, clip_duration, settings.scratch_dir, clip_format
+                container_path,
+                start,
+                clip_duration,
+                settings.scratch_dir,
+                clip_format,
+                subtitle_entries=subtitle_entries,
+                style=style_preset,
             )
         except RenderTimeoutError as exc:
             raise HTTPException(status_code=504, detail=str(exc)) from exc
@@ -238,14 +275,15 @@ def create_app(settings: Settings) -> FastAPI:
             "mp4": "video/mp4",
             "webm": "video/webm",
         }[clip_format]
-        # Bot doesn't know settings.render_defaults.format, so it can't
-        # infer the right file extension for a request it left format
-        # unset on — echo back what was actually used instead of the bot
-        # guessing/duplicating the config default client-side.
+        # Bot doesn't know settings.render_defaults.format/style, so it
+        # can't infer what was actually used for a request that left them
+        # unset, or whether a requested style got silently downgraded to
+        # "none" — echo both back instead of the bot guessing/duplicating
+        # config defaults client-side.
         return Response(
             content=clip_bytes,
             media_type=media_type,
-            headers={"X-Clip-Format": clip_format},
+            headers={"X-Clip-Format": clip_format, "X-Clip-Style": resolved_style},
         )
 
     async def _load_subtitles(rating_key: int) -> tuple[MovieResult, SubtitleResult]:

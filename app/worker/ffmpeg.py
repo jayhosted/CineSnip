@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from pathlib import Path
 
 from app.worker.subprocess_utils import SubprocessTimeoutError, run_and_capture
+from app.worker.subtitle_render import StylePreset, build_ass_document, entries_in_window
+from app.worker.subtitles import SubtitleEntry
 
 
 class RenderTimeoutError(SubprocessTimeoutError):
@@ -93,6 +96,39 @@ _VIDEO_CODEC_ARGS: dict[str, list[str]] = {
     ],
 }
 
+_PROBE_TIMEOUT_SECONDS = 30.0
+
+
+async def probe_video_dimensions(input_path: str) -> tuple[int, int]:
+    stdout = await run_and_capture(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "json",
+            input_path,
+        ],
+        _PROBE_TIMEOUT_SECONDS,
+        error_prefix="ffprobe video dimensions",
+        capture_stdout=True,
+    )
+    stream = json.loads(stdout or b"{}")["streams"][0]
+    return int(stream["width"]), int(stream["height"])
+
+
+def _escape_filter_path(path: Path) -> str:
+    # ffmpeg's filtergraph syntax treats ':' as an option separator, so a
+    # bare path breaks parsing the moment it hits one — wrapping in single
+    # quotes is the standard fix, but backslashes/colons inside still need
+    # escaping for the quoting itself to parse correctly.
+    escaped = str(path).replace("\\", "\\\\").replace(":", "\\:")
+    return f"'{escaped}'"
+
 
 class ClipRenderer:
     def __init__(self, fps: int, width: int, timeout_seconds: float = 60.0):
@@ -107,10 +143,56 @@ class ClipRenderer:
         duration: float,
         scratch_dir: Path,
         fmt: str = "gif",
+        subtitle_entries: list[SubtitleEntry] | None = None,
+        style: StylePreset | None = None,
     ) -> bytes:
-        if fmt == "gif":
-            return await self._render_gif(input_path, start, duration, scratch_dir)
-        return await self._render_video(input_path, start, duration, scratch_dir, fmt)
+        ass_path: Path | None = None
+        if subtitle_entries and style is not None:
+            ass_path = await self._write_ass_file(
+                input_path, start, duration, subtitle_entries, style, scratch_dir
+            )
+
+        try:
+            if fmt == "gif":
+                return await self._render_gif(input_path, start, duration, scratch_dir, ass_path)
+            return await self._render_video(
+                input_path, start, duration, scratch_dir, fmt, ass_path
+            )
+        finally:
+            if ass_path is not None:
+                ass_path.unlink(missing_ok=True)
+
+    async def _write_ass_file(
+        self,
+        input_path: str,
+        start: float,
+        duration: float,
+        entries: list[SubtitleEntry],
+        style: StylePreset,
+        scratch_dir: Path,
+    ) -> Path:
+        src_width, src_height = await probe_video_dimensions(input_path)
+        out_width = self._width
+        out_height = round(out_width * src_height / src_width)
+        out_height -= out_height % 2  # matches the -2 (even-height) scale filter below
+
+        window = entries_in_window(entries, start, start + duration)
+        doc = build_ass_document(window, style, out_width, out_height)
+
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+        ass_path = scratch_dir / f"subs-{uuid.uuid4().hex}.ass"
+        ass_path.write_text(doc, encoding="utf-8")
+        return ass_path
+
+    def _scale_and_subtitle_filter(self, ass_path: Path | None) -> str:
+        # -2 (not -1) guarantees an even output height, matching the
+        # rounding _write_ass_file uses to compute PlayResY — a mismatch
+        # there would make burned-in text the wrong size relative to the
+        # actual frame, not just misplaced.
+        scale_filter = f"scale={self._width}:-2:flags=lanczos"
+        if ass_path is None:
+            return scale_filter
+        return f"{scale_filter},subtitles={_escape_filter_path(ass_path)}"
 
     async def _render_gif(
         self,
@@ -118,10 +200,11 @@ class ClipRenderer:
         start: float,
         duration: float,
         scratch_dir: Path,
+        ass_path: Path | None = None,
     ) -> bytes:
         scratch_dir.mkdir(parents=True, exist_ok=True)
         palette_path = scratch_dir / f"palette-{uuid.uuid4().hex}.png"
-        scale_filter = f"scale={self._width}:-1:flags=lanczos"
+        scale_filter = self._scale_and_subtitle_filter(ass_path)
 
         try:
             await self._run(
@@ -170,10 +253,11 @@ class ClipRenderer:
         duration: float,
         scratch_dir: Path,
         fmt: str,
+        ass_path: Path | None = None,
     ) -> bytes:
         scratch_dir.mkdir(parents=True, exist_ok=True)
         out_path = scratch_dir / f"clip-{uuid.uuid4().hex}.{fmt}"
-        scale_filter = f"scale={self._width}:-1:flags=lanczos"
+        scale_filter = self._scale_and_subtitle_filter(ass_path)
 
         try:
             await self._run(
