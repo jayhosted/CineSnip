@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from typing import Literal
 
@@ -12,11 +13,20 @@ from app.worker import quote_index
 from app.worker.ffmpeg import ClipRenderer, RenderTimeoutError, parse_timecode
 from app.worker.library_search import search_cached_library
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
-from app.worker.plex_client import MovieNotFoundError, MovieResult, PlexClient
+from app.worker.plex_client import (
+    EpisodeNotFoundError,
+    MovieNotFoundError,
+    MovieResult,
+    PlexClient,
+    ShowNotFoundError,
+)
+from app.worker.quote_index import CachedTitle
 from app.worker.quotes import find_quote_matches
 from app.worker.subprocess_utils import SubprocessTimeoutError
 from app.worker.subtitle_render import STYLE_PRESETS
 from app.worker.subtitles import SubtitleResult, SubtitleSource, get_subtitles
+
+logger = logging.getLogger(__name__)
 
 
 class MovieResultOut(BaseModel):
@@ -142,7 +152,7 @@ def _resolve_container_path(movie: MovieResult, settings: Settings) -> str:
 
 def _index_if_searchable(settings: Settings, movie: MovieResult, result: SubtitleResult) -> None:
     # Only titles with real, usable subtitles are worth surfacing from
-    # /cinesnip-search — a NONE result (Section 5's documented gap) has no
+    # /snip-search — a NONE result (Section 5's documented gap) has no
     # entries to search, so indexing it would only cost lookups for nothing.
     if result.source is not SubtitleSource.NONE and result.entries:
         quote_index.upsert_cached_title(
@@ -184,6 +194,11 @@ def create_app(settings: Settings) -> FastAPI:
         results = app.state.plex.search_movies(query)
         return SearchResponse(results=[_to_out(m) for m in results])
 
+    @app.get("/search-shows", response_model=SearchResponse)
+    def search_shows(query: str) -> SearchResponse:
+        results = app.state.plex.search_shows(query)
+        return SearchResponse(results=[_to_out(m) for m in results])
+
     async def _get_movie(rating_key: int) -> MovieResult:
         # get_movie() is a synchronous plexapi/requests call — always offload
         # it so a slow Plex response doesn't stall the whole event loop
@@ -211,6 +226,35 @@ def create_app(settings: Settings) -> FastAPI:
             duration_ms=movie.duration_ms,
             thumb_url=movie.thumb_url,
             library_name=movie.library_name,
+        )
+
+    @app.get("/resolve-episode/{show_rating_key}", response_model=ResolveResponse)
+    async def resolve_episode(show_rating_key: int, season: int, episode: int) -> ResolveResponse:
+        # Turns show+season+episode into a concrete rating_key + display
+        # info — everything downstream (/render, /resolve-quote, etc.) is
+        # the unmodified movie flow from here, since it's already generic
+        # over any rating_key.
+        try:
+            ep = await asyncio.to_thread(
+                app.state.plex.get_episode, show_rating_key, season, episode
+            )
+        except EpisodeNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        container_path = _resolve_container_path(ep, settings)
+        if not os.path.exists(container_path):
+            raise HTTPException(
+                status_code=422,
+                detail=f"File not found on disk at mapped path: {container_path}",
+            )
+
+        return ResolveResponse(
+            rating_key=ep.rating_key,
+            title=ep.title,
+            year=ep.year,
+            duration_ms=ep.duration_ms,
+            thumb_url=ep.thumb_url,
+            library_name=ep.library_name,
         )
 
     @app.post("/render")
@@ -433,14 +477,124 @@ def create_app(settings: Settings) -> FastAPI:
             ],
         )
 
-    # Library-wide search (CLAUDE.md Section 5's /cinesnip-search, Tier 1
+    # Library-wide search (CLAUDE.md Section 5's /snip-search, Tier 1
     # only): searches the subtitle cache via the quote_index, never the live
     # filesystem/Plex — so it's fast regardless of library size, but its
     # scope is exactly "titles CineSnip has already read via any flow". An
     # empty index/no matches is a normal outcome, not an error.
     @app.get("/search-quote", response_model=LibrarySearchResponse)
     async def search_quote(quote: str) -> LibrarySearchResponse:
-        cached_titles = quote_index.list_cached_titles(settings.quote_index_db_path)
+        # The index also holds TV episodes (indexed via the same generic
+        # /render and /resolve-quote endpoints /snip-tv uses) — filter back
+        # down to movie libraries, since /search-quote is documented and
+        # surfaced to users as "every film", not the whole index verbatim.
+        movie_library_names = app.state.plex.movie_library_names
+        cached_titles = [
+            t
+            for t in quote_index.list_cached_titles(settings.quote_index_db_path)
+            if t.library_name in movie_library_names
+        ]
+
+        qm = settings.quote_match
+        matches = search_cached_library(
+            settings.cache_dir,
+            cached_titles,
+            quote,
+            result_limit=qm.candidate_limit,
+            min_score=qm.min_score,
+            max_window_gap_seconds=qm.max_window_gap_seconds,
+            context_lines=qm.context_lines,
+            per_title_limit=qm.library_per_title_limit,
+        )
+
+        return LibrarySearchResponse(
+            matches=[
+                LibraryQuoteMatchOut(
+                    rating_key=m.rating_key,
+                    title=m.title,
+                    library_name=m.library_name,
+                    start=m.match.start,
+                    end=m.match.end,
+                    timecode=_format_display_timecode(m.match.start),
+                    text=m.match.text,
+                    score=m.match.score,
+                    context_before=list(m.match.context_before),
+                    context_after=list(m.match.context_after),
+                )
+                for m in matches
+            ],
+            confident_score=qm.confident_score,
+            min_score=qm.min_score,
+        )
+
+    async def _ensure_episode_cached(episode: MovieResult) -> None:
+        # Best-effort: one broken/unmapped episode file must not fail the
+        # whole show-wide search, so failures here are logged and skipped
+        # rather than raised.
+        try:
+            container_path = _resolve_container_path(episode, settings)
+        except HTTPException as exc:
+            logger.warning(
+                "Skipping %s in show-wide search: %s", episode.title, exc.detail
+            )
+            return
+
+        if not os.path.exists(container_path):
+            logger.warning(
+                "Skipping %s in show-wide search: file not found on disk at %s",
+                episode.title,
+                container_path,
+            )
+            return
+
+        timeout = settings.subtitle_defaults.extraction_timeout_seconds
+        try:
+            result = await get_subtitles(
+                episode,
+                container_path,
+                settings.cache_dir,
+                ffprobe_timeout=timeout,
+                ffmpeg_timeout=timeout,
+            )
+        except (SubprocessTimeoutError, RuntimeError) as exc:
+            logger.warning("Skipping %s in show-wide search: %s", episode.title, exc)
+            return
+
+        _index_if_searchable(settings, episode, result)
+
+    # Show-wide search (CLAUDE.md Section 4): mirrors /search-quote's
+    # diversity-first ranking but scoped to one show's episodes instead of
+    # the whole library. Unlike /search-quote, this DOES touch the live
+    # filesystem/Plex for episodes not yet cached — deliberately on-demand
+    # per Section 4 ("never pre-indexing an entire show's library
+    # proactively"), but acceptable to do inline within one request since a
+    # show's episode count is small compared to a whole library (no
+    # progress/ETA UI needed here, unlike /search-quote's still-unbuilt
+    # Tier 2).
+    @app.get("/search-episodes-quote/{show_rating_key}", response_model=LibrarySearchResponse)
+    async def search_episodes_quote(show_rating_key: int, quote: str) -> LibrarySearchResponse:
+        try:
+            episodes = await asyncio.to_thread(app.state.plex.list_episodes, show_rating_key)
+        except ShowNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        # Sequential, not gathered concurrently — avoids hammering ffmpeg/Plex
+        # with a dozen-plus simultaneous extractions for a never-touched show.
+        for episode in episodes:
+            await _ensure_episode_cached(episode)
+
+        # Built straight from the episodes list already in hand rather than
+        # re-reading the SQLite quote_index — that index exists to avoid a
+        # live Plex enumeration, which list_episodes() above already did.
+        cached_titles = [
+            CachedTitle(
+                guid=ep.guid,
+                rating_key=ep.rating_key,
+                title=ep.title,
+                library_name=ep.library_name,
+            )
+            for ep in episodes
+        ]
 
         qm = settings.quote_match
         matches = search_cached_library(
