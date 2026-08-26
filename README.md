@@ -2,10 +2,10 @@
 
 Generate GIF clips from your own Plex library, straight into Discord.
 
-This is the **MVP**: one `/cinesnip` command, films only, timecode input only
-(e.g. "generate a GIF starting at 1:23:45"), one Plex library, one Docker
-container. See [CLAUDE.md](CLAUDE.md) for the full project plan and
-later-stage features.
+One `/cinesnip` command: give it a film and either a `quote` (fuzzy-matched
+against the film's subtitles) or a `timecode` (e.g. `1:23:45`), films only,
+one Plex library, one Docker container. See [CLAUDE.md](CLAUDE.md) for the
+full project plan and later-stage features.
 
 ## 1. Prerequisites
 
@@ -88,15 +88,26 @@ container, and the bot only makes outbound connections to Discord.
 
 ## 7. Try it
 
-In your Discord server:
+In your Discord server, either give a quote:
+
+```
+/cinesnip film:<start typing a title> quote:here's johnny
+```
+
+or a direct timecode:
 
 ```
 /cinesnip film:<start typing a title> timecode:1:23:45
 ```
 
-Pick a film from the autocomplete suggestions, confirm the embed, and
-you'll get a GIF back — with a "Post to channel" button to share it beyond
-just you.
+Pick a film from the autocomplete suggestions and confirm the embed. With a
+quote, CineSnip fuzzy-matches it against the film's subtitles (sidecar
+`.srt` or an embedded subtitle stream — see [CLAUDE.md](CLAUDE.md) Section 5
+for what happens when neither exists) and shows the best match with
+surrounding context and a confidence score; if it's not confident, or you
+want a different line, use "Show other matches" to pick from the next-best
+candidates. Either way you'll get a GIF back — with a "Post to channel"
+button to share it beyond just you.
 
 ## Troubleshooting
 
@@ -106,3 +117,5 @@ just you.
 - **"Couldn't generate the GIF: ... timed out"** — the source file is unusually slow for ffmpeg to seek/decode near that timestamp (raise `render_defaults.timeout_seconds` in `config.yaml` if this happens on files that should be fine), or something is stuck — check `docker compose logs`.
 - **Permission denied writing to `/app/scratch` or `/app/cache`** — the host `scratch/`/`cache/` directory got created by Docker (as `root`) instead of by you before first run. Stop the container, `rm -rf scratch cache && mkdir scratch cache`, then start it again. (Unlike `scratch/`, it's safe to leave `cache/` in place across restarts — only delete it if you actually want to force re-extraction of all subtitles.)
 - **Command doesn't show up (or a renamed command still shows its old name) in Discord** — commands sync globally on every startup, but Discord can take up to an **hour** to propagate a global slash command change to clients, not just a minute. To skip the wait while developing, set `DEV_GUILD_ID` in `.env` to your test server's ID — the bot will additionally sync directly to that one server, which applies near-instantly.
+- **"No usable subtitles for ..."** — the film has neither a sidecar `.srt` next to the video file nor a text-based embedded subtitle stream (bitmap formats like PGS aren't extractable). Use `timecode:` for this title instead; quote search isn't available until Whisper transcription ships (see CLAUDE.md V3).
+- **"No subtitle line ... resembled that quote"** — nothing scored well enough against the film's subtitles. Try a shorter, more distinctive phrase, or double-check the line isn't paraphrased/from a different cut.
