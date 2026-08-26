@@ -100,10 +100,12 @@ class WorkerClient:
         payload["matches"] = [QuoteMatchResult(**m) for m in payload["matches"]]
         return ResolveQuoteResult(**payload)
 
-    async def render(self, rating_key: int, timecode: str) -> bytes:
+    async def render(
+        self, rating_key: int, timecode: str, duration: float | None = None
+    ) -> bytes:
         response = await self._client.post(
             "/render",
-            json={"rating_key": rating_key, "timecode": timecode},
+            json={"rating_key": rating_key, "timecode": timecode, "duration": duration},
             timeout=RENDER_TIMEOUT_SECONDS,
         )
         response.raise_for_status()

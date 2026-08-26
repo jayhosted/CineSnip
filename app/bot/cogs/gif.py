@@ -341,16 +341,21 @@ class GifCog(commands.Cog):
                 )
                 return
 
-            render_timecode = str(match_view.selected.start)
+            selected = match_view.selected
+            render_timecode = str(selected.start)
+            render_duration = selected.end - selected.start
         else:
             render_timecode = timecode
+            render_duration = None
 
         await interaction.edit_original_response(
             content="Generating…", embed=None, view=None
         )
 
         try:
-            gif_bytes = await self.bot.worker.render(rating_key, render_timecode)
+            gif_bytes = await self.bot.worker.render(
+                rating_key, render_timecode, render_duration
+            )
         except httpx.HTTPError as exc:
             await interaction.edit_original_response(
                 content=f"Couldn't generate the GIF: {_error_detail(exc)}"

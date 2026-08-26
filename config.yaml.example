@@ -10,10 +10,16 @@ path_mappings:
   - plex_prefix: "E:\\Media\\Video\\Movies"
     container_path: "/media/movies-e"
 
+# duration_seconds is used for timecode-driven clips. A quote-driven clip
+# instead uses the matched subtitle line's own start/end, clamped to
+# [min_duration_seconds, max_duration_seconds] — duration_seconds itself
+# is clamped to that same range too.
 render_defaults:
   duration_seconds: 4
   fps: 15
   width: 480
+  min_duration_seconds: 1
+  max_duration_seconds: 15
 
 # Embedded-subtitle extraction has no fast seek — it reads sequentially
 # through the whole file. Raise this if you see extraction timeouts on
@@ -26,7 +32,7 @@ subtitle_defaults:
 # only controls whether the Discord UI treats the top match as good enough
 # to lead with, or opens straight to "show other matches".
 quote_match:
-  candidate_limit: 3
+  candidate_limit: 8
   min_score: 50
   confident_score: 85
   max_window_gap_seconds: 3

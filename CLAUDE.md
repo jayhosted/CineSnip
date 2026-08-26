@@ -102,9 +102,10 @@ No central database, no cloud API, no message broker.
 ## 7. GIF/clip generation & subtitle styles
 
 - Two-pass palette generation (`palettegen`/`paletteuse`) for actual GIF output.
-- Defaults: 4s duration, 15fps, 480px width, no crop, subtitles on when triggered by a quote search.
+- Defaults: 15fps, 480px width, no crop, subtitles on when triggered by a quote search. **Duration**: a timecode-driven clip uses the fixed `render_defaults.duration_seconds` (4s); a quote-driven clip instead uses the matched subtitle line's own start/end (so the clip is exactly that line, not a fixed window) — either way clamped to `[render_defaults.min_duration_seconds, render_defaults.max_duration_seconds]` (1s–15s by default).
 - Auto-downscale resolution/fps if the estimated output would exceed Discord's attachment size limit — much more forgiving with MP4/WebM than GIF, reinforcing the format default in decision #1 above.
 - Style presets: Classic (white/black outline), Boxed (white on black box), Cinematic (yellow), Meme (large bold caps), Original (mirrors source subtitle styling).
+- **Future: interactive clip editor, not yet built.** After confirming a quote match, offer a step to adjust the render before generating — nudge the start/end in small increments (e.g. ±0.5s/±1s/±5s), and merge in the next/previous subtitle line for a longer multi-line clip — rather than committing to exactly the matched line's span every time. tvgif's UI is a useful reference point (`Previous Sub`/`Next Sub`/`Merge Next Sub`/`Set Num Merged` buttons, time-nudge buttons, format toggles), though CineSnip doesn't need to copy it exactly — worth a real design pass on what's most intuitive here, not a bolt-on to `QuoteMatchView`. This is a bigger scope than a confirm step: it needs a stateful edit session and a live preview re-render on each adjustment (cheap per Section 6's "a few seconds for a 4s/480px clip on CPU" timing, but real request volume against the worker), not just picking among precomputed candidates. Natural fit alongside decision #6's local web app and Section 2's "modal for advanced overrides" idea — may make more sense there than as a Discord button grid.
 
 ## 8. Docker design
 

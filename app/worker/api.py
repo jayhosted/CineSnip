@@ -38,6 +38,11 @@ class ResolveResponse(BaseModel):
 class RenderRequest(BaseModel):
     rating_key: int
     timecode: str
+    # Set by a quote-driven clip to the matched line's own span (end -
+    # start), so the render is exactly that line rather than a fixed
+    # duration. Omitted (None) for a direct timecode request, which uses
+    # render_defaults.duration_seconds instead.
+    duration: float | None = None
 
 
 class SubtitleEntryOut(BaseModel):
@@ -174,7 +179,9 @@ def create_app(settings: Settings) -> FastAPI:
                 detail=f"Timecode {req.timecode} is outside the film's runtime.",
             )
 
-        clip_duration = settings.render_defaults.duration_seconds
+        rd = settings.render_defaults
+        clip_duration = req.duration if req.duration is not None else rd.duration_seconds
+        clip_duration = max(rd.min_duration_seconds, min(rd.max_duration_seconds, clip_duration))
 
         try:
             gif_bytes = await app.state.renderer.render_gif(
