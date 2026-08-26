@@ -251,13 +251,60 @@ def _cache_path_for_guid(cache_dir: Path, guid: str) -> Path:
     return cache_dir / f"{digest}.json"
 
 
-def read_cached_subtitles(cache_dir: Path, guid: str) -> SubtitleResult | None:
+def _fingerprint(path: Path | None) -> list[float] | None:
+    """(mtime, size) for the file that produced a cached result — a re-sync
+    or replacement (e.g. Bazarr re-fetching, or a manual alass fix) changes
+    both without necessarily changing the filename, so this is what lets a
+    stale cache entry actually get noticed instead of served forever."""
+    if path is None:
+        return None
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return [st.st_mtime, st.st_size]
+
+
+def read_cached_subtitles(
+    cache_dir: Path,
+    guid: str,
+    sidecar_path: Path | None = None,
+    video_path: Path | None = None,
+) -> SubtitleResult | None:
+    """sidecar_path/video_path are the *current* candidates for each (pass
+    None for a candidate that doesn't currently exist, e.g. a removed
+    sidecar) — which one actually needs to be fresh depends on what the
+    cached result was extracted from (recorded in the cache payload
+    itself), so both are accepted and the right one picked once that's
+    known. This is what lets a changed or removed sidecar/video invalidate
+    the cache instead of serving stale entries indefinitely, without an
+    unrelated file (e.g. a sidecar appearing next to a title cached as
+    EMBEDDED) wrongly invalidating it. Omitting *both* arguments skips the
+    freshness check entirely (the pre-existing, cache-forever behavior)."""
     path = _cache_path_for_guid(cache_dir, guid)
     if not path.exists():
         return None
 
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
+        source = SubtitleSource(payload["source"])
+        # None here can mean two different things: "caller didn't pass a
+        # freshness candidate at all" (skip the check) vs. "the relevant
+        # file for this source type is gone" (must invalidate) — distinguish
+        # by whether the caller supplied *either* candidate, not by whether
+        # the specific one this source cares about is present.
+        checking_freshness = sidecar_path is not None or video_path is not None
+        if source is SubtitleSource.SIDECAR:
+            check_path = sidecar_path
+        elif source is SubtitleSource.EMBEDDED:
+            check_path = video_path
+        else:
+            checking_freshness = False
+            check_path = None
+        if checking_freshness and payload.get("source_fingerprint") != _fingerprint(
+            check_path
+        ):
+            return None
         return SubtitleResult(
             guid=payload["guid"],
             source=SubtitleSource(payload["source"]),
@@ -270,7 +317,9 @@ def read_cached_subtitles(cache_dir: Path, guid: str) -> SubtitleResult | None:
         return None
 
 
-def write_cached_subtitles(cache_dir: Path, result: SubtitleResult) -> None:
+def write_cached_subtitles(
+    cache_dir: Path, result: SubtitleResult, source_path: Path | None = None
+) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
     final_path = _cache_path_for_guid(cache_dir, result.guid)
 
@@ -280,6 +329,7 @@ def write_cached_subtitles(cache_dir: Path, result: SubtitleResult) -> None:
         "sidecar_path": result.sidecar_path,
         "stream_index": result.stream_index,
         "cached_at": datetime.now(timezone.utc).isoformat(),
+        "source_fingerprint": _fingerprint(source_path),
         "entries": [
             {"index": e.index, "start": e.start, "end": e.end, "text": e.text}
             for e in result.entries
@@ -301,13 +351,13 @@ async def get_subtitles(
     ffprobe_timeout: float = 180.0,
     ffmpeg_timeout: float = 180.0,
 ) -> SubtitleResult:
-    cached = read_cached_subtitles(cache_dir, movie.guid)
+    video_path = Path(container_video_path)
+    sidecar = find_sidecar_subtitle(video_path)
+
+    cached = read_cached_subtitles(cache_dir, movie.guid, sidecar, video_path)
     if cached is not None:
         return cached
 
-    video_path = Path(container_video_path)
-
-    sidecar = find_sidecar_subtitle(video_path)
     if sidecar is not None:
         try:
             entries = parse_srt(read_sidecar_srt(sidecar))
@@ -322,7 +372,7 @@ async def get_subtitles(
                 entries=entries,
                 sidecar_path=str(sidecar),
             )
-            write_cached_subtitles(cache_dir, result)
+            write_cached_subtitles(cache_dir, result, sidecar)
             return result
 
     streams = await probe_subtitle_streams(container_video_path, ffprobe_timeout)
@@ -348,7 +398,7 @@ async def get_subtitles(
                 entries=entries,
                 stream_index=chosen.relative_index,
             )
-            write_cached_subtitles(cache_dir, result)
+            write_cached_subtitles(cache_dir, result, video_path)
             return result
 
     result = SubtitleResult(guid=movie.guid, source=SubtitleSource.NONE, entries=[])

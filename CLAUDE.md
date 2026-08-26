@@ -163,7 +163,7 @@ quote-search rendering path reuses the same seek/duration logic.
 - ✅ Sidecar-subtitle-file + embedded-subtitle-stream extraction (generic — not Bazarr-specific, see Section 5) + fuzzy quote search within a confirmed film
 - `/cinesnip-search` — library-wide quote search across the (lazily-built) subtitle cache, with an explicit opt-in to extend a search into not-yet-cached titles (Section 5)
 - ✅ Subtitle burn-in + style preset select menu (Section 7)
-- ✅ MP4/WebM output option (`format:` on `/cinesnip`/`/snip`, default mp4)
+- ✅ MP4/WebM output option (`format:` on `/cinesnip`/`/snip`, default gif — see decision #1)
 - Remaining library/drive path mappings (4K, 3D, TV — both Movies drives are done)
 - ✅ Document + confirm "Public Bot" disabled as part of Discord setup (Section 9)
 
@@ -206,21 +206,26 @@ quote-search rendering path reuses the same seek/duration logic.
 
 ### V2 subtitle-extraction build notes (non-obvious bugs — read before touching `app/worker/subtitles.py`)
 
-- **⚠️ Known gap, not yet fixed: the subtitle cache never invalidates when
-  the sidecar changes on disk.** `get_subtitles()` keys the cache purely on
-  the Plex media GUID, so once a title is parsed, a later edit or
-  replacement of its `.srt` is invisible to CineSnip **forever** — the
-  stale cued text/timings are served indefinitely. This is not theoretical:
-  it bit this project twice in one session (Bazarr re-fetching a subtitle,
-  then an `alass` re-sync of the same file), each time needing the cache
-  file deleted by hand before the new timings appeared, and it actively
-  confused the Section 6 sync diagnosis above. Re-syncing subtitles is a
-  *routine* Bazarr workflow, so this will keep recurring. Fix when touched:
-  record the sidecar's `mtime`+`size` (and the video's, for the embedded
-  path) in the cached payload and re-extract when they differ — cheap, one
-  `stat()` per lookup, no new config. Until then, the workaround is
-  deleting the title's cache file (`cache/<sha256-of-guid>.json`, via
-  `_cache_path_for_guid()`) or the whole `cache/` directory.
+- **✅ Fixed: the subtitle cache used to never invalidate when the sidecar
+  changed on disk.** `get_subtitles()` used to key the cache purely on the
+  Plex media GUID, so a later edit or replacement of a title's `.srt`
+  (or, for the embedded path, the video itself) was invisible to CineSnip
+  **forever** — this is not theoretical, it bit this project twice in one
+  session (a Bazarr re-fetch, then an `alass` re-sync of the same file),
+  each time needing the cache file deleted by hand, and it actively
+  confused the Section 6 sync diagnosis. Fixed by recording the relevant
+  source file's `(mtime, size)` fingerprint in the cached payload —
+  `_fingerprint()` in `app/worker/subtitles.py` — and re-extracting on
+  mismatch or on removal. `read_cached_subtitles()`/`write_cached_subtitles()`
+  take the *current* sidecar/video path candidates; which one actually
+  needs to be fresh is decided by the cached payload's own recorded source
+  (`SIDECAR` checks the sidecar, `EMBEDDED` checks the video), so an
+  unrelated file appearing doesn't wrongly invalidate a good cache entry.
+  `SubtitleSource.NONE` results still cache without a freshness check (no
+  single file backs a "no subtitles" result) — a title getting a sidecar
+  for the first time after being cached as NONE is a known, narrower,
+  unhandled case; workaround is still manual cache deletion for that one
+  scenario.
 - **Bazarr sidecar filenames chain multiple dot-separated markers, not
   just a language code** — e.g. `Film.en.hi.srt` (English,
   hearing-impaired/SDH) as a distinct file from a plain `Film.en.srt`.

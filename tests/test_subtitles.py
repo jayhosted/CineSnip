@@ -160,6 +160,90 @@ def test_cache_ignores_corrupt_file(tmp_path):
     assert read_cached_subtitles(tmp_path, "plex://movie/corrupt") is None
 
 
+def test_cache_is_invalidated_when_the_sidecar_file_changes(tmp_path):
+    # A Bazarr re-sync or a manual fix (e.g. alass) replaces the sidecar's
+    # content without necessarily touching its filename or the cached GUID
+    # key — without a freshness check, the stale cached entries would be
+    # served forever. See CLAUDE.md's subtitle-extraction build notes.
+    sidecar = tmp_path / "Film.srt"
+    sidecar.write_text("original")
+    video = tmp_path / "Film.mkv"
+    video.write_text("video bytes")
+
+    result = SubtitleResult(
+        guid="plex://movie/abc",
+        source=SubtitleSource.SIDECAR,
+        entries=[SubtitleEntry(index=1, start=1.0, end=2.0, text="Hi")],
+        sidecar_path=str(sidecar),
+    )
+    write_cached_subtitles(tmp_path, result, sidecar)
+
+    assert read_cached_subtitles(tmp_path, "plex://movie/abc", sidecar, video) == result
+
+    sidecar.write_text("resynced content, different mtime/size")
+    assert read_cached_subtitles(tmp_path, "plex://movie/abc", sidecar, video) is None
+
+
+def test_cache_is_invalidated_when_the_sidecar_is_removed(tmp_path):
+    sidecar = tmp_path / "Film.srt"
+    sidecar.write_text("original")
+    video = tmp_path / "Film.mkv"
+    video.write_text("video bytes")
+
+    result = SubtitleResult(
+        guid="plex://movie/abc",
+        source=SubtitleSource.SIDECAR,
+        entries=[SubtitleEntry(index=1, start=1.0, end=2.0, text="Hi")],
+        sidecar_path=str(sidecar),
+    )
+    write_cached_subtitles(tmp_path, result, sidecar)
+
+    sidecar.unlink()
+    assert read_cached_subtitles(tmp_path, "plex://movie/abc", None, video) is None
+
+
+def test_cache_for_embedded_source_is_not_invalidated_by_an_unrelated_sidecar_appearing(
+    tmp_path,
+):
+    # A title cached as EMBEDDED has no sidecar involved in producing it —
+    # a sidecar showing up afterwards shouldn't be treated as making that
+    # cache stale (a different, deliberate re-check would be needed to
+    # actually prefer the new sidecar).
+    video = tmp_path / "Film.mkv"
+    video.write_text("video bytes")
+
+    result = SubtitleResult(
+        guid="plex://movie/abc",
+        source=SubtitleSource.EMBEDDED,
+        entries=[SubtitleEntry(index=1, start=1.0, end=2.0, text="Hi")],
+        stream_index=0,
+    )
+    write_cached_subtitles(tmp_path, result, video)
+
+    new_sidecar = tmp_path / "Film.srt"
+    new_sidecar.write_text("a sidecar that didn't exist when this was cached")
+
+    assert (
+        read_cached_subtitles(tmp_path, "plex://movie/abc", new_sidecar, video) == result
+    )
+
+
+def test_cache_for_embedded_source_is_invalidated_when_the_video_changes(tmp_path):
+    video = tmp_path / "Film.mkv"
+    video.write_text("video bytes")
+
+    result = SubtitleResult(
+        guid="plex://movie/abc",
+        source=SubtitleSource.EMBEDDED,
+        entries=[SubtitleEntry(index=1, start=1.0, end=2.0, text="Hi")],
+        stream_index=0,
+    )
+    write_cached_subtitles(tmp_path, result, video)
+
+    video.write_text("a re-remuxed file with different bytes")
+    assert read_cached_subtitles(tmp_path, "plex://movie/abc", None, video) is None
+
+
 def test_cache_paths_for_special_character_guids_are_filesystem_safe(tmp_path):
     from app.worker.subtitles import _cache_path_for_guid
 
