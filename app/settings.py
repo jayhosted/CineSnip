@@ -97,6 +97,14 @@ class Settings(BaseModel):
     cache_dir: Path = Path("cache")
     dev_guild_id: int | None = None
 
+    @property
+    def quote_index_db_path(self) -> Path:
+        # Derived, not a config.yaml field — the index is a rebuildable
+        # cache-of-a-cache (guid -> rating_key/title/library_name for
+        # already-parsed titles), not something an installer needs to
+        # configure separately from cache_dir itself.
+        return self.cache_dir / "quote_index.db"
+
     def path_mappings_for(self, library_name: str) -> list[PathMapping]:
         for library in self.libraries:
             if library.name == library_name:

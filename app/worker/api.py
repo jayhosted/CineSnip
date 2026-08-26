@@ -8,7 +8,9 @@ from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
 from app.settings import Settings, SettingsError
+from app.worker import quote_index
 from app.worker.ffmpeg import ClipRenderer, RenderTimeoutError, parse_timecode
+from app.worker.library_search import search_cached_library
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 from app.worker.plex_client import MovieNotFoundError, MovieResult, PlexClient
 from app.worker.quotes import find_quote_matches
@@ -100,6 +102,25 @@ class ResolveQuoteResponse(BaseModel):
     matches: list[QuoteMatchOut]
 
 
+class LibraryQuoteMatchOut(BaseModel):
+    rating_key: int
+    title: str
+    library_name: str
+    start: float
+    end: float
+    timecode: str
+    text: str
+    score: float
+    context_before: list[str]
+    context_after: list[str]
+
+
+class LibrarySearchResponse(BaseModel):
+    matches: list[LibraryQuoteMatchOut]
+    confident_score: float
+    min_score: float
+
+
 def _format_display_timecode(seconds: float) -> str:
     total_seconds = int(seconds)
     hours, remainder = divmod(total_seconds, 3600)
@@ -117,6 +138,20 @@ def _resolve_container_path(movie: MovieResult, settings: Settings) -> str:
         return resolve_container_path(movie.plex_path, mappings)
     except NoPathMappingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _index_if_searchable(settings: Settings, movie: MovieResult, result: SubtitleResult) -> None:
+    # Only titles with real, usable subtitles are worth surfacing from
+    # /cinesnip-search — a NONE result (Section 5's documented gap) has no
+    # entries to search, so indexing it would only cost lookups for nothing.
+    if result.source is not SubtitleSource.NONE and result.entries:
+        quote_index.upsert_cached_title(
+            settings.quote_index_db_path,
+            result.guid,
+            movie.rating_key,
+            movie.title,
+            movie.library_name,
+        )
 
 
 def _to_out(movie: MovieResult) -> MovieResultOut:
@@ -252,6 +287,8 @@ def create_app(settings: Settings) -> FastAPI:
             except (SubprocessTimeoutError, RuntimeError) as exc:
                 raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+            _index_if_searchable(settings, movie, subtitle_result)
+
             # A title with no usable subtitles (Section 5's documented gap)
             # degrades to a plain render rather than erroring — the user
             # still gets *a* clip, just without burn-in text.
@@ -313,6 +350,8 @@ def create_app(settings: Settings) -> FastAPI:
             )
         except (SubprocessTimeoutError, RuntimeError) as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        _index_if_searchable(settings, movie, result)
 
         return movie, result
 
@@ -391,6 +430,46 @@ def create_app(settings: Settings) -> FastAPI:
                 )
                 for m in matches
             ],
+        )
+
+    # Library-wide search (CLAUDE.md Section 5's /cinesnip-search, Tier 1
+    # only): searches the subtitle cache via the quote_index, never the live
+    # filesystem/Plex — so it's fast regardless of library size, but its
+    # scope is exactly "titles CineSnip has already read via any flow". An
+    # empty index/no matches is a normal outcome, not an error.
+    @app.get("/search-quote", response_model=LibrarySearchResponse)
+    async def search_quote(quote: str) -> LibrarySearchResponse:
+        cached_titles = quote_index.list_cached_titles(settings.quote_index_db_path)
+
+        qm = settings.quote_match
+        matches = search_cached_library(
+            settings.cache_dir,
+            cached_titles,
+            quote,
+            result_limit=qm.candidate_limit,
+            min_score=qm.min_score,
+            max_window_gap_seconds=qm.max_window_gap_seconds,
+            context_lines=qm.context_lines,
+        )
+
+        return LibrarySearchResponse(
+            matches=[
+                LibraryQuoteMatchOut(
+                    rating_key=m.rating_key,
+                    title=m.title,
+                    library_name=m.library_name,
+                    start=m.match.start,
+                    end=m.match.end,
+                    timecode=_format_display_timecode(m.match.start),
+                    text=m.match.text,
+                    score=m.match.score,
+                    context_before=list(m.match.context_before),
+                    context_after=list(m.match.context_after),
+                )
+                for m in matches
+            ],
+            confident_score=qm.confident_score,
+            min_score=qm.min_score,
         )
 
     return app

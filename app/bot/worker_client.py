@@ -73,6 +73,27 @@ class RenderResult:
     style: str
 
 
+@dataclass
+class LibraryQuoteMatchResult:
+    rating_key: int
+    title: str
+    library_name: str
+    start: float
+    end: float
+    timecode: str
+    text: str
+    score: float
+    context_before: list[str]
+    context_after: list[str]
+
+
+@dataclass
+class LibrarySearchResult:
+    matches: list[LibraryQuoteMatchResult]
+    confident_score: float
+    min_score: float
+
+
 class WorkerClient:
     """Talks to the worker's FastAPI app over real loopback HTTP.
 
@@ -108,6 +129,13 @@ class WorkerClient:
         payload = response.json()
         payload["matches"] = [QuoteMatchResult(**m) for m in payload["matches"]]
         return ResolveQuoteResult(**payload)
+
+    async def search_quote(self, quote: str) -> LibrarySearchResult:
+        response = await self._client.get("/search-quote", params={"quote": quote})
+        response.raise_for_status()
+        payload = response.json()
+        payload["matches"] = [LibraryQuoteMatchResult(**m) for m in payload["matches"]]
+        return LibrarySearchResult(**payload)
 
     async def render(
         self,
