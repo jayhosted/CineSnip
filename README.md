@@ -117,23 +117,24 @@ for the clip, and shows the best match with surrounding context and a
 confidence score; if it's not confident, or you want a different line, use
 "Show other matches" to pick from the next-best candidates.
 
-Either way, you'll then get a subtitle-style picker — Classic, Boxed,
-Cinematic, Meme, Original, or No Subtitles — before the clip renders. A
-sensible default is pre-selected (Classic after a quote match, since there's
-a known line to show; No Subtitles for a bare timecode, since there's no
-guarantee that title even has usable subtitles) — hit Generate to accept it,
-or pick a different style first. If you ask for a style on a title with no
-usable subtitles, CineSnip still renders the clip, just without burned-in
-text, and says so.
+Either way you'll get a clip back straight away, with subtitles already
+burned in using a sensible default style — Classic after a quote match
+(there's a known line to show), or no subtitles for a bare timecode (no
+guarantee that title even has usable subtitles). A style dropdown sits
+below the result if you want something else — Boxed, Cinematic, Meme,
+Original, or No Subtitles — and picking one re-renders in place, no need to
+restart the command. A "Post to channel" button shares whatever's currently
+shown beyond just you. If you ask for a style on a title with no usable
+subtitles, CineSnip still renders the clip, just without burned-in text, and
+says so.
 
-You'll get a clip back either way, with a "Post to channel" button to share
-it beyond just you.
-
-Add `format:mp4`/`format:webm`/`format:gif` to pick the output — mp4 is the
-default (`render_defaults.format` in `config.yaml`) since it's much smaller
-than an equivalent gif at the same visual quality, and faster to encode on
-CPU than webm. Discord renders all three inline the same way, so `gif` is
-only worth picking if you specifically want a real animated GIF file.
+Add `format:gif`/`format:mp4`/`format:webm` to pick the output — gif is the
+default (`render_defaults.format` in `config.yaml`) because it's the only
+one of the three that actually autoplays/loops inline in Discord and can be
+added to the GIF picker's favorites; mp4/webm are much smaller but show up
+as a real video player (play button, volume slider) instead, so they're
+worth picking only if you specifically want the smaller file and don't mind
+clicking play.
 
 ## Troubleshooting
 

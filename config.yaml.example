@@ -15,15 +15,18 @@ path_mappings:
 # [min_duration_seconds, max_duration_seconds] — duration_seconds itself
 # is clamped to that same range too.
 # format is the default output when the user doesn't pick one via
-# /cinesnip's format: option ("gif", "mp4", or "webm") — mp4/webm give the
-# same visual quality at a much smaller file size than gif.
+# /cinesnip's format: option ("gif", "mp4", or "webm"). gif is the default
+# because it's the only one of the three Discord actually autoplays/loops
+# inline and lets you "Add to Favorites" in the GIF picker — mp4/webm are
+# much smaller but show as a real video player (play button, volume
+# slider) instead, confirmed against real Discord behavior.
 render_defaults:
   duration_seconds: 4
   fps: 15
   width: 480
   min_duration_seconds: 1
   max_duration_seconds: 15
-  format: mp4
+  format: gif
 
 # Embedded-subtitle extraction has no fast seek — it reads sequentially
 # through the whole file. Raise this if you see extraction timeouts on
