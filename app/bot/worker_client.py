@@ -64,6 +64,12 @@ class ResolveResult:
 
 
 @dataclass
+class SubtitleStatusResult:
+    rating_key: int
+    likely_slow: bool
+
+
+@dataclass
 class QuoteMatchResult:
     start: float
     end: float
@@ -137,6 +143,11 @@ class WorkerClient:
         response = await self._client.get(f"/resolve/{rating_key}")
         response.raise_for_status()
         return ResolveResult(**response.json())
+
+    async def subtitle_status(self, rating_key: int) -> SubtitleStatusResult:
+        response = await self._client.get(f"/subtitle-status/{rating_key}")
+        response.raise_for_status()
+        return SubtitleStatusResult(**response.json())
 
     async def search_shows(self, query: str) -> list[MovieResult]:
         response = await self._client.get("/search-shows", params={"query": query})

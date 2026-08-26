@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Response
@@ -24,7 +25,13 @@ from app.worker.quote_index import CachedTitle
 from app.worker.quotes import find_quote_matches
 from app.worker.subprocess_utils import SubprocessTimeoutError
 from app.worker.subtitle_render import STYLE_PRESETS
-from app.worker.subtitles import SubtitleResult, SubtitleSource, get_subtitles
+from app.worker.subtitles import (
+    SubtitleResult,
+    SubtitleSource,
+    find_sidecar_subtitle,
+    get_subtitles,
+    read_cached_subtitles,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +47,19 @@ class MovieResultOut(BaseModel):
 
 class SearchResponse(BaseModel):
     results: list[MovieResultOut]
+
+
+class SubtitleStatusResponse(BaseModel):
+    rating_key: int
+    # True when neither a sidecar file nor a cached result exists for this
+    # title, meaning a subtitle-needing request (quote search, or a styled
+    # render) is about to fall through to a cold embedded-stream extraction
+    # — which has no fast-seek and can take minutes on a large file (Section
+    # 5/6 in CLAUDE.md). A cheap, ffmpeg-free hint so the bot can warn the
+    # user *before* committing to that wait, not a guarantee: the real
+    # request still does its own proper freshness-checked cache read and can
+    # legitimately reach a different outcome (e.g. the file changed).
+    likely_slow: bool
 
 
 class ResolveResponse(BaseModel):
@@ -227,6 +247,21 @@ def create_app(settings: Settings) -> FastAPI:
             thumb_url=movie.thumb_url,
             library_name=movie.library_name,
         )
+
+    @app.get("/subtitle-status/{rating_key}", response_model=SubtitleStatusResponse)
+    async def subtitle_status(rating_key: int) -> SubtitleStatusResponse:
+        movie = await _get_movie(rating_key)
+        try:
+            container_path = _resolve_container_path(movie, settings)
+        except HTTPException:
+            # Best-effort hint endpoint — a path-mapping problem is the real
+            # request's job to report clearly, not this one's.
+            return SubtitleStatusResponse(rating_key=rating_key, likely_slow=False)
+
+        sidecar = find_sidecar_subtitle(Path(container_path))
+        cached = read_cached_subtitles(settings.cache_dir, movie.guid)
+        likely_slow = sidecar is None and cached is None
+        return SubtitleStatusResponse(rating_key=rating_key, likely_slow=likely_slow)
 
     @app.get("/resolve-episode/{show_rating_key}", response_model=ResolveResponse)
     async def resolve_episode(show_rating_key: int, season: int, episode: int) -> ResolveResponse:
