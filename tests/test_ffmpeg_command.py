@@ -25,9 +25,33 @@ def test_parse_timecode(text, expected_seconds):
     assert parse_timecode(text) == expected_seconds
 
 
+@pytest.mark.parametrize(
+    "text,expected_seconds",
+    [
+        ("22m12s", 1332.0),
+        ("22min12sec", 1332.0),
+        ("1hr22min2sec", 4922.0),
+        ("1h22m12s", 4932.0),
+        ("22 min 12 sec", 1332.0),
+        ("90s", 90.0),
+        ("1h", 3600.0),
+        ("2minutes", 120.0),
+        ("1hour30minutes", 5400.0),
+        ("45sec", 45.0),
+    ],
+)
+def test_parse_timecode_accepts_unit_suffixed_forms(text, expected_seconds):
+    assert parse_timecode(text) == expected_seconds
+
+
 def test_parse_timecode_rejects_garbage():
     with pytest.raises(ValueError):
         parse_timecode("not-a-timecode")
+
+
+def test_parse_timecode_rejects_out_of_order_units():
+    with pytest.raises(ValueError):
+        parse_timecode("12s22m")
 
 
 def test_seek_and_duration_are_input_options_before_the_video_input():
