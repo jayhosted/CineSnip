@@ -38,6 +38,15 @@ def test_parse_timecode(text, expected_seconds):
         ("2minutes", 120.0),
         ("1hour30minutes", 5400.0),
         ("45sec", 45.0),
+        # Abbreviated and fully-spelled-out forms must agree exactly —
+        # users won't reliably pick one convention over the other.
+        ("42m19s", 2539.0),
+        ("42min19sec", 2539.0),
+        ("42minutes19seconds", 2539.0),
+        ("42 minutes 19 seconds", 2539.0),
+        ("1hr2min3sec", 3723.0),
+        ("1h2m3s", 3723.0),
+        ("1hour2minutes3seconds", 3723.0),
     ],
 )
 def test_parse_timecode_accepts_unit_suffixed_forms(text, expected_seconds):
