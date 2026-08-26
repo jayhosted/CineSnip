@@ -19,12 +19,14 @@ class RenderDefaults(BaseModel):
     fps: int = 15
     width: int = 480
     timeout_seconds: float = 60.0
-    # CLAUDE.md decision #1: MP4/WebM by default, GIF only when explicitly
-    # asked for — same visual quality at a much smaller file size. mp4
-    # (H.264) is the default over webm since it encodes faster on CPU
-    # (no NVENC yet — Section 6) and is the more universally-compatible
-    # container.
-    format: Literal["gif", "mp4", "webm"] = "mp4"
+    # CLAUDE.md decision #1 (revised): GIF by default. mp4/webm were tried
+    # as the default for their much smaller file size, but real Discord
+    # testing showed they don't actually behave like a GIF there — no
+    # autoplay/loop, a real video player with a play button and volume
+    # slider instead, and no "Add to Favorites" GIF-picker entry, which was
+    # the whole point. format:mp4/format:webm remain available as explicit
+    # opt-ins for anyone who'd rather trade those for a much smaller file.
+    format: Literal["gif", "mp4", "webm"] = "gif"
     # A quote-driven clip uses the matched subtitle line's own start/end
     # instead of duration_seconds (so the clip is exactly that line, no
     # more), but that raw span still needs bounds: a one-word cue is too
