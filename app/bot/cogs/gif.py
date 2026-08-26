@@ -215,7 +215,12 @@ class ClipResultView(discord.ui.View):
             discord.SelectOption(label=label, value=value, default=(value == self.style))
             for value, label in _STYLE_OPTIONS
         ]
-        select = discord.ui.Select(placeholder="Change subtitle style", options=options)
+        # Explicit row: item order alone puts this below the decorated
+        # "Post to channel" button (added first, during super().__init__())
+        # — pinning rows is what actually controls layout.
+        select = discord.ui.Select(
+            placeholder="Change subtitle style", options=options, row=0
+        )
         select.callback = self._on_style_change
         self.add_item(select)
 
@@ -261,7 +266,7 @@ class ClipResultView(discord.ui.View):
             view=self,
         )
 
-    @discord.ui.button(label="Post to channel", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Post to channel", style=discord.ButtonStyle.primary, row=1)
     async def post(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
