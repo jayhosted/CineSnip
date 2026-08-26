@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 from plexapi.exceptions import NotFound
@@ -26,20 +27,37 @@ class MovieResult:
 
 
 class PlexClient:
+    # A single /cinesnip invocation calls get_movie() up to three times for
+    # the same rating_key (/resolve, /resolve-quote, /render), each a real
+    # network round-trip to Plex. This TTL only needs to cover the handful
+    # of seconds between those calls within one command — long enough to
+    # dedupe that, short enough that a retitled/deleted item doesn't linger.
+    _CACHE_TTL_SECONDS = 30.0
+
     def __init__(self, settings: Settings):
         self._server = PlexServer(settings.plex_url, settings.plex_token)
         self._section = self._server.library.section(settings.movies_library_name)
+        self._movie_cache: dict[int, tuple[float, MovieResult]] = {}
 
     def search_movies(self, query: str, limit: int = 25) -> list[MovieResult]:
         movies = self._section.search(title=query, libtype="movie")[:limit]
         return [self._to_result(m) for m in movies]
 
     def get_movie(self, rating_key: int) -> MovieResult:
+        cached = self._movie_cache.get(rating_key)
+        if cached is not None:
+            cached_at, result = cached
+            if time.monotonic() - cached_at < self._CACHE_TTL_SECONDS:
+                return result
+
         try:
             movie = self._server.fetchItem(rating_key)
         except NotFound as exc:
             raise MovieNotFoundError(rating_key) from exc
-        return self._to_result(movie)
+
+        result = self._to_result(movie)
+        self._movie_cache[rating_key] = (time.monotonic(), result)
+        return result
 
     @staticmethod
     def _to_result(movie) -> MovieResult:
