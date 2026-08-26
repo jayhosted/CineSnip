@@ -40,9 +40,16 @@ class RenderRequest(BaseModel):
     timecode: str
     # Set by a quote-driven clip to the matched line's own span (end -
     # start), so the render is exactly that line rather than a fixed
-    # duration. Omitted (None) for a direct timecode request, which uses
-    # render_defaults.duration_seconds instead.
+    # duration. Mutually exclusive with end_timecode in practice (the bot
+    # only ever sends one or the other) — duration takes priority if both
+    # are somehow set.
     duration: float | None = None
+    # Set for a direct timecode request with an explicit end, so the user
+    # can pick a custom span instead of the fixed render_defaults.duration_seconds.
+    # A raw string (not a pre-computed float) since it needs the same
+    # parse_timecode() as `timecode` — kept server-side so timecode format
+    # support only lives in one place.
+    end_timecode: str | None = None
 
 
 class SubtitleEntryOut(BaseModel):
@@ -180,8 +187,37 @@ def create_app(settings: Settings) -> FastAPI:
             )
 
         rd = settings.render_defaults
-        clip_duration = req.duration if req.duration is not None else rd.duration_seconds
-        clip_duration = max(rd.min_duration_seconds, min(rd.max_duration_seconds, clip_duration))
+        if req.end_timecode is not None:
+            # An explicit end is a deliberate choice the user typed — clamp
+            # duration/timecode-only paths silently instead (a UX nicety),
+            # but reject an explicit request outside the configured bounds
+            # with a clear error rather than silently giving them something
+            # shorter or longer than they asked for.
+            try:
+                end = parse_timecode(req.end_timecode)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            clip_duration = end - start
+            if clip_duration <= 0:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"end_timecode ({req.end_timecode}) must be after "
+                        f"timecode ({req.timecode})."
+                    ),
+                )
+            if not (rd.min_duration_seconds <= clip_duration <= rd.max_duration_seconds):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"That's a {clip_duration:.1f}s clip; clips must be "
+                        f"between {rd.min_duration_seconds:.0f}s and "
+                        f"{rd.max_duration_seconds:.0f}s. Pick a closer end_timecode."
+                    ),
+                )
+        else:
+            clip_duration = req.duration if req.duration is not None else rd.duration_seconds
+            clip_duration = max(rd.min_duration_seconds, min(rd.max_duration_seconds, clip_duration))
 
         try:
             gif_bytes = await app.state.renderer.render_gif(

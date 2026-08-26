@@ -202,22 +202,13 @@ class GifCog(commands.Cog):
             )
         return choices
 
-    @app_commands.command(
-        name="cinesnip",
-        description="Generate a GIF clip from a film at a quote or timecode.",
-    )
-    @app_commands.describe(
-        film="The film to search for",
-        quote="A line of dialogue to find (fuzzy — close is fine)",
-        timecode="Timestamp, e.g. 1:23:45",
-    )
-    @app_commands.autocomplete(film=film_autocomplete)
-    async def gif(
+    async def _generate(
         self,
         interaction: discord.Interaction,
         film: str,
-        quote: str | None = None,
-        timecode: str | None = None,
+        quote: str | None,
+        timecode: str | None,
+        end_timecode: str | None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
@@ -233,6 +224,12 @@ class GifCog(commands.Cog):
         if not quote and not timecode:
             await interaction.followup.send(
                 "Give either a `quote:` or a `timecode:`.", ephemeral=True
+            )
+            return
+
+        if end_timecode and not timecode:
+            await interaction.followup.send(
+                "`end_timecode` needs a `timecode` to start from.", ephemeral=True
             )
             return
 
@@ -306,7 +303,10 @@ class GifCog(commands.Cog):
 
         try:
             gif_bytes = await self.bot.worker.render(
-                rating_key, render_timecode, render_duration
+                rating_key,
+                render_timecode,
+                duration=render_duration,
+                end_timecode=end_timecode if not quote else None,
             )
         except httpx.HTTPError as exc:
             await interaction.edit_original_response(
@@ -319,3 +319,45 @@ class GifCog(commands.Cog):
         await interaction.edit_original_response(
             content=None, attachments=[file], view=post_view
         )
+
+    @app_commands.command(
+        name="cinesnip",
+        description="Generate a GIF clip from a film at a quote or timecode.",
+    )
+    @app_commands.describe(
+        film="The film to search for",
+        quote="A line of dialogue to find (fuzzy — close is fine)",
+        timecode="Timestamp, e.g. 1:23:45 or 1h23m45s",
+        end_timecode="Custom clip end (timecode only, not quote) — same formats as timecode",
+    )
+    @app_commands.autocomplete(film=film_autocomplete)
+    async def cinesnip(
+        self,
+        interaction: discord.Interaction,
+        film: str,
+        quote: str | None = None,
+        timecode: str | None = None,
+        end_timecode: str | None = None,
+    ) -> None:
+        await self._generate(interaction, film, quote, timecode, end_timecode)
+
+    @app_commands.command(
+        name="snip",
+        description="Generate a GIF clip from a film at a quote or timecode.",
+    )
+    @app_commands.describe(
+        film="The film to search for",
+        quote="A line of dialogue to find (fuzzy — close is fine)",
+        timecode="Timestamp, e.g. 1:23:45 or 1h23m45s",
+        end_timecode="Custom clip end (timecode only, not quote) — same formats as timecode",
+    )
+    @app_commands.autocomplete(film=film_autocomplete)
+    async def snip(
+        self,
+        interaction: discord.Interaction,
+        film: str,
+        quote: str | None = None,
+        timecode: str | None = None,
+        end_timecode: str | None = None,
+    ) -> None:
+        await self._generate(interaction, film, quote, timecode, end_timecode)

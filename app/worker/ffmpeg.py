@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import uuid
 from pathlib import Path
 
@@ -10,21 +11,49 @@ class RenderTimeoutError(SubprocessTimeoutError):
     pass
 
 
-def parse_timecode(text: str) -> float:
-    """Parse 'HH:MM:SS', 'MM:SS', or a plain number of seconds into seconds."""
-    text = text.strip()
-    parts = text.split(":")
-    if not 1 <= len(parts) <= 3:
-        raise ValueError(f"Invalid timecode: '{text}'")
-    try:
-        numbers = [float(p) for p in parts]
-    except ValueError as exc:
-        raise ValueError(f"Invalid timecode: '{text}'") from exc
+# Accepts any subset of hours/minutes/seconds, in that order, with any of
+# these unit spellings — e.g. "1h22m12s", "22min 12sec", "1hr22min2sec".
+_UNIT_TIMECODE_PATTERN = re.compile(
+    r"^\s*"
+    r"(?:(?P<hours>\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\s*)?"
+    r"(?:(?P<minutes>\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\s*)?"
+    r"(?:(?P<seconds>\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\s*)?"
+    r"$",
+    re.IGNORECASE,
+)
 
-    seconds = 0.0
-    for n in numbers:
-        seconds = seconds * 60 + n
-    return seconds
+
+def parse_timecode(text: str) -> float:
+    """Parse a timestamp into seconds. Accepts 'HH:MM:SS'/'MM:SS'/a plain
+    number of seconds, or unit-suffixed forms like '1h22m12s', '22m12s',
+    '22min 12sec' (any subset of hours/minutes/seconds, in that order)."""
+    text = text.strip()
+
+    if ":" in text:
+        parts = text.split(":")
+        if not 1 <= len(parts) <= 3:
+            raise ValueError(f"Invalid timecode: '{text}'")
+        try:
+            numbers = [float(p) for p in parts]
+        except ValueError as exc:
+            raise ValueError(f"Invalid timecode: '{text}'") from exc
+
+        seconds = 0.0
+        for n in numbers:
+            seconds = seconds * 60 + n
+        return seconds
+
+    unit_match = _UNIT_TIMECODE_PATTERN.match(text)
+    if unit_match and any(unit_match.groups()):
+        hours = float(unit_match.group("hours") or 0)
+        minutes = float(unit_match.group("minutes") or 0)
+        seconds = float(unit_match.group("seconds") or 0)
+        return hours * 3600 + minutes * 60 + seconds
+
+    try:
+        return float(text)
+    except ValueError:
+        raise ValueError(f"Invalid timecode: '{text}'") from None
 
 
 def _format_timecode(seconds: float) -> str:

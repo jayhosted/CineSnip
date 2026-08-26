@@ -101,11 +101,20 @@ class WorkerClient:
         return ResolveQuoteResult(**payload)
 
     async def render(
-        self, rating_key: int, timecode: str, duration: float | None = None
+        self,
+        rating_key: int,
+        timecode: str,
+        duration: float | None = None,
+        end_timecode: str | None = None,
     ) -> bytes:
         response = await self._client.post(
             "/render",
-            json={"rating_key": rating_key, "timecode": timecode, "duration": duration},
+            json={
+                "rating_key": rating_key,
+                "timecode": timecode,
+                "duration": duration,
+                "end_timecode": end_timecode,
+            },
             timeout=RENDER_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
