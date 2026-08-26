@@ -244,6 +244,15 @@ class ClipResultView(discord.ui.View):
             return
 
         await interaction.response.defer()
+        # A style change on a title that was rendered without one (e.g. a
+        # bare-timecode clip) can be the first request that actually needs
+        # this title's subtitles — same cold-extraction risk as a fresh
+        # quote search, just reached via a different route.
+        slow_warning = await _slow_subtitle_warning(self._worker, self._rating_key)
+        if slow_warning:
+            await interaction.edit_original_response(
+                content=f"Regenerating with a new style…{slow_warning}"
+            )
         try:
             render_result = await self._worker.render(
                 self._rating_key,
@@ -296,6 +305,29 @@ def _validate_quote_or_timecode(
     if end_timecode and not timecode:
         return "`end_timecode` needs a `timecode` to start from."
     return None
+
+
+async def _slow_subtitle_warning(worker, rating_key: int) -> str:
+    """Best-effort hint (cheap: no ffmpeg involved on the worker side) that a
+    quote search or styled render is about to fall through to a cold
+    embedded-subtitle extraction, which has no fast seek and can take
+    several minutes on a large file (CLAUDE.md's extraction_timeout_seconds
+    build notes). A failure here should never block the real search/render
+    — worst case, no warning gets shown. Shared by GifCog._generate's quote
+    branch and ClipResultView's style-change handler, the two places that
+    can trigger this cost.
+    """
+    try:
+        status = await worker.subtitle_status(rating_key)
+    except httpx.HTTPError:
+        return ""
+    if not status.likely_slow:
+        return ""
+    return (
+        " — first time reading this title's subtitles from the video file "
+        "itself, can take a few minutes for a large file (future searches "
+        "will be instant)"
+    )
 
 
 def _error_detail(exc: httpx.HTTPError) -> str:
@@ -457,8 +489,9 @@ class GifCog(commands.Cog):
                 if timecode
                 else ""
             )
+            slow_warning = await _slow_subtitle_warning(self.bot.worker, rating_key)
             await interaction.edit_original_response(
-                content=f"Searching {resolved.title}'s subtitles{library_note}…{note}"
+                content=f"Searching {resolved.title}'s subtitles{library_note}…{note}{slow_warning}"
             )
             try:
                 resolved_quote = await self.bot.worker.resolve_quote(rating_key, quote)
