@@ -99,13 +99,29 @@ def test_scale_filter_has_no_crop_for_flat_video():
 def test_scale_filter_crops_left_eye_for_side_by_side():
     renderer = ClipRenderer(fps=15, width=480)
     filt = renderer._scale_and_subtitle_filter(None, "side_by_side")
-    assert filt == "crop=iw/2:ih:0:0,scale=480:-2:flags=lanczos"
+    assert filt == "crop=iw/2:ih:0:0,setsar=1,scale=480:-2:flags=lanczos"
 
 
 def test_scale_filter_crops_top_eye_for_over_under():
     renderer = ClipRenderer(fps=15, width=480)
     filt = renderer._scale_and_subtitle_filter(None, "over_under")
-    assert filt == "crop=iw:ih/2:0:0,scale=480:-2:flags=lanczos"
+    assert filt == "crop=iw:ih/2:0:0,setsar=1,scale=480:-2:flags=lanczos"
+
+
+def test_scale_filter_resets_sar_after_3d_crop():
+    """Regression test for a real bug: a packed 3D frame's sample aspect
+    ratio describes the combined stereo pair, not a single eye. ffmpeg's
+    crop filter carries it over unchanged onto the cropped eye, which then
+    plays back stretched — confirmed on a real "Full-SBS" file tagging SAR
+    2:1 on its packed frame, which survived the crop and reported a
+    stretched 32:9 DAR on the cropped single eye instead of 16:9. setsar=1
+    must appear between the crop and the scale filter whenever a 3D crop
+    is applied, and must be absent for flat (non-3D) video.
+    """
+    renderer = ClipRenderer(fps=15, width=480)
+    assert "setsar=1" not in renderer._scale_and_subtitle_filter(None, "none")
+    assert "setsar=1" in renderer._scale_and_subtitle_filter(None, "side_by_side")
+    assert "setsar=1" in renderer._scale_and_subtitle_filter(None, "over_under")
 
 
 def test_scale_filter_puts_crop_before_scale_and_subtitles():
@@ -113,4 +129,4 @@ def test_scale_filter_puts_crop_before_scale_and_subtitles():
 
     renderer = ClipRenderer(fps=15, width=480)
     filt = renderer._scale_and_subtitle_filter(Path("/tmp/subs.ass"), "over_under")
-    assert filt.startswith("crop=iw:ih/2:0:0,scale=480:-2:flags=lanczos,subtitles=")
+    assert filt.startswith("crop=iw:ih/2:0:0,setsar=1,scale=480:-2:flags=lanczos,subtitles=")

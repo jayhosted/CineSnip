@@ -273,6 +273,17 @@ class ClipRenderer:
         crop_filter = _THREE_D_CROP_FILTERS.get(three_d_format)
         if crop_filter is not None:
             filters.append(crop_filter)
+            # A packed 3D frame's sample aspect ratio describes the combined
+            # stereo pair, not a single eye — ffmpeg's crop filter carries it
+            # over unchanged onto the cropped eye, which then gets played
+            # back stretched (confirmed on this project's own library: a
+            # "Full-SBS" file tags SAR 2:1 on its 3840x1080 packed frame,
+            # which survives the crop onto its cropped 1920x1080 single eye
+            # and reports a stretched 32:9 DAR instead of the correct 16:9).
+            # A single eye's own pixels are square, so reset SAR immediately
+            # after cropping rather than trusting whatever the source tagged
+            # on the packed frame.
+            filters.append("setsar=1")
         filters.append(f"scale={self._width}:-2:flags=lanczos")
         if ass_path is not None:
             filters.append(f"subtitles={_escape_filter_path(ass_path)}")
