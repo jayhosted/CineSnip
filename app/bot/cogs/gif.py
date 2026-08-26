@@ -32,13 +32,14 @@ class ConfirmView(discord.ui.View):
         self.stop()
 
 
-def _confidence_label(score: float, confident_score: float) -> str:
+def _confidence_label(score: float, min_score: float, confident_score: float) -> str:
     if score >= confident_score:
         return "high"
-    # confident_score is the only threshold the bot knows (echoed from the
-    # worker's config); 50 is the engine's documented noise floor. Neither
-    # is duplicated here beyond this fixed reference point for bucketing.
-    midpoint = (confident_score + 50.0) / 2
+    # Bucket the range between the engine's real noise floor (min_score,
+    # echoed from the worker's config — nothing below it is ever returned
+    # as a match) and confident_score, both sent by the API so this never
+    # drifts from the actual configured values.
+    midpoint = (confident_score + min_score) / 2
     if score >= midpoint:
         return "medium"
     return "low"
@@ -47,6 +48,7 @@ def _confidence_label(score: float, confident_score: float) -> str:
 def _match_embed(
     title: str,
     match: QuoteMatchResult,
+    min_score: float,
     confident_score: float,
     position: int,
     total: int,
@@ -56,7 +58,7 @@ def _match_embed(
     lines.extend(f"> {line}" for line in match.context_after)
 
     embed = discord.Embed(title=title, description="\n".join(lines))
-    label = _confidence_label(match.score, confident_score)
+    label = _confidence_label(match.score, min_score, confident_score)
     embed.add_field(name="Timecode", value=match.timecode)
     embed.add_field(name="Confidence", value=f"{match.score:.0f}% ({label})")
     embed.set_footer(text=f"Match {position} of {total}")
@@ -70,11 +72,16 @@ class QuoteMatchView(discord.ui.View):
     """
 
     def __init__(
-        self, title: str, matches: list[QuoteMatchResult], confident_score: float
+        self,
+        title: str,
+        matches: list[QuoteMatchResult],
+        min_score: float,
+        confident_score: float,
     ) -> None:
         super().__init__(timeout=120)
         self._title = title
         self.matches = matches
+        self.min_score = min_score
         self.confident_score = confident_score
         self.value: bool | None = None
         self.index = 0
@@ -95,7 +102,12 @@ class QuoteMatchView(discord.ui.View):
 
     def embed(self) -> discord.Embed:
         return _match_embed(
-            self._title, self.selected, self.confident_score, self.index + 1, len(self.matches)
+            self._title,
+            self.selected,
+            self.min_score,
+            self.confident_score,
+            self.index + 1,
+            len(self.matches),
         )
 
     def _add_show_others_button(self) -> None:
@@ -121,9 +133,15 @@ class QuoteMatchView(discord.ui.View):
         self.add_item(select)
 
     async def _on_show_others(self, interaction: discord.Interaction) -> None:
-        if self._show_others_button is not None:
-            self.remove_item(self._show_others_button)
-            self._show_others_button = None
+        if self._show_others_button is None:
+            # A select is already showing — e.g. a fast double-click sent
+            # two interactions for this button before the first one's
+            # edit_message() landed. Ignore the second one rather than
+            # adding a duplicate discord.ui.Select.
+            await interaction.response.defer()
+            return
+        self.remove_item(self._show_others_button)
+        self._show_others_button = None
         self._add_select()
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
@@ -293,7 +311,10 @@ class GifCog(commands.Cog):
                 return
 
             match_view = QuoteMatchView(
-                resolved.title, resolved_quote.matches, resolved_quote.confident_score
+                resolved.title,
+                resolved_quote.matches,
+                resolved_quote.min_score,
+                resolved_quote.confident_score,
             )
             await interaction.edit_original_response(
                 content=None, embed=match_view.embed(), view=match_view

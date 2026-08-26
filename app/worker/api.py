@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 
 from fastapi import FastAPI, HTTPException, Response
@@ -72,6 +73,7 @@ class ResolveQuoteResponse(BaseModel):
     title: str
     subtitle_source: str
     confident_score: float
+    min_score: float
     matches: list[QuoteMatchOut]
 
 
@@ -111,12 +113,18 @@ def create_app(settings: Settings) -> FastAPI:
         results = app.state.plex.search_movies(query)
         return SearchResponse(results=[_to_out(m) for m in results])
 
-    @app.get("/resolve/{rating_key}", response_model=ResolveResponse)
-    def resolve(rating_key: int) -> ResolveResponse:
+    async def _get_movie(rating_key: int) -> MovieResult:
+        # get_movie() is a synchronous plexapi/requests call — always offload
+        # it so a slow Plex response doesn't stall the whole event loop
+        # (this worker has no other way to serve concurrent requests).
         try:
-            movie = app.state.plex.get_movie(rating_key)
+            return await asyncio.to_thread(app.state.plex.get_movie, rating_key)
         except MovieNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/resolve/{rating_key}", response_model=ResolveResponse)
+    async def resolve(rating_key: int) -> ResolveResponse:
+        movie = await _get_movie(rating_key)
         try:
             container_path = resolve_container_path(
                 movie.plex_path, settings.path_mappings
@@ -140,16 +148,19 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/render")
     async def render(req: RenderRequest) -> Response:
-        try:
-            movie = app.state.plex.get_movie(req.rating_key)
-        except MovieNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        movie = await _get_movie(req.rating_key)
         try:
             container_path = resolve_container_path(
                 movie.plex_path, settings.path_mappings
             )
         except NoPathMappingError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        if not os.path.exists(container_path):
+            raise HTTPException(
+                status_code=422,
+                detail=f"File not found on disk at mapped path: {container_path}",
+            )
 
         try:
             start = parse_timecode(req.timecode)
@@ -177,10 +188,7 @@ def create_app(settings: Settings) -> FastAPI:
         return Response(content=gif_bytes, media_type="image/gif")
 
     async def _load_subtitles(rating_key: int) -> tuple[MovieResult, SubtitleResult]:
-        try:
-            movie = app.state.plex.get_movie(rating_key)
-        except MovieNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        movie = await _get_movie(rating_key)
         try:
             container_path = resolve_container_path(
                 movie.plex_path, settings.path_mappings
@@ -269,6 +277,7 @@ def create_app(settings: Settings) -> FastAPI:
             title=movie.title,
             subtitle_source=result.source.value,
             confident_score=qm.confident_score,
+            min_score=qm.min_score,
             matches=[
                 QuoteMatchOut(
                     start=m.start,

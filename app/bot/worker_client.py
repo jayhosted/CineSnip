@@ -14,7 +14,14 @@ RENDER_TIMEOUT_SECONDS = 90.0
 # subtitle_defaults.extraction_timeout_seconds, 180s by default) — on a
 # cold cache /resolve-quote demuxes an embedded subtitle stream, which has
 # no fast seek. The shared 30s client default would abort first.
-RESOLVE_QUOTE_TIMEOUT_SECONDS = 200.0
+#
+# extraction_timeout_seconds is operator-configurable (config.yaml.example
+# explicitly invites raising it for very large files), and this constant
+# has no way to know that value — the worker's own timeout-and-clean-error
+# mechanism should always win the race, so this is set with generous
+# headroom above the *default*, not tightly matched to it. If you raise
+# extraction_timeout_seconds past this in config.yaml, raise this too.
+RESOLVE_QUOTE_TIMEOUT_SECONDS = 300.0
 
 
 @dataclass
@@ -53,6 +60,7 @@ class ResolveQuoteResult:
     title: str
     subtitle_source: str
     confident_score: float
+    min_score: float
     matches: list[QuoteMatchResult]
 
 
@@ -89,13 +97,8 @@ class WorkerClient:
         )
         response.raise_for_status()
         payload = response.json()
-        return ResolveQuoteResult(
-            rating_key=payload["rating_key"],
-            title=payload["title"],
-            subtitle_source=payload["subtitle_source"],
-            confident_score=payload["confident_score"],
-            matches=[QuoteMatchResult(**m) for m in payload["matches"]],
-        )
+        payload["matches"] = [QuoteMatchResult(**m) for m in payload["matches"]]
+        return ResolveQuoteResult(**payload)
 
     async def render(self, rating_key: int, timecode: str) -> bytes:
         response = await self._client.post(

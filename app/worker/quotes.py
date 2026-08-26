@@ -43,9 +43,10 @@ def strip_markup(text: str) -> str:
     return _WHITESPACE_PATTERN.sub(" ", text).strip()
 
 
-def normalize_for_match(text: str) -> str:
-    """Reduce display text to a scoring key: case/punctuation/markup insensitive."""
-    text = strip_markup(text)
+def _normalize_stripped(text: str) -> str:
+    """The normalize_for_match steps that run after strip_markup — split out
+    so callers that already have stripped text (e.g. per-entry caching in
+    find_quote_matches) don't pay for strip_markup twice."""
     text = unicodedata.normalize("NFKC", text)
     text = text.translate(_QUOTE_MAP)
     text = _BRACKET_CUE_PATTERN.sub(" ", text)
@@ -55,6 +56,11 @@ def normalize_for_match(text: str) -> str:
     text = _APOSTROPHE_PATTERN.sub("", text)
     text = _NON_ALNUM_PATTERN.sub(" ", text)
     return _WHITESPACE_PATTERN.sub(" ", text).strip()
+
+
+def normalize_for_match(text: str) -> str:
+    """Reduce display text to a scoring key: case/punctuation/markup insensitive."""
+    return _normalize_stripped(strip_markup(text))
 
 
 # --- Matching -------------------------------------------------------------
@@ -81,44 +87,43 @@ class _Candidate:
 
 
 def _build_candidates(
-    entries: list[SubtitleEntry], max_window_gap_seconds: float
+    entries: list[SubtitleEntry],
+    displays: list[str],
+    normalized: list[str],
+    max_window_gap_seconds: float,
 ) -> list[_Candidate]:
     candidates: list[_Candidate] = []
 
     for i, entry in enumerate(entries):
-        display = strip_markup(entry.text)
-        normalized = normalize_for_match(entry.text)
-        if normalized:
+        if normalized[i]:
             candidates.append(
-                _Candidate((i,), entry.start, entry.end, display, normalized)
+                _Candidate((i,), entry.start, entry.end, displays[i], normalized[i])
             )
 
     for i in range(len(entries) - 1):
         first, second = entries[i], entries[i + 1]
         if second.start - first.end > max_window_gap_seconds:
             continue
-        display = f"{strip_markup(first.text)} {strip_markup(second.text)}".strip()
-        normalized = f"{normalize_for_match(first.text)} {normalize_for_match(second.text)}".strip()
-        if normalized:
+        display = f"{displays[i]} {displays[i + 1]}".strip()
+        norm = f"{normalized[i]} {normalized[i + 1]}".strip()
+        if norm:
             candidates.append(
-                _Candidate((i, i + 1), first.start, second.end, display, normalized)
+                _Candidate((i, i + 1), first.start, second.end, display, norm)
             )
 
     return candidates
 
 
-def _context_for(entries: list[SubtitleEntry], indices: tuple[int, ...], context_lines: int) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _context_for(
+    displays: list[str], indices: tuple[int, ...], context_lines: int
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     first_index, last_index = indices[0], indices[-1]
 
     before_start = max(0, first_index - context_lines)
-    before = tuple(
-        strip_markup(entries[i].text) for i in range(before_start, first_index)
-    )
+    before = tuple(displays[before_start:first_index])
 
-    after_end = min(len(entries), last_index + 1 + context_lines)
-    after = tuple(
-        strip_markup(entries[i].text) for i in range(last_index + 1, after_end)
-    )
+    after_end = min(len(displays), last_index + 1 + context_lines)
+    after = tuple(displays[last_index + 1 : after_end])
 
     return before, after
 
@@ -138,7 +143,10 @@ def find_quote_matches(
     if not normalized_quote:
         return []
 
-    candidates = _build_candidates(entries, max_window_gap_seconds)
+    displays = [strip_markup(e.text) for e in entries]
+    normalized = [_normalize_stripped(d) for d in displays]
+
+    candidates = _build_candidates(entries, displays, normalized, max_window_gap_seconds)
     if not candidates:
         return []
 
@@ -167,7 +175,7 @@ def find_quote_matches(
             continue
 
         context_before, context_after = _context_for(
-            entries, candidate.indices, context_lines
+            displays, candidate.indices, context_lines
         )
         accepted.append(
             QuoteMatch(
