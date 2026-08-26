@@ -149,9 +149,18 @@ class QuoteMatchView(discord.ui.View):
         # The Select item we just added is the only select on the view
         # besides the Confirm/Cancel buttons, so find it by type rather
         # than keeping a separate reference.
-        for item in self.children:
+        for item in list(self.children):
             if isinstance(item, discord.ui.Select):
                 self.index = int(item.values[0])
+                # SelectOption.default is baked in at construction time and
+                # never updates on its own — leaving the old select attached
+                # would keep showing the FIRST-ever-picked option as
+                # "selected" regardless of self.index, and re-picking an
+                # option Discord still thinks is already the selected one
+                # doesn't reliably register as a new choice. Rebuild the
+                # select from scratch so its default always matches reality.
+                self.remove_item(item)
+                self._add_select()
                 break
         await interaction.response.edit_message(embed=self.embed(), view=self)
 

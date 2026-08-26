@@ -16,16 +16,25 @@ class CineSnipBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.add_cog(GifCog(self))
-        # Global sync is required for the command to eventually appear in
-        # every server the bot is invited to, but Discord can take up to an
-        # hour to propagate a global change. When DEV_GUILD_ID is set, also
-        # copy + sync to that one guild directly — guild-scoped syncs apply
-        # near-instantly, which is what you want while iterating on commands.
-        await self.tree.sync()
         if self._dev_guild_id is not None:
+            # Sync ONLY to the dev guild while iterating — guild-scoped
+            # syncs apply near-instantly. Syncing globally as well (even
+            # once) leaves two registrations of the same command visible
+            # side by side once the global one propagates to this guild,
+            # which it eventually does even during dev — that's what
+            # caused "/cinesnip" to show twice in the command picker.
+            # Explicitly clear any global registration a prior run left
+            # behind before the guild-scoped copy below.
             guild = discord.Object(id=self._dev_guild_id)
             self.tree.copy_global_to(guild=guild)
+            self.tree.clear_commands(guild=None)
+            await self.tree.sync()
             await self.tree.sync(guild=guild)
+        else:
+            # Global sync is required for the command to eventually appear
+            # in every server the bot is invited to, but Discord can take
+            # up to an hour to propagate a global change.
+            await self.tree.sync()
 
     async def close(self) -> None:
         await self.worker.close()
