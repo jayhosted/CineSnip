@@ -108,6 +108,51 @@ _THREE_D_CROP_FILTERS: dict[str, str] = {
     "over_under": "crop=iw:ih/2:0:0",
 }
 
+# A 3D pack comes in two flavors per axis, and a crop alone only produces a
+# correct flat frame for one of them:
+#   - "full": each eye stored at its own native resolution, so the packed
+#     frame is simply double-width (side-by-side) or double-height
+#     (over/under). Crop is all that's needed.
+#   - "half"/squeezed: each eye compressed to fit within a normal
+#     single-frame canvas (the far more common space-saving rip format),
+#     so a crop alone leaves a squished eye — it must also be stretched
+#     back out (2x on the squeeze axis) to its true native size.
+# Confirmed against this project's own library (real bug: crop alone
+# fixed Ready Player One, a Full-SBS release, but left Dune — an untagged,
+# squeezed over/under rip — still squished after cropping). Neither file
+# self-tags which flavor it is, but the packed frame's own raw pixel
+# aspect ratio gives it away: a real single flat frame is never this wide
+# (side-by-side) or this tall/square (over-under), so a pack past these
+# ratios can only be two native-resolution eyes, not two squeezed ones.
+# Verified: Ready Player One's Full-SBS pack is 3840x1080 (ratio 3.56,
+# unambiguously full); Dune's squeezed over/under pack is 1920x1080
+# (ratio 1.78, unambiguously half).
+_SIDE_BY_SIDE_FULL_RATIO = 2.6
+_OVER_UNDER_FULL_RATIO = 0.8
+
+
+def _three_d_plan(
+    three_d_format: str, width: int, height: int
+) -> tuple[str | None, int, int]:
+    """Returns (filter_prefix, eye_width, eye_height) for a source tagged
+    with the given 3D packing. filter_prefix is None (and eye_width/
+    eye_height echo the input) for flat video."""
+    if three_d_format == "side_by_side":
+        crop = _THREE_D_CROP_FILTERS["side_by_side"]
+        if height > 0 and (width / height) >= _SIDE_BY_SIDE_FULL_RATIO:
+            return f"{crop},setsar=1", width // 2, height
+        # Squeezed: cropping leaves a half-width eye that's actually the
+        # full canvas width's worth of image compressed into it — stretch
+        # it back out. The unsqueezed eye's true width equals the packed
+        # frame's own total width.
+        return f"{crop},scale=iw*2:ih,setsar=1", width, height
+    if three_d_format == "over_under":
+        crop = _THREE_D_CROP_FILTERS["over_under"]
+        if width > 0 and (height / width) >= _OVER_UNDER_FULL_RATIO:
+            return f"{crop},setsar=1", width, height // 2
+        return f"{crop},scale=iw:ih*2,setsar=1", width, height
+    return None, width, height
+
 # ffmpeg's own Stereo3D side-data type names, when a file actually carries
 # them (e.g. Matroska's StereoMode element). Confirmed against this
 # project's own 3D library: a "Full-SBS" release had this tagged
@@ -213,19 +258,28 @@ class ClipRenderer:
             if detected is not None:
                 three_d_format = detected
 
+        three_d_prefix: str | None = None
+        eye_width = eye_height = None
+        if three_d_format != "none":
+            src_width, src_height = await probe_video_dimensions(input_path)
+            three_d_prefix, eye_width, eye_height = _three_d_plan(
+                three_d_format, src_width, src_height
+            )
+
         ass_path: Path | None = None
         if subtitle_entries and style is not None:
             ass_path = await self._write_ass_file(
-                input_path, start, duration, subtitle_entries, style, scratch_dir, three_d_format
+                input_path, start, duration, subtitle_entries, style, scratch_dir,
+                eye_width, eye_height,
             )
 
         try:
             if fmt == "gif":
                 return await self._render_gif(
-                    input_path, start, duration, scratch_dir, ass_path, three_d_format
+                    input_path, start, duration, scratch_dir, ass_path, three_d_prefix
                 )
             return await self._render_video(
-                input_path, start, duration, scratch_dir, fmt, ass_path, three_d_format
+                input_path, start, duration, scratch_dir, fmt, ass_path, three_d_prefix
             )
         finally:
             if ass_path is not None:
@@ -239,19 +293,20 @@ class ClipRenderer:
         entries: list[SubtitleEntry],
         style: StylePreset,
         scratch_dir: Path,
-        three_d_format: str = "none",
+        eye_width: int | None = None,
+        eye_height: int | None = None,
     ) -> Path:
-        src_width, src_height = await probe_video_dimensions(input_path)
         # A 3D source's *encoded* frame packs both eyes together — the
-        # single-eye frame the crop filter actually hands to scale/subtitles
-        # has different dimensions, and PlayResY must match what libass will
-        # actually render against, not the raw source frame.
-        if three_d_format == "side_by_side":
-            src_width //= 2
-        elif three_d_format == "over_under":
-            src_height //= 2
+        # single-eye frame the crop (and, for a squeezed pack, unsqueeze)
+        # filter actually hands to scale/subtitles has different dimensions,
+        # and PlayResY must match what libass will actually render against,
+        # not the raw source frame. render_clip works this out via
+        # _three_d_plan() and passes it down; a flat (non-3D) source has no
+        # pre-computed dimensions, so probe directly.
+        if eye_width is None or eye_height is None:
+            eye_width, eye_height = await probe_video_dimensions(input_path)
         out_width = self._width
-        out_height = round(out_width * src_height / src_width)
+        out_height = round(out_width * eye_height / eye_width)
         out_height -= out_height % 2  # matches the -2 (even-height) scale filter below
 
         window = entries_in_window(entries, start, start + duration)
@@ -263,27 +318,15 @@ class ClipRenderer:
         return ass_path
 
     def _scale_and_subtitle_filter(
-        self, ass_path: Path | None, three_d_format: str = "none"
+        self, ass_path: Path | None, three_d_prefix: str | None = None
     ) -> str:
         # -2 (not -1) guarantees an even output height, matching the
         # rounding _write_ass_file uses to compute PlayResY — a mismatch
         # there would make burned-in text the wrong size relative to the
         # actual frame, not just misplaced.
         filters = []
-        crop_filter = _THREE_D_CROP_FILTERS.get(three_d_format)
-        if crop_filter is not None:
-            filters.append(crop_filter)
-            # A packed 3D frame's sample aspect ratio describes the combined
-            # stereo pair, not a single eye — ffmpeg's crop filter carries it
-            # over unchanged onto the cropped eye, which then gets played
-            # back stretched (confirmed on this project's own library: a
-            # "Full-SBS" file tags SAR 2:1 on its 3840x1080 packed frame,
-            # which survives the crop onto its cropped 1920x1080 single eye
-            # and reports a stretched 32:9 DAR instead of the correct 16:9).
-            # A single eye's own pixels are square, so reset SAR immediately
-            # after cropping rather than trusting whatever the source tagged
-            # on the packed frame.
-            filters.append("setsar=1")
+        if three_d_prefix:
+            filters.append(three_d_prefix)
         filters.append(f"scale={self._width}:-2:flags=lanczos")
         if ass_path is not None:
             filters.append(f"subtitles={_escape_filter_path(ass_path)}")
@@ -296,11 +339,11 @@ class ClipRenderer:
         duration: float,
         scratch_dir: Path,
         ass_path: Path | None = None,
-        three_d_format: str = "none",
+        three_d_prefix: str | None = None,
     ) -> bytes:
         scratch_dir.mkdir(parents=True, exist_ok=True)
         palette_path = scratch_dir / f"palette-{uuid.uuid4().hex}.png"
-        scale_filter = self._scale_and_subtitle_filter(ass_path, three_d_format)
+        scale_filter = self._scale_and_subtitle_filter(ass_path, three_d_prefix)
 
         try:
             await self._run(
@@ -350,11 +393,11 @@ class ClipRenderer:
         scratch_dir: Path,
         fmt: str,
         ass_path: Path | None = None,
-        three_d_format: str = "none",
+        three_d_prefix: str | None = None,
     ) -> bytes:
         scratch_dir.mkdir(parents=True, exist_ok=True)
         out_path = scratch_dir / f"clip-{uuid.uuid4().hex}.{fmt}"
-        scale_filter = self._scale_and_subtitle_filter(ass_path, three_d_format)
+        scale_filter = self._scale_and_subtitle_filter(ass_path, three_d_prefix)
 
         try:
             await self._run(
