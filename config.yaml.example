@@ -51,10 +51,12 @@ render_defaults:
   format: gif
 
 # Embedded-subtitle extraction has no fast seek — it reads sequentially
-# through the whole file. Raise this if you see extraction timeouts on
-# very large files (common over slower mounts, e.g. WSL2-bridged drives).
+# through the whole file. 300s gives real headroom for a large remux over a
+# slower mount (e.g. WSL2-bridged drives) — a real 39GB 2160p HDR remux
+# measured at 251.6s. Raise further if you see timeouts on very large files
+# (well past 40-50GB is plausible for some 2160p remuxes).
 subtitle_defaults:
-  extraction_timeout_seconds: 180
+  extraction_timeout_seconds: 300
 
 # Fuzzy quote-search tuning. min_score is a noise floor (candidates scoring
 # below it are dropped entirely); confident_score is presentation-only — it
