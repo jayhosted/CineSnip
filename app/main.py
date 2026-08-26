@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 import uvicorn
+import uvloop
 
 from app.bot.client import build_bot
 from app.settings import load_settings
@@ -41,4 +42,16 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # uvicorn.Server.serve() is awaited directly here rather than run via
+    # uvicorn.run()/Server.run() — needed so the bot and worker share one
+    # event loop (asyncio.gather() above) instead of uvicorn owning its own.
+    # That means uvicorn's own automatic uvloop activation (which only
+    # kicks in when it manages the top-level loop itself) never fires here
+    # — confirmed via a real run: plain asyncio.run() left the standard
+    # asyncio loop active, not uvloop, even with uvloop installed. Found
+    # while trimming uvicorn's [standard] extra down to just its two
+    # actually-used pieces (uvloop, httptools) — uvloop was already being
+    # paid for in image size without the app ever actually getting its
+    # benefit. uvloop.run() (a drop-in asyncio.run() replacement) is what
+    # actually activates it.
+    uvloop.run(main())
