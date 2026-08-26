@@ -33,3 +33,24 @@ def test_path_mappings_for_raises_for_unconfigured_library():
 
     with pytest.raises(SettingsError):
         settings.path_mappings_for("4K Movies")
+
+
+def test_three_d_format_for_defaults_to_none():
+    settings = _settings([LibraryConfig(name="Movies", path_mappings=[])])
+
+    assert settings.three_d_format_for("Movies") == "none"
+
+
+def test_three_d_format_for_returns_configured_value():
+    settings = _settings(
+        [LibraryConfig(name="3D", path_mappings=[], three_d_format="over_under")]
+    )
+
+    assert settings.three_d_format_for("3D") == "over_under"
+
+
+def test_three_d_format_for_raises_for_unconfigured_library():
+    settings = _settings([LibraryConfig(name="Movies", path_mappings=[])])
+
+    with pytest.raises(SettingsError):
+        settings.three_d_format_for("4K Movies")
