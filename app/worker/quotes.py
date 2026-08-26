@@ -160,6 +160,20 @@ def find_quote_matches(
     )
 
     score_by_candidate_index = {idx: score for _, score, idx in scored}
+
+    # A literal (word-boundary) match of the quote inside a candidate is
+    # unambiguously the best possible match, but WRatio doesn't reliably
+    # rank it top: its length-normalized scoring can dilute a short quote
+    # buried in a much longer line below an unrelated same-length line that
+    # merely shares similar letters. Confirmed on the real library —
+    # searching "Hitler" across Peep Show returned several lines that don't
+    # contain the word ranked ahead of ones that do. Force every literal
+    # substring hit to the top of the ranking (also picks up any candidate
+    # WRatio scored below min_score despite containing the quote outright).
+    literal_pattern = re.compile(r"\b" + re.escape(normalized_quote) + r"\b")
+    for idx, candidate in enumerate(candidates):
+        if literal_pattern.search(candidate.normalized_text):
+            score_by_candidate_index[idx] = 100.0
     ranked_with_scores = sorted(
         ((candidates[idx], score) for idx, score in score_by_candidate_index.items()),
         key=lambda pair: (-pair[1], len(pair[0].indices), pair[0].start),
