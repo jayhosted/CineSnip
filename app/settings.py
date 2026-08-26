@@ -14,6 +14,14 @@ class PathMapping(BaseModel):
     container_path: str
 
 
+class LibraryConfig(BaseModel):
+    # Must match the Plex library section's title exactly (case-sensitive) —
+    # this is what PlexClient uses to look up the section and what a fetched
+    # item's librarySectionTitle is compared against.
+    name: str
+    path_mappings: list[PathMapping] = Field(default_factory=list)
+
+
 class RenderDefaults(BaseModel):
     duration_seconds: float = 4.0
     fps: int = 15
@@ -80,8 +88,7 @@ class Settings(BaseModel):
     plex_url: str
     plex_token: str
 
-    movies_library_name: str = "Movies"
-    path_mappings: list[PathMapping] = Field(default_factory=list)
+    libraries: list[LibraryConfig] = Field(default_factory=list)
     render_defaults: RenderDefaults = Field(default_factory=RenderDefaults)
     subtitle_defaults: SubtitleDefaults = Field(default_factory=SubtitleDefaults)
     quote_match: QuoteMatchDefaults = Field(default_factory=QuoteMatchDefaults)
@@ -89,6 +96,15 @@ class Settings(BaseModel):
     scratch_dir: Path = Path("scratch")
     cache_dir: Path = Path("cache")
     dev_guild_id: int | None = None
+
+    def path_mappings_for(self, library_name: str) -> list[PathMapping]:
+        for library in self.libraries:
+            if library.name == library_name:
+                return library.path_mappings
+        raise SettingsError(
+            f"'{library_name}' is not a configured library. Add it under "
+            f"libraries in config.yaml."
+        )
 
 
 class SettingsError(RuntimeError):
@@ -144,9 +160,8 @@ def load_settings(
             discord_token=discord_token,
             plex_url=plex_url,
             plex_token=plex_token,
-            movies_library_name=raw_config.get("movies_library_name", "Movies"),
-            path_mappings=[
-                PathMapping(**m) for m in raw_config.get("path_mappings", [])
+            libraries=[
+                LibraryConfig(**lib) for lib in raw_config.get("libraries", [])
             ],
             render_defaults=RenderDefaults(**raw_config.get("render_defaults", {})),
             subtitle_defaults=SubtitleDefaults(

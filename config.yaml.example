@@ -1,14 +1,26 @@
-movies_library_name: "Movies"
-
-# One entry per folder Plex reports files under for this library.
+# One entry per Plex library CineSnip should search. `name` must match the
+# library's title in Plex exactly (case-sensitive) — this is also how a
+# result is labeled when the same title exists in more than one library
+# (e.g. a regular Movies library and a separate 4K one).
+#
+# Under path_mappings, add one entry per folder that library spans.
 # plex_prefix must match exactly how Plex reports the path (Windows-style
 # backslashes if Plex runs on Windows). container_path is where that same
 # folder is bind-mounted inside the Docker container (see docker-compose.yml).
-path_mappings:
-  - plex_prefix: "D:\\Plex Additional\\Movies"
-    container_path: "/media/movies-d"
-  - plex_prefix: "E:\\Media\\Video\\Movies"
-    container_path: "/media/movies-e"
+# A library that only lives in one folder needs only one entry.
+libraries:
+  - name: "Movies"
+    path_mappings:
+      - plex_prefix: "D:\\Plex Additional\\Movies"
+        container_path: "/media/movies-d"
+      - plex_prefix: "E:\\Media\\Video\\Movies"
+        container_path: "/media/movies-e"
+  - name: "TV Shows"
+    path_mappings:
+      - plex_prefix: "D:\\Plex Additional\\TV Shows"
+        container_path: "/media/tv-d"
+      - plex_prefix: "E:\\Media\\Video\\TV Shows"
+        container_path: "/media/tv-e"
 
 # duration_seconds is used for timecode-driven clips. A quote-driven clip
 # instead uses the matched subtitle line's own start/end, clamped to

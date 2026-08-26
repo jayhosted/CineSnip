@@ -299,6 +299,7 @@ class GifCog(commands.Cog):
         choices = []
         for movie in results[:25]:
             label = f"{movie.title} ({movie.year})" if movie.year else movie.title
+            label = f"{label} — {movie.library_name}"
             choices.append(
                 app_commands.Choice(name=label[:100], value=str(movie.rating_key))
             )
@@ -345,11 +346,11 @@ class GifCog(commands.Cog):
             return
 
         # No separate "confirm the film" step: autocomplete already pins an
-        # exact rating_key (title + year shown right there), and CineSnip
-        # only searches one Plex library today, so there's nothing left to
-        # disambiguate. Revisit once multi-library search ships (CLAUDE.md
-        # Section 3) — a same-titled result from a different library would
-        # need surfacing again at that point.
+        # exact rating_key (title + year + library shown right there in the
+        # picker). Per CLAUDE.md decision #4, a same-titled result from a
+        # different library is surfaced as a lightweight note folded into
+        # this status message, not a new click-gated confirmation step.
+        library_note = f" ({resolved.library_name})"
         if quote:
             note = (
                 " (both `quote` and `timecode` were given — searching by quote)"
@@ -357,7 +358,7 @@ class GifCog(commands.Cog):
                 else ""
             )
             await interaction.followup.send(
-                content=f"Searching {resolved.title}'s subtitles…{note}",
+                content=f"Searching {resolved.title}'s subtitles{library_note}…{note}",
                 ephemeral=True,
             )
             try:
@@ -407,7 +408,8 @@ class GifCog(commands.Cog):
             # to off rather than guessing at burn-in the user didn't ask for.
             default_style = "none"
             await interaction.followup.send(
-                content=f"Generating a clip from {resolved.title}…", ephemeral=True
+                content=f"Generating a clip from {resolved.title}{library_note}…",
+                ephemeral=True,
             )
 
         render_end_timecode = end_timecode if not quote else None

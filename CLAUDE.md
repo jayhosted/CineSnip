@@ -12,10 +12,11 @@ Inspired by conversation with the developer of [tvgif](https://github.com/warman
 - Plex runs **natively on Windows** (not Dockerized) on a separate **server PC** from the one used for development.
 - Docker (Docker Desktop, WSL2 backend) also runs on that server PC, alongside other unrelated services already running in Docker there.
 - Server PC has an **RTX 3070** — usable for NVENC encode/decode and for speeding up local Whisper transcription, but must remain optional in the base install since not every installer will have a GPU.
-- Four Plex libraries: **Movies**, **TV Shows**, a separate **4K Movies** library, and a separate **3D Movies** library.
+- Three Plex libraries: **Movies**, **TV Shows**, and a separate 3D library (named plainly **`3D`** in Plex, not "3D Movies"). No separate 4K library exists here — 4K files just live inside the regular Movies library — but a distinct 4K library is a common enough setup elsewhere that CineSnip's multi-library support (Section 3) is still designed to support one generically, not this developer's setup specifically.
 - Media folders span two drives:
   - `D:\Plex Additional\Movies` and `E:\Media\Video\Movies`
   - `D:\Plex Additional\TV Shows` and `E:\Media\Video\TV Shows`
+  - `D:\Plex Additional\3D` (3D library, one folder only)
 - Uses **Bazarr**, so the large majority of media has a separate `.srt` subtitle file sitting in the same folder as the video, rather than embedded subtitles. Some older/less-common titles may still only have embedded subs or none at all.
 - Development happens via **Claude Code Desktop, connected over SSH into a Ubuntu WSL2 distro on the server PC** (not the internal `docker-desktop` distro), so that Claude Code can directly run `docker compose`, reach Plex over `host.docker.internal`, and access the mounted media drives, all against the real environment rather than a stand-in.
 - Because the install docs need to work for other people too, **both** a native-host Plex setup (like this one) and a Dockerized-Plex setup must be documented and supported — the only thing that changes between them is how the container reaches Plex on the network.
@@ -60,7 +61,7 @@ No central database, no cloud API, no message broker.
 
 - **Auth**: Plex's PIN-based flow (request PIN, user approves at plex.tv, poll for token) for a first-run wizard; manual token entry as a fallback.
 - **Library access**: `python-plexapi` — mature, covers search, metadata, and media-part resolution for both films and TV episodes.
-- **Multiple libraries**: enumerate all Plex sections via the API; search spans all of them by default. Because the same title can exist in more than one library (e.g. Movies and 4K Movies here), the confirmation step must show which library/quality a result came from rather than silently picking one.
+- **Multiple libraries**: enumerate all Plex sections via the API; search spans all of them by default. Because the same title can exist in more than one library (e.g. a separate 4K library, common on other installs even though this developer's own setup doesn't have one), the confirmation step must show which library/quality a result came from rather than silently picking one.
 - **Two supported Plex-hosting patterns** (document both, let the setup wizard ask which applies):
   - **Plex native on the same host as Docker** (this developer's setup): container reaches Plex via `host.docker.internal:32400` (Docker Desktop, Windows/Mac) — not `network_mode: host`, which doesn't apply on Windows.
   - **Plex itself running in Docker**: container reaches it via Docker's internal networking — shared docker-compose network, or Plex's container name/IP on a shared Docker network.
@@ -164,7 +165,7 @@ quote-search rendering path reuses the same seek/duration logic.
 - `/cinesnip-search` — library-wide quote search across the (lazily-built) subtitle cache, with an explicit opt-in to extend a search into not-yet-cached titles (Section 5)
 - ✅ Subtitle burn-in + style preset select menu (Section 7)
 - ✅ MP4/WebM output option (`format:` on `/cinesnip`/`/snip`, default gif — see decision #1)
-- Remaining library/drive path mappings (4K, 3D, TV — both Movies drives are done)
+- ✅ Multi-library support: `config.yaml`'s `libraries` list replaces the old single `movies_library_name`/flat `path_mappings`, each library owning its own mappings (`app/settings.py`'s `LibraryConfig`/`path_mappings_for()`). `PlexClient` searches every configured movie-type section and tags each result with `library_name` (`movie.librarySectionTitle`, populated natively by plexapi — no extra lookup needed); `/resolve`, `/render`, and subtitle extraction all resolve container paths against that specific library's mappings instead of one global list. Surfaced to the user as a lightweight label in the autocomplete picker and the "Searching.../Generating..." status text (decision #4), not a new confirmation step. This developer's real `config.yaml` now covers all three of their actual libraries (Movies, 3D, TV Shows — see above; no 4K library exists here to configure). TV episode search itself is still V3 (Section 4) — only its path mappings are wired up now.
 - ✅ Document + confirm "Public Bot" disabled as part of Discord setup (Section 9)
 
 **V3**

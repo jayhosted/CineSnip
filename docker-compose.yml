@@ -7,6 +7,9 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       - "/mnt/d/Plex Additional/Movies:/media/movies-d:ro"
       - "/mnt/e/Media/Video/Movies:/media/movies-e:ro"
+      - "/mnt/d/Plex Additional/3D:/media/3d-d:ro"
+      - "/mnt/d/Plex Additional/TV Shows:/media/tv-d:ro"
+      - "/mnt/e/Media/Video/TV Shows:/media/tv-e:ro"
       - ./scratch:/app/scratch
       - ./cache:/app/cache
     restart: unless-stopped
