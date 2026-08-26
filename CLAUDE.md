@@ -100,7 +100,12 @@ No central database, no cloud API, no message broker.
 - **✅ Subtitle burn-in via ffmpeg's `subtitles`/`ass` filter (libass), not `drawtext`** — gives real font styling/positioning matching the style presets. See Section 7 for the style catalog and build notes.
 - **Hardware acceleration (NVENC, via the 3070)**: optional `docker-compose.gpu.yml` override requiring the Nvidia Container Toolkit inside WSL2 — build and test this after the CPU-only path works, not before. Matters most for full-film Whisper transcription speed; the GIF-cut step itself is already fast on CPU alone.
 - Typical timing: a few seconds for a 4s/480px clip on CPU; Whisper transcription of a full film is the genuinely slow step, mitigated entirely by caching.
-- **✅ Diagnosed: CineSnip's seek is accurate — the "possible sync drift" was never a code bug, and the audio-heuristic that first suggested "Snatch" was ~1s off was itself a false positive.** Real testing after burn-in shipped found "Snatch" apparently off while "Obsession" was fine; the initial diagnosis used `ffmpeg -af silencedetect` against raw audio to find a real speech onset ~0.94s before the `.srt`'s claimed line start. But that line is voiceover narration over a title card, not on-screen dialogue — there's no lip-sync to visually cross-check, so a quiet score swell or ambient sound just under the -30dB threshold, sitting slightly before the narration's louder syllables, produces exactly this kind of false-early reading. **Direct proof the seek itself is accurate**: a fast `-ss`-before-`-i` seek to a timestamp and a fully-accurate linear decode to that same timestamp (`-vf select='between(t,X,X+0.05)'` from the start of the file) produced pixel-identical frames — confirmed on this project's own library. Real-world confirmation: the file looked correctly synced in Plex's own player using the same sidecar `.srt`, which is the more trustworthy signal than a synthetic silence-threshold heuristic. **Separately, real and unambiguous**: a Bazarr re-fetch of Snatch's subtitle (a different release than the original, "99% match" per Bazarr but wrong for this exact remux) placed several early lines inside a **21-second span of total silence** in the actual audio — that's not a threshold-sensitivity judgment call, and is a genuine per-title mis-synced-subtitle problem, just not the one first suspected. Nothing to fix in `ffmpeg.py`; if a title's burned-in subtitles look off, verify against the *specific* file in Plex (or re-run the fast-seek-vs-linear-decode frame comparison above) before assuming a CineSnip bug — the seek code itself has now been directly verified accurate.
+- **✅ Diagnosed: CineSnip's seek is accurate; the reported "sync drift" was always per-title subtitle desync.** Settled definitively against ground truth after two earlier wrong turns — read the method below before re-investigating anything like this.
+  - **Seek is proven correct**: a fast `-ss`-before-`-i` seek to a timestamp and a fully-accurate linear decode to that same timestamp (`-vf select='between(t,X,X+0.05)'` from the start of the file) produce **pixel-identical frames**. Confirmed on this project's own library. Nothing to fix in `ffmpeg.py`.
+  - **Ground truth for "when is this line actually spoken" is the file's own embedded subtitle stream**, not an audio heuristic and not a player's playback impression. A remux's embedded PGS track was authored against that exact encode, so its cue times are definitionally correct for it: `ffprobe -v error -select_streams s:N -show_entries packet=pts_time -read_intervals "%+90" -of csv=p=0 <file>` (packets pair up as display/clear). A **contact sheet** of the opening is the cheap visual cross-check: `-vf "fps=1/2,scale=320:-2,drawtext=...,tile=4x5"`.
+  - **Worked example (Snatch)**: embedded PGS put the first real cue at **34.327s** (frames confirm: 12s is still the Screen Gems logo, 34s is the "A Film by Guy Ritchie" card over Turkish/Tommy). The original sidecar claimed 37.704s (**~3.4s late** — the originally-reported symptom, which was real), a Bazarr "99% match" re-fetch claimed 12.559s (**~22s early**, i.e. over a studio ident), and `alass` corrected it to 34.501s (**within 174ms of ground truth**).
+  - **Two dead ends worth not repeating.** (1) `silencedetect` at `-30dB` was *directionally* right about Snatch but its exact onset reading was misattributed to the wrong cue, which briefly made it look like a false positive — treat it as a coarse locator, and confirm against embedded cues before concluding anything. (2) **"It looks fine in Plex" is not ground truth for a sidecar file.** Plex serves external subtitles from its own indexed copy (`key: /library/streams/<id>`), which lags disk; an observation before/after an on-disk change may reflect a stale copy, and that lag is exactly what produced a confusing "bot fixed / Plex broke" inversion here. To check what Plex is *actually* serving, fetch that stream URL directly and compare it to the file on disk.
+  - **Bazarr's match score is text/hash similarity, not verified timing** — a "99% match" shipped a subtitle 22s out for this exact remux. `alass <video> <bad.srt> <fixed.srt>` fixed it in ~3 minutes on a 26GB remux (it reported a single constant shift, no splits); it also handles non-uniform drift, which `ffsubsync`'s single-offset correction does not.
 
 ## 7. GIF/clip generation & subtitle styles
 
@@ -200,6 +205,21 @@ quote-search rendering path reuses the same seek/duration logic.
 
 ### V2 subtitle-extraction build notes (non-obvious bugs — read before touching `app/worker/subtitles.py`)
 
+- **⚠️ Known gap, not yet fixed: the subtitle cache never invalidates when
+  the sidecar changes on disk.** `get_subtitles()` keys the cache purely on
+  the Plex media GUID, so once a title is parsed, a later edit or
+  replacement of its `.srt` is invisible to CineSnip **forever** — the
+  stale cued text/timings are served indefinitely. This is not theoretical:
+  it bit this project twice in one session (Bazarr re-fetching a subtitle,
+  then an `alass` re-sync of the same file), each time needing the cache
+  file deleted by hand before the new timings appeared, and it actively
+  confused the Section 6 sync diagnosis above. Re-syncing subtitles is a
+  *routine* Bazarr workflow, so this will keep recurring. Fix when touched:
+  record the sidecar's `mtime`+`size` (and the video's, for the embedded
+  path) in the cached payload and re-extract when they differ — cheap, one
+  `stat()` per lookup, no new config. Until then, the workaround is
+  deleting the title's cache file (`cache/<sha256-of-guid>.json`, via
+  `_cache_path_for_guid()`) or the whole `cache/` directory.
 - **Bazarr sidecar filenames chain multiple dot-separated markers, not
   just a language code** — e.g. `Film.en.hi.srt` (English,
   hearing-impaired/SDH) as a distinct file from a plain `Film.en.srt`.
