@@ -24,6 +24,7 @@ def search_cached_library(
     min_score: float,
     max_window_gap_seconds: float,
     context_lines: int,
+    per_title_limit: int = 3,
 ) -> list[LibraryQuoteMatch]:
     """Fuzzy-search a quote across every already-cached title's subtitles.
 
@@ -34,11 +35,18 @@ def search_cached_library(
     trade-off matches this feature's "instant" design goal; an individual
     /cinesnip flow on that title still re-validates freshness as normal.
 
-    Caps at one match per title (the title's single best line) so results
-    stay diverse across films rather than one film's several lines crowding
-    out the rest.
+    Diversity-first ranking, not a hard one-per-title cap: every title's
+    best-scoring line competes for a slot (ranked by score) before any
+    title's second-best line does, which is what keeps results spread
+    across films once the cache has real breadth. But when result_limit
+    isn't filled by best-lines alone (a small cache, or few titles actually
+    matching this quote), remaining slots backfill with each title's next
+    line, again ranked by score across titles rather than tied to whichever
+    title happens to be checked first. So a title with several strong hits
+    can still show up more than once — just never at the expense of a
+    better match elsewhere.
     """
-    results: list[LibraryQuoteMatch] = []
+    ranked: list[tuple[int, LibraryQuoteMatch]] = []
 
     for cached in cached_titles:
         subtitle_result = read_cached_subtitles(cache_dir, cached.guid)
@@ -48,22 +56,26 @@ def search_cached_library(
         matches = find_quote_matches(
             subtitle_result.entries,
             quote,
-            limit=1,
+            limit=per_title_limit,
             min_score=min_score,
             max_window_gap_seconds=max_window_gap_seconds,
             context_lines=context_lines,
         )
-        if not matches:
-            continue
 
-        results.append(
-            LibraryQuoteMatch(
-                rating_key=cached.rating_key,
-                title=cached.title,
-                library_name=cached.library_name,
-                match=matches[0],
+        for rank, match in enumerate(matches):
+            ranked.append(
+                (
+                    rank,
+                    LibraryQuoteMatch(
+                        rating_key=cached.rating_key,
+                        title=cached.title,
+                        library_name=cached.library_name,
+                        match=match,
+                    ),
+                )
             )
-        )
 
-    results.sort(key=lambda r: -r.match.score)
-    return results[:result_limit]
+    # Sort by rank first (every title's best line outranks any title's
+    # second-best line), then by score within a rank tier.
+    ranked.sort(key=lambda item: (item[0], -item[1].match.score))
+    return [match for _, match in ranked[:result_limit]]
