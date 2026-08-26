@@ -1,6 +1,6 @@
 import pytest
 
-from app.worker.ffmpeg import ClipRenderer, build_seek_args, parse_timecode
+from app.worker.ffmpeg import ClipRenderer, _three_d_plan, build_seek_args, parse_timecode
 
 
 def test_build_seek_args_formats_start_and_duration_as_timecodes():
@@ -91,42 +91,58 @@ def test_seek_and_duration_are_input_options_before_the_video_input():
     assert duration_index < first_i_index
 
 
-def test_scale_filter_has_no_crop_for_flat_video():
+def test_scale_filter_has_no_prefix_for_flat_video():
     renderer = ClipRenderer(fps=15, width=480)
-    assert renderer._scale_and_subtitle_filter(None, "none") == "scale=480:-2:flags=lanczos"
+    assert renderer._scale_and_subtitle_filter(None, None) == "scale=480:-2:flags=lanczos"
 
 
-def test_scale_filter_crops_left_eye_for_side_by_side():
-    renderer = ClipRenderer(fps=15, width=480)
-    filt = renderer._scale_and_subtitle_filter(None, "side_by_side")
-    assert filt == "crop=iw/2:ih:0:0,setsar=1,scale=480:-2:flags=lanczos"
-
-
-def test_scale_filter_crops_top_eye_for_over_under():
-    renderer = ClipRenderer(fps=15, width=480)
-    filt = renderer._scale_and_subtitle_filter(None, "over_under")
-    assert filt == "crop=iw:ih/2:0:0,setsar=1,scale=480:-2:flags=lanczos"
-
-
-def test_scale_filter_resets_sar_after_3d_crop():
-    """Regression test for a real bug: a packed 3D frame's sample aspect
-    ratio describes the combined stereo pair, not a single eye. ffmpeg's
-    crop filter carries it over unchanged onto the cropped eye, which then
-    plays back stretched — confirmed on a real "Full-SBS" file tagging SAR
-    2:1 on its packed frame, which survived the crop and reported a
-    stretched 32:9 DAR on the cropped single eye instead of 16:9. setsar=1
-    must appear between the crop and the scale filter whenever a 3D crop
-    is applied, and must be absent for flat (non-3D) video.
-    """
-    renderer = ClipRenderer(fps=15, width=480)
-    assert "setsar=1" not in renderer._scale_and_subtitle_filter(None, "none")
-    assert "setsar=1" in renderer._scale_and_subtitle_filter(None, "side_by_side")
-    assert "setsar=1" in renderer._scale_and_subtitle_filter(None, "over_under")
-
-
-def test_scale_filter_puts_crop_before_scale_and_subtitles():
+def test_scale_filter_puts_three_d_prefix_before_scale_and_subtitles():
     from pathlib import Path
 
     renderer = ClipRenderer(fps=15, width=480)
-    filt = renderer._scale_and_subtitle_filter(Path("/tmp/subs.ass"), "over_under")
-    assert filt.startswith("crop=iw:ih/2:0:0,setsar=1,scale=480:-2:flags=lanczos,subtitles=")
+    filt = renderer._scale_and_subtitle_filter(Path("/tmp/subs.ass"), "crop=iw:ih/2:0:0,setsar=1")
+    assert filt == "crop=iw:ih/2:0:0,setsar=1,scale=480:-2:flags=lanczos,subtitles='/tmp/subs.ass'"
+
+
+# _three_d_plan: distinguishes "full" 3D packs (each eye at native
+# resolution, crop alone suffices) from "half"/squeezed packs (each eye
+# compressed to fit the original frame, needing an unsqueeze stretch back
+# to native size after cropping) purely from the packed frame's own raw
+# pixel aspect ratio. Regression coverage for a real bug: the initial 3D
+# fix only cropped, which fixed a real Full-SBS file (Ready Player One,
+# 3840x1080) but left a real squeezed over/under file (Dune, 1920x1080)
+# still squished after cropping.
+
+
+def test_three_d_plan_is_a_noop_for_flat_video():
+    assert _three_d_plan("none", 1920, 1080) == (None, 1920, 1080)
+
+
+def test_three_d_plan_full_side_by_side_just_crops():
+    # Confirmed on Ready Player One's real Full-SBS file: 3840x1080, ratio
+    # 3.56, well past the full-pack threshold.
+    prefix, eye_w, eye_h = _three_d_plan("side_by_side", 3840, 1080)
+    assert prefix == "crop=iw/2:ih:0:0,setsar=1"
+    assert (eye_w, eye_h) == (1920, 1080)
+
+
+def test_three_d_plan_squeezed_side_by_side_also_unsqueezes():
+    prefix, eye_w, eye_h = _three_d_plan("side_by_side", 1920, 1080)
+    assert prefix == "crop=iw/2:ih:0:0,scale=iw*2:ih,setsar=1"
+    assert (eye_w, eye_h) == (1920, 1080)
+
+
+def test_three_d_plan_full_over_under_just_crops():
+    prefix, eye_w, eye_h = _three_d_plan("over_under", 1920, 2160)
+    assert prefix == "crop=iw:ih/2:0:0,setsar=1"
+    assert (eye_w, eye_h) == (1920, 1080)
+
+
+def test_three_d_plan_squeezed_over_under_also_unsqueezes():
+    # Confirmed on Dune's real squeezed over/under file: 1920x1080 packed
+    # frame, cropdetect showed a 1920x402 content box within the top half
+    # (ratio 4.78, implausible for any real film) that becomes 2.39:1
+    # (Cinemascope) once doubled back to its true height.
+    prefix, eye_w, eye_h = _three_d_plan("over_under", 1920, 1080)
+    assert prefix == "crop=iw:ih/2:0:0,scale=iw:ih*2,setsar=1"
+    assert (eye_w, eye_h) == (1920, 1080)
