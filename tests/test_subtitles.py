@@ -152,9 +152,9 @@ def test_cache_miss_for_unwritten_guid(tmp_path):
 
 
 def test_cache_ignores_corrupt_file(tmp_path):
-    from app.worker.subtitles import _cache_path_for_guid
+    from app.worker.subtitles import cache_path_for_guid
 
-    path = _cache_path_for_guid(tmp_path, "plex://movie/corrupt")
+    path = cache_path_for_guid(tmp_path, "plex://movie/corrupt")
     path.write_text("{not valid json")
 
     assert read_cached_subtitles(tmp_path, "plex://movie/corrupt") is None
@@ -245,13 +245,13 @@ def test_cache_for_embedded_source_is_invalidated_when_the_video_changes(tmp_pat
 
 
 def test_cache_paths_for_special_character_guids_are_filesystem_safe(tmp_path):
-    from app.worker.subtitles import _cache_path_for_guid
+    from app.worker.subtitles import cache_path_for_guid
 
     guid_a = "plex://movie/abc"
     guid_b = "com.plexapp.agents.imdb://tt0111161?lang=en"
 
-    path_a = _cache_path_for_guid(tmp_path, guid_a)
-    path_b = _cache_path_for_guid(tmp_path, guid_b)
+    path_a = cache_path_for_guid(tmp_path, guid_a)
+    path_b = cache_path_for_guid(tmp_path, guid_b)
 
     assert path_a != path_b
     for path in (path_a, path_b):

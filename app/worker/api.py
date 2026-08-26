@@ -22,7 +22,7 @@ from app.worker.plex_client import (
     ShowNotFoundError,
 )
 from app.worker.quote_index import CachedTitle
-from app.worker.quotes import find_quote_matches
+from app.worker.quotes import find_quote_matches, get_or_build_candidates
 from app.worker.subprocess_utils import SubprocessTimeoutError
 from app.worker.subtitle_render import STYLE_PRESETS
 from app.worker.subtitles import (
@@ -473,6 +473,9 @@ def create_app(settings: Settings) -> FastAPI:
             )
 
         qm = settings.quote_match
+        precomputed = get_or_build_candidates(
+            settings.cache_dir, result.guid, result.entries, qm.max_window_gap_seconds
+        )
         matches = find_quote_matches(
             result.entries,
             quote,
@@ -480,6 +483,7 @@ def create_app(settings: Settings) -> FastAPI:
             min_score=qm.min_score,
             max_window_gap_seconds=qm.max_window_gap_seconds,
             context_lines=qm.context_lines,
+            precomputed=precomputed,
         )
 
         if not matches:
