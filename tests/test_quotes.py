@@ -247,6 +247,43 @@ def test_literal_match_word_boundary_does_not_match_inside_another_word():
     assert matches[0].score < 100.0
 
 
+def test_partial_word_overlap_ranks_above_unrelated_lines():
+    """A multi-word quote whose words are all present in a candidate, just
+    out of order/interleaved with other words, isn't a literal substring
+    match — this is what the directional word-overlap bonus is for.
+    """
+    entries = _entries(
+        (0.0, 1.0, "Your father, I am, whether you like it or not."),
+        (10.0, 11.0, "Completely unrelated line about the weather."),
+    )
+    matches = find_quote_matches(entries, "I am your father", limit=2)
+    assert matches[0].entry_indices == (0,)
+    assert matches[0].score > matches[1].score
+
+
+def test_short_candidate_subset_of_long_quote_is_not_inflated():
+    """Guards against ever reintroducing the exact bug found while designing
+    this: rapidfuzz's token_set_ratio scores a short candidate that's a
+    strict word-subset of a much longer quote as a perfect 100 (confirmed:
+    token_set_ratio("i am", "i am your father") == 100.0), which would tie
+    or beat a genuine full match. The directional overlap bonus must never
+    push a truncated candidate ("I am", missing most of "I am your father")
+    to equal or exceed a real one — WRatio alone already scores this
+    particular pair at 90 (a separate, pre-existing property of WRatio
+    itself, not something this bonus should ever add to), so the invariant
+    that actually matters is the ordering, not an absolute number.
+    """
+    entries = _entries(
+        (0.0, 1.0, "I am."),
+        (10.0, 11.0, "Look, I am your father, this changes everything."),
+    )
+    matches = find_quote_matches(entries, "I am your father", limit=2)
+    assert matches[0].entry_indices == (1,)
+    assert matches[0].score == 100.0
+    truncated = next(m for m in matches if m.entry_indices == (0,))
+    assert truncated.score < matches[0].score
+
+
 def test_first_and_last_entries_have_empty_context_on_open_side():
     entries = _entries(
         (0.0, 1.0, "First line."),

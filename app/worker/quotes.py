@@ -150,12 +150,16 @@ def find_quote_matches(
     if not candidates:
         return []
 
+    # score_cutoff=0 here (not min_score) because the literal/overlap boosts
+    # below can rescue a candidate WRatio itself scored under min_score —
+    # the single cutoff that actually matters is applied once, after all
+    # three signals are merged, further down.
     scored = process.extract(
         normalized_quote,
         [c.normalized_text for c in candidates],
         scorer=fuzz.WRatio,
         processor=None,
-        score_cutoff=min_score,
+        score_cutoff=0.0,
         limit=None,
     )
 
@@ -171,9 +175,40 @@ def find_quote_matches(
     # substring hit to the top of the ranking (also picks up any candidate
     # WRatio scored below min_score despite containing the quote outright).
     literal_pattern = re.compile(r"\b" + re.escape(normalized_quote) + r"\b")
+    quote_words = normalized_quote.split()
+
     for idx, candidate in enumerate(candidates):
         if literal_pattern.search(candidate.normalized_text):
             score_by_candidate_index[idx] = 100.0
+            continue
+
+        # Partial word-overlap bonus: catches a multi-word quote whose words
+        # are all present in a candidate but out of order or interleaved
+        # with other words — not a literal substring, so the check above
+        # misses it, and WRatio's character-level scoring doesn't reward
+        # word presence directly. Deliberately directional (what fraction of
+        # the QUOTE's words appear in the candidate, not the reverse) —
+        # rapidfuzz's token_set_ratio was tried and rejected here because
+        # it's symmetric: it scores a short candidate that's a strict
+        # word-subset of a much longer quote as a perfect 100 (confirmed:
+        # token_set_ratio("i am", "i am your father") == 100.0), which would
+        # rank an incomplete match as good as a real one — the exact class
+        # of bug this whole scoring pass exists to avoid. A single-word
+        # quote gets no partial credit (either the literal check above
+        # caught it, or it's simply absent); only worth scoring below a
+        # clear majority-present threshold to avoid one shared common word
+        # inflating an otherwise-unrelated line.
+        if len(quote_words) > 1:
+            candidate_words = set(candidate.normalized_text.split())
+            overlap = sum(1 for w in quote_words if w in candidate_words) / len(quote_words)
+            if overlap >= 0.5:
+                bonus = 60.0 + (overlap - 0.5) * 70.0  # 0.5 -> 60, 1.0 -> 95
+                if bonus > score_by_candidate_index.get(idx, 0.0):
+                    score_by_candidate_index[idx] = bonus
+
+    score_by_candidate_index = {
+        idx: score for idx, score in score_by_candidate_index.items() if score >= min_score
+    }
     ranked_with_scores = sorted(
         ((candidates[idx], score) for idx, score in score_by_candidate_index.items()),
         key=lambda pair: (-pair[1], len(pair[0].indices), pair[0].start),
