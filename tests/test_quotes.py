@@ -209,6 +209,44 @@ def test_out_of_order_srt_indices_do_not_affect_pairing_or_context():
     assert matches[0].entry_indices == (0, 1)
 
 
+def test_literal_substring_match_ranks_above_similar_but_non_matching_lines():
+    """Real bug found on the live library: searching "Hitler" in Peep Show
+    returned several lines that don't contain the word ranked ahead of ones
+    that do — WRatio's length-normalized scoring diluted a short quote
+    buried in a longer line below unrelated same-length lines that merely
+    share similar letters. A literal occurrence of the quote must always
+    outrank a same-score-or-higher fuzzy-only match.
+    """
+    entries = _entries(
+        (0.0, 1.0, "Little Hitler, that's what she called him."),
+        (10.0, 11.0, "He's a right little bother, isn't he."),
+        (20.0, 21.0, "Hither and thither, all over the place."),
+        (30.0, 31.0, "We watched a documentary about Hitler last night."),
+    )
+    matches = find_quote_matches(entries, "Hitler", limit=4)
+
+    literal_indices = {0, 3}
+    literal_scores = [m.score for m in matches if m.entry_indices[0] in literal_indices]
+    non_literal_scores = [
+        m.score for m in matches if m.entry_indices[0] not in literal_indices
+    ]
+    assert literal_scores and all(s == 100.0 for s in literal_scores)
+    assert not non_literal_scores or min(literal_scores) > max(non_literal_scores)
+    # Both literal matches must appear ahead of every non-literal one.
+    literal_positions = [
+        i for i, m in enumerate(matches) if m.entry_indices[0] in literal_indices
+    ]
+    assert literal_positions == [0, 1]
+
+
+def test_literal_match_word_boundary_does_not_match_inside_another_word():
+    entries = _entries((10.0, 12.0, "The situation was completely concatenated today."))
+    matches = find_quote_matches(entries, "cat", limit=1)
+    # "concatenated" contains "cat" as a raw substring but not as a whole
+    # word — must not be force-scored to 100 off that alone.
+    assert matches[0].score < 100.0
+
+
 def test_first_and_last_entries_have_empty_context_on_open_side():
     entries = _entries(
         (0.0, 1.0, "First line."),
