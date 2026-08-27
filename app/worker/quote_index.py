@@ -36,6 +36,18 @@ def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
             "cached_at TEXT NOT NULL"
             ")"
         )
+        # Tracks the last-seen Plex section.updatedAt per configured
+        # library — library_sync.py's cheap "did anything change" check.
+        # Lives in the same DB as cached_titles (not a separate file) since
+        # it's the same class of small, rebuildable-if-lost bookkeeping data,
+        # and the removal diff needs to read both in the same operation.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS library_sync_state ("
+            "library_name TEXT PRIMARY KEY, "
+            "last_seen_updated_at INTEGER NOT NULL, "
+            "last_synced_at TEXT NOT NULL"
+            ")"
+        )
         yield conn
         conn.commit()
     finally:
@@ -66,3 +78,43 @@ def list_cached_titles(db_path: Path) -> list[CachedTitle]:
             "SELECT guid, rating_key, title, library_name FROM cached_titles"
         ).fetchall()
     return [CachedTitle(guid=r[0], rating_key=r[1], title=r[2], library_name=r[3]) for r in rows]
+
+
+def list_cached_titles_for_library(db_path: Path, library_name: str) -> list[CachedTitle]:
+    if not db_path.exists():
+        return []
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT guid, rating_key, title, library_name FROM cached_titles "
+            "WHERE library_name = ?",
+            (library_name,),
+        ).fetchall()
+    return [CachedTitle(guid=r[0], rating_key=r[1], title=r[2], library_name=r[3]) for r in rows]
+
+
+def remove_cached_title(db_path: Path, guid: str) -> None:
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM cached_titles WHERE guid = ?", (guid,))
+
+
+def get_section_updated_at(db_path: Path, library_name: str) -> int | None:
+    if not db_path.exists():
+        return None
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT last_seen_updated_at FROM library_sync_state WHERE library_name = ?",
+            (library_name,),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def set_section_updated_at(db_path: Path, library_name: str, updated_at: int) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO library_sync_state (library_name, last_seen_updated_at, last_synced_at) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(library_name) DO UPDATE SET "
+            "last_seen_updated_at=excluded.last_seen_updated_at, "
+            "last_synced_at=excluded.last_synced_at",
+            (library_name, updated_at, datetime.now(timezone.utc).isoformat()),
+        )

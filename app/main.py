@@ -10,6 +10,7 @@ import uvloop
 
 from app.bot.client import build_bot
 from app.settings import load_settings
+from app.worker import library_sync
 from app.worker.api import create_app
 
 logging.basicConfig(level=logging.INFO)
@@ -37,8 +38,15 @@ async def main() -> None:
         dev_guild_id=settings.dev_guild_id,
     )
 
+    coros = [server.serve(), bot.start(settings.discord_token)]
+    if settings.library_sync.enabled:
+        # Reuses the same PlexClient the worker API already constructed
+        # (create_app() sets it on app.state.plex) rather than opening a
+        # second Plex connection.
+        coros.append(library_sync.library_sync_task(settings, worker_app.state.plex))
+
     async with bot:
-        await asyncio.gather(server.serve(), bot.start(settings.discord_token))
+        await asyncio.gather(*coros)
 
 
 if __name__ == "__main__":

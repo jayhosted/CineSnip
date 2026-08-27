@@ -1,7 +1,14 @@
-"""One-off script: extract + cache subtitles (and warm the candidate cache)
-for every movie and TV episode across all configured libraries. Sequential,
-not concurrent — deliberately mirrors /search-episodes-quote's own reasoning
-(avoid hammering Plex/ffmpeg with many simultaneous extractions).
+"""One-off/manual CLI: extract + cache subtitles (and warm the candidate
+cache) for every movie and TV episode across all configured libraries.
+Sequential, not concurrent — deliberately mirrors /search-episodes-quote's
+own reasoning (avoid hammering Plex/ffmpeg with many simultaneous
+extractions).
+
+All real per-title logic lives in app/worker/library_sync.py's
+sync_one_title() — this script is just enumeration + a progress-printing
+loop around it, so the manual CLI and the automatic library_sync_task()
+(app/main.py, opt-in via config.yaml's library_sync.enabled) share exactly
+one implementation of "how to cache a title."
 
 Incremental by default: a title whose subtitle cache file already exists is
 skipped with only a cheap path.exists() check (no read/parse, no Plex path
@@ -12,13 +19,10 @@ previously skipped (e.g. a path-mapping gap that's since been fixed). Pass
 --force to ignore existing cache files and reprocess everything (e.g. after
 a config.yaml change that could affect every title, or a fresh full build).
 
-Not part of the running app — a manual utility for warming the library's
-cache ahead of time, e.g. to test /snip-search at real scale, or to pick up
-new titles between full builds. Also the closest thing to a working
-prototype of the "manual cache build" idea discussed for V3 Phase 6
-(CLAUDE.md Section 13) — deliberately kept here as a reference starting
-point, not under app/, and not under scratch/ (which app/main.py wipes on
-every container start).
+This script does not detect or clean up removed titles — that's what the
+automatic library_sync feature (config.yaml's library_sync.enabled) does,
+since removal needs the change-detection + safety-guard logic in
+library_sync.py, not just a one-off enumeration pass.
 
 Run inside the container (PYTHONPATH must include /app, since running a
 script by file path doesn't add the working directory to sys.path the way
@@ -33,16 +37,12 @@ bind-mounted — it isn't, by default, in docker-compose.yml.)
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import time
 
 from app.settings import load_settings
-from app.worker import quote_index
-from app.worker.path_mapper import NoPathMappingError, resolve_container_path
+from app.worker.library_sync import sync_one_title
 from app.worker.plex_client import MovieResult, PlexClient
-from app.worker.quotes import get_or_build_candidates
-from app.worker.subtitles import SubtitleSource, cache_path_for_guid, get_subtitles
 
 settings = load_settings()
 plex = PlexClient(settings)
@@ -50,62 +50,19 @@ plex = PlexClient(settings)
 FORCE = "--force" in sys.argv
 
 
-async def process_one(item: MovieResult) -> str:
-    if not FORCE and cache_path_for_guid(settings.cache_dir, item.guid).exists():
-        return f"CACHED (already have it): {item.title}"
-
-    try:
-        container_path = resolve_container_path(
-            item.plex_path, settings.path_mappings_for(item.library_name)
-        )
-    except NoPathMappingError as exc:
-        return f"SKIP (no path mapping): {item.title}: {exc}"
-
-    if not os.path.exists(container_path):
-        return f"SKIP (file not found on disk): {item.title}"
-
-    timeout = settings.subtitle_defaults.extraction_timeout_seconds
-    try:
-        result = await get_subtitles(
-            item,
-            container_path,
-            settings.cache_dir,
-            ffprobe_timeout=timeout,
-            ffmpeg_timeout=timeout,
-        )
-    except Exception as exc:  # noqa: BLE001 - one bad file must not stop the run
-        return f"ERROR: {item.title}: {exc}"
-
-    if result.source is not SubtitleSource.NONE and result.entries:
-        quote_index.upsert_cached_title(
-            settings.quote_index_db_path, result.guid, item.rating_key, item.title, item.library_name
-        )
-        get_or_build_candidates(
-            settings.cache_dir, result.guid, result.entries, settings.quote_match.max_window_gap_seconds
-        )
-
-    return f"OK ({result.source.value}, {len(result.entries)} entries): {item.title}"
-
-
 async def main() -> None:
     items: list[MovieResult] = []
-    for section in plex._movie_sections:
-        items.extend(plex._to_result(m) for m in section.search(libtype="movie"))
-
-    show_count = 0
-    for section in plex._show_sections:
-        for show in section.search(libtype="show"):
-            show_count += 1
-            items.extend(plex._to_result(ep) for ep in show.episodes())
+    for library_name, section in plex.library_sections():
+        items.extend(plex.enumerate_section(section))
 
     total = len(items)
-    print(f"Found {total} titles ({show_count} shows expanded to episodes). Starting…", flush=True)
+    print(f"Found {total} titles across all configured libraries. Starting…", flush=True)
 
     counts = {"cached": 0, "sidecar": 0, "embedded": 0, "none": 0, "skip": 0, "error": 0}
     t0 = time.monotonic()
 
     for i, item in enumerate(items, start=1):
-        outcome = await process_one(item)
+        outcome = await sync_one_title(settings, item, force=FORCE)
         if outcome.startswith("CACHED"):
             counts["cached"] += 1
         elif outcome.startswith("OK (sidecar"):

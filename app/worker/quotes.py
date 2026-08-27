@@ -214,6 +214,16 @@ def write_cached_candidates(
     tmp_path.replace(final_path)
 
 
+def delete_cached_candidates(cache_dir: Path, guid: str) -> bool:
+    """Used by library_sync.py when a title's been removed from Plex.
+    Returns whether a file actually existed to delete."""
+    path = _candidates_cache_path(cache_dir, guid)
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
 def get_or_build_candidates(
     cache_dir: Path,
     guid: str,

@@ -1,6 +1,6 @@
 import pytest
 
-from app.settings import LibraryConfig, PathMapping, Settings, SettingsError
+from app.settings import LibraryConfig, LibrarySyncDefaults, PathMapping, Settings, SettingsError
 
 
 def _settings(libraries: list[LibraryConfig]) -> Settings:
@@ -54,3 +54,20 @@ def test_three_d_format_for_raises_for_unconfigured_library():
 
     with pytest.raises(SettingsError):
         settings.three_d_format_for("4K Movies")
+
+
+def test_library_sync_defaults_are_off_by_default():
+    settings = _settings([])
+
+    assert settings.library_sync.enabled is False
+    assert settings.library_sync.interval_hours == 24.0
+
+
+def test_library_sync_config_overrides_apply():
+    settings = _settings([])
+    settings = settings.model_copy(
+        update={"library_sync": LibrarySyncDefaults(enabled=True, interval_hours=6.0)}
+    )
+
+    assert settings.library_sync.enabled is True
+    assert settings.library_sync.interval_hours == 6.0

@@ -71,3 +71,17 @@ quote_match:
 
 worker:
   port: 8000
+
+# Optional, off by default. Periodically checks Plex for library changes
+# (via each library's own updatedAt timestamp — cheap, and confirmed not to
+# fire on routine metadata refreshes, only genuine adds/removals) and keeps
+# the subtitle cache in sync automatically: new titles get their subtitles
+# extracted and cached, and titles removed from Plex have their cache
+# entries deleted. Two safety checks (a mount-reachability check, and a
+# spot-check of titles Plex still reports as present) must both pass before
+# any deletion happens, specifically to avoid mistaking a Plex outage or a
+# dead drive for genuine content removal. See README.md for the full
+# explanation before enabling this.
+library_sync:
+  enabled: false
+  interval_hours: 24

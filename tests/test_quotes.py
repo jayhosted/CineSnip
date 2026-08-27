@@ -3,6 +3,7 @@ import time
 import pytest
 
 from app.worker.quotes import (
+    delete_cached_candidates,
     find_quote_matches,
     get_or_build_candidates,
     normalize_for_match,
@@ -436,3 +437,18 @@ def test_write_cached_candidates_round_trip(tmp_path):
     loaded = read_cached_candidates(tmp_path, "guid-2", 3.0)
 
     assert loaded == precomputed
+
+
+def test_delete_cached_candidates_removes_existing_file(tmp_path):
+    entries = _entries((0.0, 1.0, "Here's Johnny!"))
+    _write_raw_subtitle_cache(tmp_path, "guid-1", entries)
+    get_or_build_candidates(tmp_path, "guid-1", entries, 3.0)
+
+    deleted = delete_cached_candidates(tmp_path, "guid-1")
+
+    assert deleted is True
+    assert read_cached_candidates(tmp_path, "guid-1", 3.0) is None
+
+
+def test_delete_cached_candidates_returns_false_when_nothing_to_delete(tmp_path):
+    assert delete_cached_candidates(tmp_path, "guid-never-cached") is False
