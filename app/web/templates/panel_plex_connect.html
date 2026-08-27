@@ -1,0 +1,15 @@
+<div class="card">
+  <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+    <h1>Plex account connected</h1>
+  </div>
+  <p class="desc">Now tell CineSnip where your Plex Media Server actually lives. If Plex runs natively on the same machine as Docker, try <code>http://host.docker.internal:32400</code>; if Plex runs in its own container, use its container name or address on your Docker network.</p>
+
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+
+  <form hx-post="/wizard/plex/connect" hx-target="#wizard-panel" hx-swap="innerHTML">
+    <label class="field-label" for="plex_url">PLEX SERVER ADDRESS</label>
+    <input type="url" id="plex_url" name="plex_url" placeholder="http://host.docker.internal:32400" value="http://host.docker.internal:32400" style="margin-bottom: 20px;">
+    <button class="btn btn-primary btn-block" type="submit">Connect &amp; continue</button>
+  </form>
+</div>

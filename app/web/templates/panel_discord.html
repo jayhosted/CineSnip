@@ -1,0 +1,20 @@
+<div class="card">
+  <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.3 4.6a19 19 0 0 0-4.7-1.5l-.3.6a17 17 0 0 1 4 1.3M8.7 3.1a19 19 0 0 0-4.7 1.5l-.2.4a15 15 0 0 1 16.4 0l-.2-.4a19 19 0 0 0-4.7-1.5"/><path d="M4 6.8C2.6 9 2 12.5 2 15.5c1.6 1.2 3.5 2 5.5 2.4l.8-1.4M20 6.8c1.4 2.2 2 5.7 2 8.7-1.6 1.2-3.5 2-5.5 2.4l-.8-1.4"/><circle cx="9" cy="13" r="1.3" fill="var(--text-secondary)" stroke="none"/><circle cx="15" cy="13" r="1.3" fill="var(--text-secondary)" stroke="none"/></svg>
+    <h1>Connect your Discord bot</h1>
+  </div>
+  <p class="desc">
+    Create an application in the <a href="https://discord.com/developers/applications" target="_blank" rel="noopener">Discord Developer Portal</a>,
+    add a Bot, and copy its token below. Make sure <strong>Public Bot</strong> is turned off (Bot &rarr; Authorization Flow) &mdash;
+    this keeps CineSnip tied to your own Plex library only.
+  </p>
+
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+
+  <form hx-post="/wizard/discord" hx-target="#wizard-panel" hx-swap="innerHTML">
+    <label class="field-label" for="discord_token">BOT TOKEN</label>
+    <input type="password" id="discord_token" name="discord_token" placeholder="••••••••••••••••••••••••••" autocomplete="off" style="margin-bottom: 20px;">
+    <button class="btn btn-primary btn-block" type="submit">Validate &amp; continue</button>
+  </form>
+</div>
+<p class="footnote">Tokens are written directly to your local .env file &mdash; nothing leaves this machine.</p>

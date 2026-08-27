@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 from pathlib import Path
 
@@ -9,7 +10,8 @@ import uvicorn
 import uvloop
 
 from app.bot.client import build_bot
-from app.settings import load_settings
+from app.settings import SettingsError, load_settings
+from app.web.wizard import create_wizard_app
 from app.worker import library_sync
 from app.worker.api import create_app
 
@@ -22,8 +24,34 @@ def _clear_scratch_dir(scratch_dir: Path) -> None:
     scratch_dir.mkdir(parents=True, exist_ok=True)
 
 
+async def _run_wizard_until_complete() -> None:
+    # Section 14: on first run (or any incomplete .env/config.yaml), serve
+    # *only* the setup wizard until it's validated complete — no Discord
+    # bot, no worker API. Runs its own uvicorn.Server on WIZARD_PORT (0.0.0.0
+    # so Docker's port mapping can reach it; the *host*-side mapping is what
+    # actually keeps it localhost-only by default, see docker-compose.yml),
+    # and shuts itself down the moment the wizard's final step reports
+    # success — main() then re-runs load_settings() and falls straight
+    # through into the real startup path below, all in the same process, no
+    # container restart required.
+    done = asyncio.Event()
+    wizard_app = create_wizard_app(on_complete=done.set)
+    port = int(os.environ.get("WIZARD_PORT", "1919"))
+    server = uvicorn.Server(uvicorn.Config(wizard_app, host="0.0.0.0", port=port, log_level="info"))
+    logger.info("No valid config found — serving the setup wizard on port %d until it's complete.", port)
+    serve_task = asyncio.create_task(server.serve())
+    await done.wait()
+    server.should_exit = True
+    await serve_task
+
+
 async def main() -> None:
-    settings = load_settings()
+    try:
+        settings = load_settings()
+    except SettingsError as exc:
+        logger.info("%s", exc)
+        await _run_wizard_until_complete()
+        settings = load_settings()
     _clear_scratch_dir(settings.scratch_dir)
     settings.cache_dir.mkdir(parents=True, exist_ok=True)
 

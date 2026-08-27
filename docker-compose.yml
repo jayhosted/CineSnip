@@ -3,8 +3,21 @@ services:
     build: .
     env_file:
       - .env
+    ports:
+      # Setup wizard only (Section 14) — loopback-only on the host by
+      # default, matching "binds to localhost only by default, exposing it
+      # on the LAN is an explicit opt-in". The worker API stays
+      # loopback-only *inside* the container with no port published at all
+      # (Section 9) — this is a separate, wizard-specific exception.
+      - "127.0.0.1:1919:1919"
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
+      # Read-write: the wizard writes these directly on first run (Section
+      # 14). .env didn't need a bind mount before the wizard existed —
+      # env_file above is read straight off the host by Docker Compose at
+      # container start, but the running container itself had no way to
+      # edit that host file until now.
+      - ./.env:/app/.env
+      - ./config.yaml:/app/config.yaml
       - "/mnt/d/Plex Additional/Movies:/media/movies-d:ro"
       - "/mnt/e/Media/Video/Movies:/media/movies-e:ro"
       - "/mnt/d/Plex Additional/3D:/media/3d-d:ro"

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CineSnip &mdash; Setup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/htmx.min.js"></script>
+</head>
+<body>
+<div class="shell">
+
+  <div class="wordmark">
+    <svg width="26" height="26" viewBox="0 0 240 240"><circle cx="120" cy="120" r="119" fill="var(--icon-black)"/><g transform="rotate(-40 120 120)"><rect x="20" y="89" width="96" height="62" rx="9" fill="var(--strip-grey)"/><rect x="30" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="52" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="73" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="95" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="30" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="52" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="73" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="95" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="35" y="107" width="26" height="26" rx="5" fill="var(--icon-black)"/><rect x="75" y="107" width="26" height="26" rx="5" fill="var(--icon-black)"/><rect x="128" y="89" width="96" height="62" rx="9" fill="var(--strip-grey)"/><rect x="138" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="160" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="181" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="203" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="138" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="160" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="181" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="203" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="143" y="107" width="26" height="26" rx="5" fill="var(--icon-black)"/><rect x="183" y="107" width="26" height="26" rx="5" fill="var(--icon-black)"/><rect x="119" y="80" width="6" height="80" rx="3" fill="var(--accent)"/></g></svg>
+    <span class="title">CineSnip</span>
+    <span class="subtitle">Setup</span>
+  </div>
+
+  <div id="step-nav">
+    {% include "step_nav_inner.html" %}
+  </div>
+
+  <div id="wizard-panel">
+    {% include panel_template %}
+  </div>
+
+</div>
+</body>
+</html>
