@@ -12,6 +12,13 @@ httptools>=0.6,<1
 PlexAPI>=4.15,<5
 httpx>=0.27,<1
 PyYAML>=6.0,<7
+# Setup wizard (app/web) — server-rendered Jinja2 + htmx, no build step/
+# Node toolchain, matching the project's existing minimal-dependency stance
+# (Section 8: FTS5 over an external search service, static ffmpeg, etc.).
+# python-multipart is FastAPI's own requirement for parsing the wizard's
+# HTML <form> POSTs (Request.form()) — not used anywhere else in the app.
+jinja2>=3.1,<4
+python-multipart>=0.0.12,<1
 python-dotenv>=1.0,<2
 pydantic>=2.9,<3
 srt>=3.5,<4

@@ -1,0 +1,28 @@
+<div class="card"
+     id="plex-pin-waiting"
+     hx-get="/wizard/plex/status"
+     hx-trigger="every 2s"
+     hx-swap="innerHTML"
+     hx-target="#wizard-panel">
+  <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 15h3"/></svg>
+    <h1>Connect your Plex account</h1>
+  </div>
+  <p class="desc">Enter this code at <a href="https://plex.tv/link" target="_blank" rel="noopener">plex.tv/link</a> to authorize CineSnip. It expires in 15 minutes.</p>
+
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+
+  <div class="pin-badge">{{ pin.pin }}</div>
+
+  <div class="waiting-pill">
+    <span class="dot"></span>
+    <span class="label">Waiting for authorization&hellip;</span>
+  </div>
+
+  <div style="height:1px; background: var(--border-subtle); margin-bottom:20px;"></div>
+  <div style="display:flex; align-items:center; justify-content:space-between;">
+    <button class="btn btn-ghost" type="button" hx-get="/wizard/discord" hx-target="#wizard-panel" hx-swap="innerHTML">&larr; Back</button>
+    <span></span>
+  </div>
+</div>
+<p class="footnote">Tokens are written directly to your local config &mdash; nothing leaves this machine.</p>

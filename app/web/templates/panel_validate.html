@@ -1,0 +1,32 @@
+<div class="card wide">
+  <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
+    <h1>Final check</h1>
+  </div>
+  <p class="desc">Confirming everything actually works before CineSnip starts for real.</p>
+
+  <div>
+    {% for label, ok, detail in checks %}
+      <div class="check-row">
+        <span class="icon">
+          {% if ok %}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          {% else %}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          {% endif %}
+        </span>
+        <span class="{{ 'check-ok' if ok else 'check-fail' }}">{{ label }}</span>
+        <span class="detail">{{ detail }}</span>
+      </div>
+    {% endfor %}
+  </div>
+
+  {% if all_ok %}
+    <form hx-post="/wizard/finish" hx-target="#wizard-panel" hx-swap="innerHTML" style="margin-top: 24px;">
+      <button class="btn btn-primary btn-block" type="submit">Finish setup</button>
+    </form>
+  {% else %}
+    <p class="error-banner" style="margin-top: 20px;">Something above needs fixing before CineSnip can start. Go back and correct it, then this check will re-run.</p>
+    <button class="btn btn-ghost" type="button" hx-get="/wizard/libraries" hx-target="#wizard-panel" hx-swap="innerHTML" style="margin-top: 8px;">&larr; Back to libraries</button>
+  {% endif %}
+</div>

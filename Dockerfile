@@ -37,6 +37,6 @@ RUN useradd -m appuser \
     && chown -R appuser:appuser /app
 USER appuser
 
-EXPOSE 8000
+EXPOSE 8000 1919
 
 CMD ["python", "-m", "app.main"]

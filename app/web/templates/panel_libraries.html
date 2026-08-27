@@ -1,0 +1,32 @@
+<div class="card wide">
+  <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+    <h1>Pick your libraries</h1>
+  </div>
+  <p class="desc">Choose which Plex libraries CineSnip should search, and confirm where each one's files actually live inside this container. We've suggested a match where we found one.</p>
+
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+
+  <form hx-post="/wizard/libraries" hx-target="#wizard-panel" hx-swap="innerHTML">
+    {% for choice in state.library_choices %}
+      <div class="lib-row">
+        <input type="checkbox" name="lib_{{ loop.index0 }}_selected" {% if choice.selected %}checked{% endif %}>
+        <div>
+          <span class="lib-name">{{ choice.name }}</span>
+          <span class="lib-type">{{ choice.section_type }}</span>
+        </div>
+        <select name="lib_{{ loop.index0 }}_container_path">
+          <option value="" {% if not choice.container_path %}selected{% endif %}>&mdash; no mapping &mdash;</option>
+          {% for mount in mounts %}
+            <option value="{{ mount }}" {% if mount == choice.container_path %}selected{% endif %}>
+              {{ mount }}{% if mount == choice.suggested_container_path %} (suggested){% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+    {% else %}
+      <p style="color: var(--text-tertiary); font-size: 13px;">No movie or show libraries found on this Plex server.</p>
+    {% endfor %}
+    <button class="btn btn-primary btn-block" type="submit" style="margin-top: 8px;">Continue</button>
+  </form>
+</div>

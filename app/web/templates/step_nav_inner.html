@@ -1,0 +1,14 @@
+{% set steps = [(1, "Discord"), (2, "Plex"), (3, "Libraries"), (4, "Validate")] %}
+<div class="step-nav">
+  {% for num, label in steps %}
+    {% if not loop.first %}<div class="rule {{ 'done' if num <= current_step else '' }}"></div>{% endif %}
+    <div class="step {{ 'done' if num < current_step else ('active' if num == current_step else '') }}">
+      <div class="dot">
+        {% if num < current_step %}
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+        {% else %}{{ num }}{% endif %}
+      </div>
+      <span class="label">{{ label }}</span>
+    </div>
+  {% endfor %}
+</div>
