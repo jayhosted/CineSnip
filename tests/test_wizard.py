@@ -7,7 +7,7 @@ import yaml
 
 from app.settings import LibrarySyncDefaults, QuoteMatchDefaults, RenderDefaults, SubtitleDefaults, WorkerConfig, load_settings
 from app.web.state import LibraryChoice, MappingRow, WizardState
-from app.web.wizard import _verify_discord_token, _write_config_files
+from app.web.app import _verify_discord_token, _write_config_files
 
 
 # ---- Regression: post-wizard settings reload must see the wizard's own

@@ -1,0 +1,20 @@
+<div class="card wide">
+  <h1>Generate a clip</h1>
+  <p class="desc">Search your Plex library and generate a GIF or clip without Discord.</p>
+
+  <div class="kind-toggle">
+    <label><input type="radio" name="kind" value="film" checked> Film</label>
+    <label><input type="radio" name="kind" value="show"> TV Show</label>
+  </div>
+
+  <label class="field-label" for="query">SEARCH</label>
+  <input
+    type="text" id="query" name="query" autocomplete="off"
+    hx-get="/generate/search" hx-trigger="keyup changed delay:300ms"
+    hx-include="[name='kind']" hx-target="#search-results" hx-swap="innerHTML"
+    placeholder="Search for a film or show…" style="margin-bottom:16px;">
+
+  <div id="search-results"></div>
+
+  <div id="generate-form-area"></div>
+</div>

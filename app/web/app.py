@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Awaitable, Callable, TypeVar
 
 import httpx
 import yaml
@@ -17,6 +17,7 @@ from plexapi.exceptions import Unauthorized
 from plexapi.myplex import MyPlexPinLogin
 from plexapi.server import PlexServer
 
+from app.runtime import SettingsHolder
 from app.settings import (
     LibrarySyncDefaults,
     QuoteMatchDefaults,
@@ -24,6 +25,7 @@ from app.settings import (
     SubtitleDefaults,
     WorkerConfig,
 )
+from app.web.generate import register_generate_routes
 from app.web.state import LibraryChoice, MappingRow, WizardState, media_mount_candidates
 
 logger = logging.getLogger(__name__)
@@ -271,11 +273,21 @@ def _run_validation_sync(state: WizardState) -> list[tuple[str, bool, str]]:
     return checks
 
 
-def create_wizard_app(on_complete: Callable[[], None]) -> FastAPI:
-    app = FastAPI(title="CineSnip Setup")
+def create_web_app(
+    settings_holder: SettingsHolder, on_setup_complete: Callable[[], Awaitable[None]]
+) -> FastAPI:
+    # One persistent app for the whole container lifetime (Section 14 /
+    # decision #6), not the throwaway instance this used to be: while
+    # settings_holder.settings is None only the wizard routes below do
+    # anything useful (there's no worker to talk to yet); once it's set,
+    # /generate (app/web/generate.py) also comes alive and /wizard/... stays
+    # reachable afterward as the reconfiguration entry point rather than
+    # disappearing once setup completes.
+    app = FastAPI(title="CineSnip")
     app.state.wizard = WizardState()
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+    register_generate_routes(app, templates, settings_holder)
 
     def render(request: Request, panel: str, **ctx) -> HTMLResponse:
         # A plain page load renders the full shell (page.html) with the
@@ -297,11 +309,23 @@ def create_wizard_app(on_complete: Callable[[], None]) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
-        state: WizardState = request.app.state.wizard
-        step = state.current_step
-        return RedirectResponse(
-            {1: "/wizard/discord", 2: "/wizard/plex", 3: "/wizard/libraries", 4: "/wizard/validate"}[step]
-        )
+        if settings_holder.settings is None:
+            state: WizardState = request.app.state.wizard
+            step = state.current_step
+            return RedirectResponse(
+                {1: "/wizard/discord", 2: "/wizard/plex", 3: "/wizard/libraries", 4: "/wizard/validate"}[step]
+            )
+        return RedirectResponse("/generate")
+
+    @app.get("/wizard/restart")
+    async def wizard_restart(request: Request):
+        # The only entry point back into a completed wizard (Section 14):
+        # always starts a fresh WizardState rather than trying to prefill
+        # from the live Settings — simpler, and correct regardless of
+        # whether the running config came from the wizard, hand-edited
+        # files, or a previous reconfiguration.
+        request.app.state.wizard = WizardState()
+        return RedirectResponse("/wizard/discord")
 
     # ---- Step 1: Discord ----------------------------------------------
 
@@ -550,7 +574,7 @@ def create_wizard_app(on_complete: Callable[[], None]) -> FastAPI:
         if not state.last_validation_ok:
             return checks_response
         _write_config_files(state)
-        on_complete()
+        await on_setup_complete()
         invite_url = discord_invite_url(state.discord_bot_id) if state.discord_bot_id else None
         return render(request, "panel_complete.html", invite_url=invite_url)
 
