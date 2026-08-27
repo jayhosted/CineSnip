@@ -1,0 +1,19 @@
+<div class="generate-matches">
+  <p class="desc" style="margin-top:0;">Pick a line:</p>
+  <div class="match-list">
+  {% for m in matches %}
+    <form hx-post="/generate/render" hx-target="#generate-form-area" hx-swap="innerHTML">
+      <input type="hidden" name="rating_key" value="{{ m.rating_key if show_titles else rating_key }}">
+      <input type="hidden" name="timecode" value="{{ m.start }}">
+      <input type="hidden" name="duration" value="{{ m.end - m.start }}">
+      <input type="hidden" name="format" value="{{ format or '' }}">
+      <input type="hidden" name="style" value="classic">
+      <button type="submit" class="match-row">
+        {% if show_titles %}<span class="match-title">{{ m.title }} &mdash; {{ m.library_name }}</span>{% endif %}
+        <span class="match-text">{{ m.text }}</span>
+        <span class="match-meta">{{ m.timecode }} &middot; {{ m.score | round(0) }}%</span>
+      </button>
+    </form>
+  {% endfor %}
+  </div>
+</div>

@@ -1,0 +1,45 @@
+<form class="generate-options"
+  hx-post="/generate/render-start" hx-target="#generate-form-area" hx-swap="innerHTML">
+  <input type="hidden" name="kind" value="{{ kind }}">
+  <input type="hidden" name="rating_key" value="{{ rating_key }}">
+  <p class="desc" style="margin-top:0;">
+    Selected: <strong>{{ resolved.title }}</strong>{% if resolved.year %} ({{ resolved.year }}){% endif %}
+    &mdash; {{ resolved.library_name }}
+  </p>
+
+  {% if kind == "show" %}
+  <div style="display:flex; gap:10px; margin-bottom:6px;">
+    <div style="flex:1;">
+      <label class="field-label" for="season">SEASON (optional)</label>
+      <input type="text" id="season" name="season" placeholder="e.g. 2">
+    </div>
+    <div style="flex:1;">
+      <label class="field-label" for="episode">EPISODE (optional)</label>
+      <input type="text" id="episode" name="episode" placeholder="e.g. 1">
+    </div>
+  </div>
+  <p class="footnote" style="text-align:left; margin:0 0 16px; max-width:none;">
+    Leave season/episode blank to search a quote across the whole show.
+  </p>
+  {% endif %}
+
+  <label class="field-label" for="quote">QUOTE</label>
+  <input type="text" id="quote" name="quote" placeholder="A line of dialogue (fuzzy — close is fine)" style="margin-bottom:16px;">
+
+  <label class="field-label" for="timecode">OR TIMECODE</label>
+  <input type="text" id="timecode" name="timecode" placeholder="e.g. 1:23:45 or 1h23m45s" style="margin-bottom:16px;">
+
+  <label class="field-label" for="end_timecode">END TIMECODE (optional, timecode only)</label>
+  <input type="text" id="end_timecode" name="end_timecode" placeholder="Custom clip end" style="margin-bottom:16px;">
+
+  <label class="field-label" for="format">FORMAT</label>
+  <select id="format" name="format" class="select-field" style="margin-bottom:20px;">
+    <option value="">GIF (default)</option>
+    <option value="mp4">MP4</option>
+    <option value="webm">WebM</option>
+  </select>
+
+  <button class="btn btn-primary btn-block" type="submit">
+    <span class="btn-spinner"></span><span class="btn-label-idle">Generate</span>
+  </button>
+</form>

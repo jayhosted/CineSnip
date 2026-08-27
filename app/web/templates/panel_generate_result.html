@@ -1,0 +1,36 @@
+<div id="generate-result" class="generate-result">
+  <div class="clip-preview">
+    {% if render.format == "gif" %}
+      <img src="data:{{ media_type }};base64,{{ content_b64 }}" alt="Generated clip">
+    {% else %}
+      <video controls>
+        <source src="data:{{ media_type }};base64,{{ content_b64 }}" type="{{ media_type }}">
+      </video>
+    {% endif %}
+  </div>
+
+  <form>
+    <input type="hidden" name="rating_key" value="{{ rating_key }}">
+    <input type="hidden" name="timecode" value="{{ timecode }}">
+    <input type="hidden" name="duration" value="{{ duration if duration is not none else '' }}">
+    <input type="hidden" name="end_timecode" value="{{ end_timecode or '' }}">
+    <input type="hidden" name="format" value="{{ format or '' }}">
+    <label class="field-label" for="style">SUBTITLE STYLE</label>
+    <select id="style" name="style" class="select-field" style="margin-bottom:16px;"
+      hx-post="/generate/render" hx-include="closest form" hx-target="#generate-result" hx-swap="outerHTML">
+      {% for value, label in style_options %}
+      <option value="{{ value }}" {% if value == render.style %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </form>
+
+  {% if render.style == "none" and style_options and duration is not none %}
+    <p class="footnote" style="text-align:left; margin:-8px 0 16px; max-width:none;">
+      No subtitles available for this title &mdash; generated without burn-in.
+    </p>
+  {% endif %}
+
+  <a class="btn btn-primary btn-block" href="data:{{ media_type }};base64,{{ content_b64 }}" download="clip.{{ render.format }}" style="text-decoration:none;">
+    Download
+  </a>
+</div>

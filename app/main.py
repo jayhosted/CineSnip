@@ -9,9 +9,10 @@ from pathlib import Path
 import uvicorn
 import uvloop
 
-from app.bot.client import build_bot
-from app.settings import SettingsError, load_settings
-from app.web.wizard import create_wizard_app
+from app.bot.client import CineSnipBot, build_bot
+from app.runtime import SettingsHolder
+from app.settings import Settings, SettingsError, load_settings
+from app.web.app import create_web_app
 from app.worker import library_sync
 from app.worker.api import create_app
 
@@ -24,109 +25,180 @@ def _clear_scratch_dir(scratch_dir: Path) -> None:
     scratch_dir.mkdir(parents=True, exist_ok=True)
 
 
-async def _run_wizard_until_complete() -> None:
-    # Section 14: on first run (or any incomplete .env/config.yaml), serve
-    # *only* the setup wizard until it's validated complete — no Discord
-    # bot, no worker API. Runs its own uvicorn.Server on WIZARD_PORT (0.0.0.0
-    # so Docker's port mapping can reach it).
-    #
-    # The *host*-side docker-compose.yml `127.0.0.1:1919:1919` mapping is
-    # the ONLY thing enforcing "localhost only by default" — deliberately,
-    # not for lack of trying an app-level check too. Verified directly
-    # against this project's own reference environment (Docker Desktop,
-    # WSL2 backend): a request reaching the container through a published
-    # port arrives with its source rewritten to the docker bridge gateway
-    # address (e.g. 172.17.0.1) by Docker's own proxying, for BOTH a
-    # loopback-origin request and a LAN-origin request — confirmed
-    # identical for both in a real test. So request.client.host inside the
-    # app can't distinguish "someone on this machine" from "someone on the
-    # LAN" at all on this topology; an app-level "reject non-loopback"
-    # check here would silently be a no-op, not a real second layer of
-    # defense. Do not add one without first confirming it actually sees a
-    # meaningfully different address for the two cases on whatever Docker
-    # topology it's meant to protect — on Docker Desktop it doesn't.
-    #
-    # This means the host-side port binding genuinely is the whole
-    # boundary: anyone editing docker-compose.yml to drop the `127.0.0.1:`
-    # prefix (Section 14's documented LAN opt-in) is trusted to understand
-    # they're exposing the raw token-entry wizard to their LAN with no
-    # other gate in front of it.
-    #
-    # Shuts itself down the moment the wizard's final step reports success
-    # — main() then re-runs load_settings() and falls straight through into
-    # the real startup path below, all in the same process, no container
-    # restart required.
-    done = asyncio.Event()
-    wizard_app = create_wizard_app(on_complete=done.set)
-    port = int(os.environ.get("WIZARD_PORT", "1919"))
-    server = uvicorn.Server(uvicorn.Config(wizard_app, host="0.0.0.0", port=port, log_level="info"))
-    logger.info("No valid config found — serving the setup wizard on port %d until it's complete.", port)
-    serve_task = asyncio.create_task(server.serve())
-    await done.wait()
+def _try_load_settings() -> Settings | None:
+    try:
+        return load_settings()
+    except SettingsError as exc:
+        logger.info("%s", exc)
+        return None
+
+
+async def _start_worker(settings: Settings) -> tuple[object, uvicorn.Server, asyncio.Task]:
+    worker_app = create_app(settings)
+    server = uvicorn.Server(
+        uvicorn.Config(worker_app, host="127.0.0.1", port=settings.worker.port, log_level="info")
+    )
+    task = asyncio.create_task(server.serve())
+    return worker_app, server, task
+
+
+async def _stop_worker(server: uvicorn.Server, task: asyncio.Task) -> None:
     server.should_exit = True
-    await serve_task
+    await task
+
+
+async def _start_bot(settings: Settings) -> tuple[CineSnipBot, asyncio.Task]:
+    bot = build_bot(f"http://127.0.0.1:{settings.worker.port}", dev_guild_id=settings.dev_guild_id)
+    task = asyncio.create_task(bot.start(settings.discord_token))
+    return bot, task
+
+
+async def _stop_bot(bot: CineSnipBot, task: asyncio.Task) -> None:
+    await bot.close()
+    await task
 
 
 async def main() -> None:
-    try:
-        settings = load_settings()
-    except SettingsError as exc:
-        logger.info("%s", exc)
-        await _run_wizard_until_complete()
-        # override_env=True: the wizard just wrote real values to .env, but
-        # os.environ already holds the empty placeholders Docker's
-        # `env_file:` loaded from .env.example at container start — plain
-        # load_settings() would see those keys as "already set" and never
-        # pick up what the wizard wrote (see load_settings()'s override_env
-        # docstring comment in app/settings.py). Still wrapped in
-        # try/except: the wizard's own validation step doesn't run every
-        # check load_settings()/Settings' pydantic validation does, so a
-        # config that looked complete to the wizard could still fail here —
-        # that must surface as a clear log message, not a raw traceback.
+    settings_holder = SettingsHolder(settings=_try_load_settings())
+    reconfigured = asyncio.Event()
+
+    async def on_setup_complete() -> None:
+        # Fired by the wizard's "Finish setup" step (first run) or by a
+        # later reconfiguration through the same /wizard/... routes
+        # (Section 14 / decision #6 — reopened via /wizard/restart once
+        # /generate is live). Either way this must not restart the
+        # container: swap in the newly-written config and let main()'s loop
+        # below react to it.
         try:
-            settings = load_settings(override_env=True)
+            new_settings = load_settings(override_env=True)
         except SettingsError as exc2:
             logger.error(
                 "Setup wizard reported success, but the resulting config is "
-                "still invalid: %s. Check .env/config.yaml, or delete them "
-                "and re-run the wizard.",
+                "still invalid: %s. Check .env/config.yaml, or use /wizard/restart "
+                "to try again.",
                 exc2,
             )
-            raise
-    _clear_scratch_dir(settings.scratch_dir)
-    settings.cache_dir.mkdir(parents=True, exist_ok=True)
+            return
+        settings_holder.settings = new_settings
+        reconfigured.set()
 
-    worker_app = create_app(settings)
-    server_config = uvicorn.Config(
-        worker_app, host="127.0.0.1", port=settings.worker.port, log_level="info"
-    )
-    server = uvicorn.Server(server_config)
+    # The web app (Section 14) now runs for the container's ENTIRE
+    # lifetime, not just a one-shot first-run phase: while
+    # settings_holder.settings is None it serves only the setup wizard;
+    # once configured it also serves /generate (V3 Phase 3) and stays
+    # reachable at /wizard/... afterward as the reconfiguration entry
+    # point, instead of tearing itself down the moment setup completes.
+    web_app = create_web_app(settings_holder, on_setup_complete)
+    web_port = int(os.environ.get("WIZARD_PORT", "1919"))
+    web_server = uvicorn.Server(uvicorn.Config(web_app, host="0.0.0.0", port=web_port, log_level="info"))
+    web_task = asyncio.create_task(web_server.serve())
 
-    bot = build_bot(
-        f"http://127.0.0.1:{settings.worker.port}",
-        dev_guild_id=settings.dev_guild_id,
-    )
+    if settings_holder.settings is None:
+        logger.info(
+            "No valid config found — serving the setup wizard on port %d until it's complete.",
+            web_port,
+        )
+        reconfigured_wait = asyncio.create_task(reconfigured.wait())
+        done, _pending = await asyncio.wait({web_task, reconfigured_wait}, return_when=asyncio.FIRST_COMPLETED)
+        if web_task in done:
+            # The web server itself died before setup ever completed —
+            # nothing to fall through to.
+            await web_task
+            return
+        reconfigured.clear()
+        logger.info("Setup complete — starting the bot and worker.")
 
-    coros = [server.serve(), bot.start(settings.discord_token)]
-    if settings.library_sync.enabled:
-        # Reuses the same PlexClient the worker API already constructed
-        # (create_app() sets it on app.state.plex) rather than opening a
-        # second Plex connection.
-        coros.append(library_sync.library_sync_task(settings, worker_app.state.plex))
+    # From here on, the worker (and the bot, when its token changes) get
+    # rebuilt in place whenever settings_holder.settings changes, without
+    # ever tearing down web_task — that's what lets a later /wizard/restart
+    # reconfiguration apply live instead of requiring a container restart.
+    worker_app = None
+    worker_server: uvicorn.Server | None = None
+    worker_task: asyncio.Task | None = None
+    bot: CineSnipBot | None = None
+    bot_task: asyncio.Task | None = None
+    sync_task: asyncio.Task | None = None
+    current_discord_token: str | None = None
+    current_worker_port: int | None = None
 
-    async with bot:
-        await asyncio.gather(*coros)
+    try:
+        while True:
+            settings = settings_holder.settings
+            assert settings is not None
+            _clear_scratch_dir(settings.scratch_dir)
+            settings.cache_dir.mkdir(parents=True, exist_ok=True)
+
+            if worker_server is not None:
+                await _stop_worker(worker_server, worker_task)
+            worker_app, worker_server, worker_task = await _start_worker(settings)
+
+            # discord.py's gateway connection can't swap tokens on an
+            # already-connected Client, so only tear down and rebuild the
+            # bot when the token (or the worker port it talks to) actually
+            # changed — a Plex/library-only reconfiguration leaves the
+            # running bot/gateway connection untouched.
+            needs_new_bot = (
+                bot is None
+                or settings.discord_token != current_discord_token
+                or settings.worker.port != current_worker_port
+            )
+            if needs_new_bot:
+                if bot is not None:
+                    await _stop_bot(bot, bot_task)
+                bot, bot_task = await _start_bot(settings)
+                current_discord_token = settings.discord_token
+                current_worker_port = settings.worker.port
+
+            if sync_task is not None:
+                sync_task.cancel()
+                await asyncio.gather(sync_task, return_exceptions=True)
+            if settings.library_sync.enabled:
+                # Reuses the worker's own PlexClient (create_app() sets it
+                # on app.state.plex) rather than opening a second Plex
+                # connection.
+                sync_task = asyncio.create_task(
+                    library_sync.library_sync_task(settings, worker_app.state.plex)
+                )
+            else:
+                sync_task = None
+
+            reconfigured.clear()
+            reconfigured_wait = asyncio.create_task(reconfigured.wait())
+            watched = {web_task, worker_task, bot_task, reconfigured_wait}
+            if sync_task is not None:
+                watched.add(sync_task)
+
+            done, pending = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
+
+            if reconfigured_wait in done:
+                # A live reconfiguration — loop back around and rebuild
+                # whatever needs rebuilding above.
+                continue
+
+            # Anything else finishing is unexpected (a crash, or the web
+            # server dying) — surface it rather than looping forever.
+            for task in pending:
+                task.cancel()
+            for finished in done:
+                await finished
+            return
+    finally:
+        web_server.should_exit = True
+        try:
+            await web_task
+        except asyncio.CancelledError:
+            pass
 
 
 if __name__ == "__main__":
     # uvicorn.Server.serve() is awaited directly here rather than run via
     # uvicorn.run()/Server.run() — needed so the bot and worker share one
-    # event loop (asyncio.gather() above) instead of uvicorn owning its own.
-    # That means uvicorn's own automatic uvloop activation (which only
-    # kicks in when it manages the top-level loop itself) never fires here
-    # — confirmed via a real run: plain asyncio.run() left the standard
-    # asyncio loop active, not uvloop, even with uvloop installed. Found
-    # while trimming uvicorn's [standard] extra down to just its two
+    # event loop (asyncio.gather()/asyncio.wait() above) instead of uvicorn
+    # owning its own. That means uvicorn's own automatic uvloop activation
+    # (which only kicks in when it manages the top-level loop itself) never
+    # fires here — confirmed via a real run: plain asyncio.run() left the
+    # standard asyncio loop active, not uvloop, even with uvloop installed.
+    # Found while trimming uvicorn's [standard] extra down to just its two
     # actually-used pieces (uvloop, httptools) — uvloop was already being
     # paid for in image size without the app ever actually getting its
     # benefit. uvloop.run() (a drop-in asyncio.run() replacement) is what
