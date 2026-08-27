@@ -3,18 +3,28 @@ for every movie and TV episode across all configured libraries. Sequential,
 not concurrent — deliberately mirrors /search-episodes-quote's own reasoning
 (avoid hammering Plex/ffmpeg with many simultaneous extractions).
 
-Not part of the running app — a manual utility for warming the whole
-library's cache ahead of time, e.g. to test /snip-search at real scale.
-Also the closest thing to a working prototype of the "manual cache build"
-idea discussed for V3 Phase 6 (CLAUDE.md Section 13) — deliberately kept
-here as a reference starting point, not under app/, and not under scratch/
-(which app/main.py wipes on every container start).
+Incremental by default: a title whose subtitle cache file already exists is
+skipped with only a cheap path.exists() check (no read/parse, no Plex path
+resolution beyond what enumeration already gave for free) — so re-running
+this after the first full build costs almost nothing for the vast majority
+of the library and only does real work for titles that are new or were
+previously skipped (e.g. a path-mapping gap that's since been fixed). Pass
+--force to ignore existing cache files and reprocess everything (e.g. after
+a config.yaml change that could affect every title, or a fresh full build).
+
+Not part of the running app — a manual utility for warming the library's
+cache ahead of time, e.g. to test /snip-search at real scale, or to pick up
+new titles between full builds. Also the closest thing to a working
+prototype of the "manual cache build" idea discussed for V3 Phase 6
+(CLAUDE.md Section 13) — deliberately kept here as a reference starting
+point, not under app/, and not under scratch/ (which app/main.py wipes on
+every container start).
 
 Run inside the container (PYTHONPATH must include /app, since running a
 script by file path doesn't add the working directory to sys.path the way
 `python -m` does):
 
-    docker compose exec -e PYTHONPATH=/app cinesnip python /app/scripts/build_full_cache.py
+    docker compose exec -e PYTHONPATH=/app cinesnip python /app/scripts/build_full_cache.py [--force]
 
 (mount or copy this file into the container first if scripts/ isn't already
 bind-mounted — it isn't, by default, in docker-compose.yml.)
@@ -24,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import time
 
 from app.settings import load_settings
@@ -31,13 +42,18 @@ from app.worker import quote_index
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 from app.worker.plex_client import MovieResult, PlexClient
 from app.worker.quotes import get_or_build_candidates
-from app.worker.subtitles import SubtitleSource, get_subtitles
+from app.worker.subtitles import SubtitleSource, cache_path_for_guid, get_subtitles
 
 settings = load_settings()
 plex = PlexClient(settings)
 
+FORCE = "--force" in sys.argv
+
 
 async def process_one(item: MovieResult) -> str:
+    if not FORCE and cache_path_for_guid(settings.cache_dir, item.guid).exists():
+        return f"CACHED (already have it): {item.title}"
+
     try:
         container_path = resolve_container_path(
             item.plex_path, settings.path_mappings_for(item.library_name)
@@ -85,12 +101,14 @@ async def main() -> None:
     total = len(items)
     print(f"Found {total} titles ({show_count} shows expanded to episodes). Starting…", flush=True)
 
-    counts = {"sidecar": 0, "embedded": 0, "none": 0, "skip": 0, "error": 0}
+    counts = {"cached": 0, "sidecar": 0, "embedded": 0, "none": 0, "skip": 0, "error": 0}
     t0 = time.monotonic()
 
     for i, item in enumerate(items, start=1):
         outcome = await process_one(item)
-        if outcome.startswith("OK (sidecar"):
+        if outcome.startswith("CACHED"):
+            counts["cached"] += 1
+        elif outcome.startswith("OK (sidecar"):
             counts["sidecar"] += 1
         elif outcome.startswith("OK (embedded"):
             counts["embedded"] += 1
@@ -102,15 +120,19 @@ async def main() -> None:
             counts["error"] += 1
 
         # Always print errors/skips immediately; otherwise a periodic heartbeat.
-        if outcome.startswith(("ERROR", "SKIP")) or i % 100 == 0 or i == total:
+        # "CACHED" outcomes are deliberately silent even on the heartbeat —
+        # on an incremental run almost everything is CACHED, and printing it
+        # every 100 items would bury the handful of lines that actually
+        # matter (new titles, errors, skips).
+        if outcome.startswith(("ERROR", "SKIP")) or (not outcome.startswith("CACHED") and i % 100 == 0) or i == total:
             elapsed = time.monotonic() - t0
             print(f"[{i}/{total}] ({elapsed:.0f}s elapsed) {outcome}", flush=True)
 
     elapsed = time.monotonic() - t0
     print(
         f"\nDONE in {elapsed:.0f}s ({elapsed/60:.1f}min). "
-        f"sidecar={counts['sidecar']} embedded={counts['embedded']} none={counts['none']} "
-        f"skip={counts['skip']} error={counts['error']}",
+        f"already_cached={counts['cached']} sidecar={counts['sidecar']} embedded={counts['embedded']} "
+        f"none={counts['none']} skip={counts['skip']} error={counts['error']}",
         flush=True,
     )
 
