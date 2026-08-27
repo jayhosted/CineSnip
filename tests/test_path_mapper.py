@@ -50,6 +50,45 @@ def test_longest_prefix_wins_when_overlapping():
     assert result == "/media/movies-specific/Film.mkv"
 
 
+def test_strips_windows_extended_length_path_prefix():
+    # Real bug found via the full-library cache build: Plex reports the
+    # \\?\ extended-length prefix for titles whose combined path/filename
+    # exceeds Windows' 260-char MAX_PATH — e.g. a real Borat file and
+    # several multi-episode Avatar: The Last Airbender files, both skipped
+    # with "No path mapping configured" despite an otherwise-correct entry.
+    mappings = [
+        PathMapping(
+            plex_prefix="D:\\Plex Additional\\Movies", container_path="/media/movies-d"
+        ),
+    ]
+    plex_path = (
+        "\\\\?\\D:\\Plex Additional\\Movies\\Borat - Cultural Learnings of America "
+        "for Make Benefit Glorious Nation of Kazakhstan (2006)\\Borat Cultural "
+        "Learnings of America for Make Benefit Glorious Nation of Kazakhstan "
+        "(2006) {imdb-tt0443453} [Bluray-1080p Proper][DTS 5.1][x264]-NERDHD.mkv"
+    )
+
+    result = resolve_container_path(plex_path, mappings)
+
+    assert result.startswith("/media/movies-d/Borat")
+    assert result.endswith(".mkv")
+    assert "?" not in result
+
+
+def test_strips_windows_extended_length_unc_prefix():
+    # \\?\UNC\server\share\... is the extended-length form of a real network
+    # UNC path (\\server\share\...), not a local drive — a distinct escape
+    # sequence from the drive-letter form above.
+    mappings = [
+        PathMapping(plex_prefix="\\\\nas\\Movies", container_path="/media/movies"),
+    ]
+    plex_path = "\\\\?\\UNC\\nas\\Movies\\Film (2020)\\Film.mkv"
+
+    result = resolve_container_path(plex_path, mappings)
+
+    assert result == "/media/movies/Film (2020)/Film.mkv"
+
+
 def test_raises_when_no_mapping_matches():
     mappings = [
         PathMapping(
