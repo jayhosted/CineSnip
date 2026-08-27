@@ -70,6 +70,46 @@ class PlexClient:
         self.movie_library_names = frozenset(s.title for s in self._movie_sections)
         self._movie_cache: dict[int, tuple[float, MovieResult]] = {}
 
+    def library_sections(self) -> list[tuple[str, object]]:
+        # (library_name, plexapi LibrarySection) for every configured
+        # library — used by library_sync.py instead of reaching into the
+        # private _movie_sections/_show_sections directly.
+        return [(s.title, s) for s in self._movie_sections + self._show_sections]
+
+    def enumerate_section(self, section) -> list[MovieResult]:
+        # Movie sections: a flat list of movies. Show sections: every show's
+        # full episode list (season 0 specials included natively by
+        # plexapi's show.episodes(), same as list_episodes() above). Shared
+        # by scripts/build_full_cache.py and library_sync.py so there's one
+        # enumeration implementation, not two.
+        if section.type == "movie":
+            return [self._to_result(m) for m in section.search(libtype="movie")]
+        results: list[MovieResult] = []
+        for show in section.search(libtype="show"):
+            results.extend(self._to_result(ep) for ep in show.episodes())
+        return results
+
+    def current_section_updated_ats(self) -> dict[str, int]:
+        # section.reload() is required to get a genuinely live value —
+        # confirmed directly that re-fetching via self._server.library
+        # .sections()/.section(name) returns the exact same cached Python
+        # object already held here (an `is` identity check confirmed no
+        # network round-trip happens), so only reload() on the already-held
+        # object actually asks Plex again. Lets a connection/timeout
+        # exception propagate uncaught — callers must not treat a failed
+        # call the same as "got a real value back".
+        #
+        # plexapi parses updatedAt into a datetime, not the raw epoch int
+        # Plex actually returns — converted to an int timestamp here so the
+        # rest of the app (SQLite storage, equality comparisons) deals with
+        # one plain, storable type rather than a datetime object (which
+        # Python 3.12 no longer adapts for sqlite3 automatically).
+        result: dict[str, int] = {}
+        for name, section in self.library_sections():
+            section.reload()
+            result[name] = int(section.updatedAt.timestamp())
+        return result
+
     def search_movies(self, query: str, limit: int = 25) -> list[MovieResult]:
         results: list[MovieResult] = []
         for section in self._movie_sections:

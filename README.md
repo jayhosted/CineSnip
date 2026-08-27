@@ -171,6 +171,51 @@ show, faster on repeat searches. A bare `timecode` needs a specific episode
 to seek within, so `season`/`episode` are required whenever you're not using
 `quote`.
 
+## 8. Library auto-sync (optional)
+
+**Off by default.** CineSnip's subtitle cache normally only grows through
+normal use — a title only gets its subtitles extracted the first time
+someone actually searches or generates a clip from it (see `scripts/build_full_cache.py`
+for a manual one-off way to build the whole cache instead). Library
+auto-sync is an opt-in alternative for keeping that cache current
+automatically as your library changes, without needing to remember to run
+anything manually.
+
+Enable it in `config.yaml`:
+
+```yaml
+library_sync:
+  enabled: true
+  interval_hours: 24
+```
+
+What it does, each time it runs: it asks Plex for each library's own
+`updatedAt` timestamp — a cheap check, confirmed not to fire on routine
+per-title actions like Refresh Metadata or Analyze, only on genuine
+scanner-detected adds/removals — and does nothing further unless something
+actually changed. When a library *has* changed, it extracts and caches
+subtitles for any new titles, and **removes cache entries for titles no
+longer in Plex**.
+
+**That last part is worth reading carefully before enabling this**: it can
+delete cache files. Two independent safety checks have to both pass before
+any deletion happens, specifically so a Plex outage or a dead/disconnected
+drive can never be mistaken for genuine content removal:
+1. A **mount check** — every path this library depends on must actually be
+   reachable and non-empty on disk right now.
+2. A **spot check** — a sample of *other* titles Plex still says are
+   present must also actually exist on disk.
+
+If either check fails, cleanup is skipped for that whole library and
+retried on the next cycle — new titles still get added normally either way,
+only the cache-removal step is held back. Nothing is ever silently lost:
+the worst case of a false trigger is a delayed cleanup, not a wrongful one.
+
+`interval_hours` controls how often it wakes up to check — the check itself
+is nearly free when nothing's changed (a handful of lightweight Plex calls,
+not a full library scan), so a short interval costs very little even on a
+quiet day.
+
 ## Troubleshooting
 
 - **Bot fails to log in (401)** — `DISCORD_TOKEN` in `.env` is wrong or was reset since you copied it.

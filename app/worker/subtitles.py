@@ -341,6 +341,17 @@ def write_cached_subtitles(
     tmp_path.replace(final_path)
 
 
+def delete_cached_subtitles(cache_dir: Path, guid: str) -> bool:
+    """Used by library_sync.py when a title's been removed from Plex.
+    Returns whether a file actually existed to delete — not an error either
+    way, just useful for logging/counting."""
+    path = cache_path_for_guid(cache_dir, guid)
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
 # --- Orchestration ----------------------------------------------------
 
 

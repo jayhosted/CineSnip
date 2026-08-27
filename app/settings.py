@@ -106,6 +106,22 @@ class QuoteMatchDefaults(BaseModel):
     library_per_title_limit: int = 3
 
 
+class LibrarySyncDefaults(BaseModel):
+    # Off by default — this is background work that can delete cache
+    # entries (for titles removed from Plex), so it must be an explicit
+    # opt-in rather than something that just starts happening. Section
+    # updatedAt-based change detection (see app/worker/library_sync.py) is
+    # what makes this safe/cheap enough to offer at all.
+    enabled: bool = False
+    # The cheap "did anything change" check (a handful of section.reload()
+    # calls) runs every wake-up regardless of this value — a short interval
+    # costs almost nothing on cycles where nothing changed, since the
+    # expensive full enumeration only happens when a section's updatedAt
+    # actually moved. 24h matches how infrequently a personal library
+    # typically changes; lower it if you add content more often.
+    interval_hours: float = 24.0
+
+
 class Settings(BaseModel):
     discord_token: str
     plex_url: str
@@ -115,6 +131,7 @@ class Settings(BaseModel):
     render_defaults: RenderDefaults = Field(default_factory=RenderDefaults)
     subtitle_defaults: SubtitleDefaults = Field(default_factory=SubtitleDefaults)
     quote_match: QuoteMatchDefaults = Field(default_factory=QuoteMatchDefaults)
+    library_sync: LibrarySyncDefaults = Field(default_factory=LibrarySyncDefaults)
     worker: WorkerConfig = Field(default_factory=WorkerConfig)
     scratch_dir: Path = Path("scratch")
     cache_dir: Path = Path("cache")
@@ -205,6 +222,7 @@ def load_settings(
                 **raw_config.get("subtitle_defaults", {})
             ),
             quote_match=QuoteMatchDefaults(**raw_config.get("quote_match", {})),
+            library_sync=LibrarySyncDefaults(**raw_config.get("library_sync", {})),
             worker=WorkerConfig(**raw_config.get("worker", {})),
             dev_guild_id=dev_guild_id,
         )

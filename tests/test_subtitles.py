@@ -8,6 +8,7 @@ from app.worker.subtitles import (
     build_ffmpeg_extract_args,
     build_ffprobe_subtitle_args,
     choose_subtitle_stream,
+    delete_cached_subtitles,
     find_sidecar_subtitle,
     parse_srt,
     read_cached_subtitles,
@@ -343,3 +344,21 @@ def test_build_ffmpeg_extract_args():
     ]
     map_index = args.index("-map")
     assert args[map_index + 1] == "0:s:2"
+
+
+def test_delete_cached_subtitles_removes_existing_file(tmp_path):
+    result = SubtitleResult(
+        guid="plex://movie/abc",
+        source=SubtitleSource.SIDECAR,
+        entries=[SubtitleEntry(index=1, start=1.0, end=2.0, text="Hi")],
+    )
+    write_cached_subtitles(tmp_path, result)
+
+    deleted = delete_cached_subtitles(tmp_path, "plex://movie/abc")
+
+    assert deleted is True
+    assert read_cached_subtitles(tmp_path, "plex://movie/abc") is None
+
+
+def test_delete_cached_subtitles_returns_false_when_nothing_to_delete(tmp_path):
+    assert delete_cached_subtitles(tmp_path, "plex://movie/never-cached") is False
