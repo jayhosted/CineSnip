@@ -17,6 +17,13 @@ from plexapi.exceptions import Unauthorized
 from plexapi.myplex import MyPlexPinLogin
 from plexapi.server import PlexServer
 
+from app.settings import (
+    LibrarySyncDefaults,
+    QuoteMatchDefaults,
+    RenderDefaults,
+    SubtitleDefaults,
+    WorkerConfig,
+)
 from app.web.state import LibraryChoice, MappingRow, WizardState, media_mount_candidates
 
 logger = logging.getLogger(__name__)
@@ -52,6 +59,30 @@ def discord_invite_url(bot_id: str) -> str:
         f"https://discord.com/oauth2/authorize?client_id={bot_id}"
         f"&scope=bot%20applications.commands&permissions={_DISCORD_INVITE_PERMISSIONS}"
     )
+
+
+async def _verify_discord_token(token: str) -> tuple[bool, str, dict | None]:
+    # Shared by discord_submit (step 1) and _validate_panel (step 4's final
+    # check) so there's exactly one place that calls Discord to check a
+    # token — the final check used to just trust step 1's in-memory result
+    # instead of re-verifying, which meant a token revoked/regenerated
+    # between step 1 and clicking "Finish setup" still showed green.
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://discord.com/api/v10/users/@me",
+                headers={"Authorization": f"Bot {token}"},
+            )
+    except httpx.HTTPError:
+        return False, "Couldn't reach Discord — check your network and try again.", None
+
+    if resp.status_code != 200:
+        return False, "That token was rejected by Discord. Double-check it and try again.", None
+
+    payload = resp.json()
+    username = payload.get("username", "bot")
+    return True, f"logged in as {username}", payload
+
 
 _T = TypeVar("_T")
 
@@ -181,11 +212,13 @@ def _connect_and_discover_sync(plex_url: str, account_token: str | None) -> tupl
 
 
 def _run_validation_sync(state: WizardState) -> list[tuple[str, bool, str]]:
+    # Discord's own check is deliberately NOT here — it needs a live async
+    # HTTP call (_verify_discord_token), and this function runs off the
+    # event loop via run_in_threadpool alongside the Plex checks below.
+    # _validate_panel awaits it separately and prepends the result.
     from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 
-    checks: list[tuple[str, bool, str]] = [
-        ("Discord bot token", True, f"logged in as {state.discord_username}")
-    ]
+    checks: list[tuple[str, bool, str]] = []
 
     try:
         plex_server = PlexServer(state.plex_url, state.plex_account_token, timeout=10)
@@ -285,21 +318,10 @@ def create_wizard_app(on_complete: Callable[[], None]) -> FastAPI:
         if not token:
             return render(request, "panel_discord.html", error="Enter a bot token.")
 
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(
-                    "https://discord.com/api/v10/users/@me",
-                    headers={"Authorization": f"Bot {token}"},
-                )
-        except httpx.HTTPError:
-            return render(
-                request, "panel_discord.html", error="Couldn't reach Discord — check your network and try again."
-            )
+        ok, detail, payload = await _verify_discord_token(token)
+        if not ok:
+            return render(request, "panel_discord.html", error=detail)
 
-        if resp.status_code != 200:
-            return render(request, "panel_discord.html", error="That token was rejected by Discord. Double-check it and try again.")
-
-        payload = resp.json()
         state.discord_token = token
         state.discord_username = payload.get("username", "bot")
         # A bot's own user ID is its application's client ID — this is what
@@ -326,13 +348,35 @@ def create_wizard_app(on_complete: Callable[[], None]) -> FastAPI:
     @app.get("/wizard/plex", response_class=HTMLResponse)
     async def plex_step(request: Request):
         state: WizardState = request.app.state.wizard
-        pin = await _ensure_pin(state)
+        try:
+            pin = await _ensure_pin(state)
+        except asyncio.TimeoutError:
+            return render(
+                request, "panel_plex_pin.html", pin=None,
+                error=f"plex.tv didn't respond within {int(_PLEX_CALL_TIMEOUT_SECONDS)}s. Check your network and try again.",
+            )
+        except Exception:
+            return render(
+                request, "panel_plex_pin.html", pin=None,
+                error="Couldn't get a code from plex.tv. Check your network and try again.",
+            )
         return render(request, "panel_plex_pin.html", pin=pin)
 
     @app.get("/wizard/plex/status", response_class=HTMLResponse)
     async def plex_status(request: Request):
         state: WizardState = request.app.state.wizard
-        pin: MyPlexPinLogin = await _ensure_pin(state)
+        try:
+            pin: MyPlexPinLogin = await _ensure_pin(state)
+        except asyncio.TimeoutError:
+            return render(
+                request, "panel_plex_pin.html", pin=None,
+                error=f"plex.tv didn't respond within {int(_PLEX_CALL_TIMEOUT_SECONDS)}s. Check your network and try again.",
+            )
+        except Exception:
+            return render(
+                request, "panel_plex_pin.html", pin=None,
+                error="Couldn't get a code from plex.tv. Check your network and try again.",
+            )
 
         try:
             logged_in = await _call_with_timeout(pin.checkLogin, timeout=15)
@@ -391,6 +435,9 @@ def create_wizard_app(on_complete: Callable[[], None]) -> FastAPI:
     def _sync_library_choices_from_form(state: WizardState, form) -> None:
         for i, choice in enumerate(state.library_choices):
             choice.selected = form.get(f"lib_{i}_selected") == "on"
+            three_d = str(form.get(f"lib_{i}_three_d_format", "none")).strip()
+            if three_d in ("none", "side_by_side", "over_under"):
+                choice.three_d_format = three_d
             for j, row in enumerate(choice.mapping_rows):
                 row.plex_prefix = str(form.get(f"lib_{i}_mapping_{j}_plex_prefix", "")).strip()
                 row.container_path = str(form.get(f"lib_{i}_mapping_{j}_container_path", "")).strip()
@@ -469,14 +516,21 @@ def create_wizard_app(on_complete: Callable[[], None]) -> FastAPI:
         # was auto-suggested, hand-edited, or added from a blank row for a
         # folder the sampler missed.
         state: WizardState = request.app.state.wizard
+
+        if state.discord_token:
+            discord_ok, discord_detail, _ = await _verify_discord_token(state.discord_token)
+        else:
+            discord_ok, discord_detail = False, "no token entered yet"
+        checks: list[tuple[str, bool, str]] = [("Discord bot token", discord_ok, discord_detail)]
+
         try:
-            checks = await _call_with_timeout(_run_validation_sync, state)
+            checks += await _call_with_timeout(_run_validation_sync, state)
         except asyncio.TimeoutError:
-            checks = [(
+            checks.append((
                 "Validation",
                 False,
                 f"Plex didn't respond within {int(_PLEX_CALL_TIMEOUT_SECONDS)}s — check the connection and try again.",
-            )]
+            ))
         all_ok = all(ok for _, ok, _ in checks)
         state.last_validation_ok = all_ok
         return render(request, "panel_validate.html", checks=checks, all_ok=all_ok)
@@ -522,34 +576,21 @@ def _write_config_files(state: WizardState, env_path: Path = Path(".env"), confi
     ]
     env_path.write_text("\n".join(kept) + "\n")
 
+    # Everything below "libraries" is built from app/settings.py's own
+    # Pydantic defaults rather than hand-copied literals — those already
+    # changed once for a real reason (extraction_timeout_seconds 180->300,
+    # per this project's own build notes), and a wizard-written config.yaml
+    # silently going stale relative to app/settings.py's actual defaults is
+    # exactly the class of bug a hand-copied second source of truth
+    # produces. lib.model_dump() also means any future LibraryConfig field
+    # (e.g. three_d_format) flows into the written file automatically
+    # instead of needing to be added here by hand.
     config = {
-        "libraries": [
-            {
-                "name": lib.name,
-                "path_mappings": [
-                    {"plex_prefix": m.plex_prefix, "container_path": m.container_path}
-                    for m in lib.path_mappings
-                ],
-            }
-            for lib in state.selected_libraries()
-        ],
-        "render_defaults": {
-            "duration_seconds": 4,
-            "fps": 15,
-            "width": 480,
-            "min_duration_seconds": 1,
-            "max_duration_seconds": 15,
-            "format": "gif",
-        },
-        "subtitle_defaults": {"extraction_timeout_seconds": 300},
-        "quote_match": {
-            "candidate_limit": 8,
-            "min_score": 50,
-            "confident_score": 85,
-            "max_window_gap_seconds": 3,
-            "context_lines": 1,
-        },
-        "worker": {"port": 8000},
-        "library_sync": {"enabled": False, "interval_hours": 24},
+        "libraries": [lib.model_dump() for lib in state.selected_libraries()],
+        "render_defaults": RenderDefaults().model_dump(),
+        "subtitle_defaults": SubtitleDefaults().model_dump(),
+        "quote_match": QuoteMatchDefaults().model_dump(),
+        "worker": WorkerConfig().model_dump(),
+        "library_sync": LibrarySyncDefaults().model_dump(),
     }
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))

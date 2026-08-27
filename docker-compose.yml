@@ -16,6 +16,21 @@ services:
       # env_file above is read straight off the host by Docker Compose at
       # container start, but the running container itself had no way to
       # edit that host file until now.
+      #
+      # This is a deliberate, accepted trade-off, not an oversight: these
+      # two files stay writable for the container's ENTIRE lifetime, not
+      # just during the one-time wizard phase (compose has no way to
+      # remount something read-only partway through a container's life).
+      # That means the long-running bot/worker process technically retains
+      # write access to its own secrets/config after setup completes, even
+      # though nothing in normal operation writes to them again. Accepted
+      # because (a) this is a personal, single-owner install running on the
+      # installer's own machine (Section 11), not a multi-tenant service,
+      # and (b) the planned /setup reconfiguration route (decision #6) will
+      # need the same write access anyway, so scoping it to "wizard phase
+      # only" would just be re-added later. Revisit if this project ever
+      # moves toward a threat model where the bot/worker process itself is
+      # untrusted relative to its own config.
       - ./.env:/app/.env
       - ./config.yaml:/app/config.yaml
       - "/mnt/d/Plex Additional/Movies:/media/movies-d:ro"

@@ -28,12 +28,34 @@ async def _run_wizard_until_complete() -> None:
     # Section 14: on first run (or any incomplete .env/config.yaml), serve
     # *only* the setup wizard until it's validated complete — no Discord
     # bot, no worker API. Runs its own uvicorn.Server on WIZARD_PORT (0.0.0.0
-    # so Docker's port mapping can reach it; the *host*-side mapping is what
-    # actually keeps it localhost-only by default, see docker-compose.yml),
-    # and shuts itself down the moment the wizard's final step reports
-    # success — main() then re-runs load_settings() and falls straight
-    # through into the real startup path below, all in the same process, no
-    # container restart required.
+    # so Docker's port mapping can reach it).
+    #
+    # The *host*-side docker-compose.yml `127.0.0.1:1919:1919` mapping is
+    # the ONLY thing enforcing "localhost only by default" — deliberately,
+    # not for lack of trying an app-level check too. Verified directly
+    # against this project's own reference environment (Docker Desktop,
+    # WSL2 backend): a request reaching the container through a published
+    # port arrives with its source rewritten to the docker bridge gateway
+    # address (e.g. 172.17.0.1) by Docker's own proxying, for BOTH a
+    # loopback-origin request and a LAN-origin request — confirmed
+    # identical for both in a real test. So request.client.host inside the
+    # app can't distinguish "someone on this machine" from "someone on the
+    # LAN" at all on this topology; an app-level "reject non-loopback"
+    # check here would silently be a no-op, not a real second layer of
+    # defense. Do not add one without first confirming it actually sees a
+    # meaningfully different address for the two cases on whatever Docker
+    # topology it's meant to protect — on Docker Desktop it doesn't.
+    #
+    # This means the host-side port binding genuinely is the whole
+    # boundary: anyone editing docker-compose.yml to drop the `127.0.0.1:`
+    # prefix (Section 14's documented LAN opt-in) is trusted to understand
+    # they're exposing the raw token-entry wizard to their LAN with no
+    # other gate in front of it.
+    #
+    # Shuts itself down the moment the wizard's final step reports success
+    # — main() then re-runs load_settings() and falls straight through into
+    # the real startup path below, all in the same process, no container
+    # restart required.
     done = asyncio.Event()
     wizard_app = create_wizard_app(on_complete=done.set)
     port = int(os.environ.get("WIZARD_PORT", "1919"))
@@ -51,7 +73,26 @@ async def main() -> None:
     except SettingsError as exc:
         logger.info("%s", exc)
         await _run_wizard_until_complete()
-        settings = load_settings()
+        # override_env=True: the wizard just wrote real values to .env, but
+        # os.environ already holds the empty placeholders Docker's
+        # `env_file:` loaded from .env.example at container start — plain
+        # load_settings() would see those keys as "already set" and never
+        # pick up what the wizard wrote (see load_settings()'s override_env
+        # docstring comment in app/settings.py). Still wrapped in
+        # try/except: the wizard's own validation step doesn't run every
+        # check load_settings()/Settings' pydantic validation does, so a
+        # config that looked complete to the wizard could still fail here —
+        # that must surface as a clear log message, not a raw traceback.
+        try:
+            settings = load_settings(override_env=True)
+        except SettingsError as exc2:
+            logger.error(
+                "Setup wizard reported success, but the resulting config is "
+                "still invalid: %s. Check .env/config.yaml, or delete them "
+                "and re-run the wizard.",
+                exc2,
+            )
+            raise
     _clear_scratch_dir(settings.scratch_dir)
     settings.cache_dir.mkdir(parents=True, exist_ok=True)
 

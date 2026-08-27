@@ -36,6 +36,12 @@ class LibraryChoice:
     selected: bool = False
     mapping_rows: list[MappingRow] = field(default_factory=lambda: [MappingRow()])
     suggested_rows: list[MappingRow] = field(default_factory=list)
+    # "none" | "side_by_side" | "over_under" (CLAUDE.md Section 3) — left at
+    # "none" unless the user flags this library as holding 3D encodes.
+    # Without it, a 3D file renders as a squished/doubled frame instead of a
+    # normal flat clip; there's no way for the wizard to auto-detect this
+    # from a sampled title, so it's an explicit opt-in field, not a guess.
+    three_d_format: str = "none"
 
     def missing_suggestions(self) -> list[tuple[int, MappingRow]]:
         # (index into suggested_rows, the row) for every auto-suggested
@@ -77,6 +83,7 @@ class WizardState:
                     for row in choice.mapping_rows
                     if row.plex_prefix and row.container_path
                 ],
+                three_d_format=choice.three_d_format,
             )
             for choice in self.library_choices
             if choice.selected
