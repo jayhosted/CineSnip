@@ -99,6 +99,65 @@ No central database, no cloud API, no message broker.
 - **✅ Follow-on polish: a directional partial word-overlap bonus, added deliberately without `rapidfuzz.fuzz.token_set_ratio`.** The literal-match fix above only catches a quote that appears as a contiguous phrase — it misses a multi-word quote whose words are all present in a candidate but out of order or interleaved with other words (e.g. searching a scrambled "manager regional the to assistant" should still find "Assistant to the Regional Manager"). The obvious fix — blend in `token_set_ratio`, which is word-set-aware — was tried and rejected: it's symmetric, so it scores a *short candidate that's a strict word-subset of a much longer quote* as a perfect 100 too (confirmed: `token_set_ratio("i am", "i am your father") == 100.0`), which would rank an incomplete/truncated match as good as a real one — reintroducing the exact class of bug the literal-match fix exists to prevent, just from the opposite direction. `find_quote_matches()` instead scores what fraction of the *quote's* words appear as whole words in the candidate (never the reverse), and only awards a bonus (scaling 60→95 as overlap goes 50%→100%) once a majority of the quote's words are present — deliberately capped below the literal fix's 100 in the results, since a real contiguous phrase is stronger evidence than scattered words. Guarded by a regression test asserting a truncated candidate can never tie or beat a genuine full match. Verified against the real library: the scrambled Office search now correctly ranks both real "Assistant to the Regional Manager" lines (95.0) above unrelated lines (85.5), with no change to the existing Hitler search's ranking.
 - **✅ Real correctness bug only found by testing against the fully-built library cache — invisible at small scale.** `scripts/build_full_cache.py` (a one-off utility, see its docstring — not part of the running app, and effectively a working prototype of Phase 6's "manual cache build" idea below) extracted and cached subtitles for all 11,463 titles in this developer's real library (10,672 sidecar, 13 embedded, 764 with no usable subtitles, 14 skipped on a path-mapping issue affecting a handful of titles with `\\?\`-prefixed UNC paths — a real, separate gap worth fixing in `path_mapper.py`, not yet done — 0 errors, 29.5 minutes total). Searching that fully-built cache for "Assistant to the Regional Manager" (a real Office quote, but `/snip-search` is movie-only) returned nonsense at the top: `"to the"`, `"manage."`, `"MANAGER"` — bare fragments sharing at most one real word with the quote — all scoring 90, ahead of every genuine partial match. Root cause: `fuzz.WRatio` *itself* (not the overlap bonus above) can score a short candidate sharing only a word or two with a much longer quote surprisingly high, via its internal partial-ratio weighting for large length-ratio pairs. Confirmed directly: `WRatio("assistant to the regional manager", "to the") == 90.0`. This was always present but invisible below full-library scale — a small cache simply doesn't contain enough short, coincidentally-overlapping fragments to expose it; scale is what turned a latent quirk into visible, ranking-dominating noise. Fixed by extending the same directional word-overlap fraction already computed for the bonus above into a **cap**, not just a bonus: below the 50%-overlap threshold, a candidate's score is now capped at `overlap * 60` instead of trusting WRatio's raw number, pushing any candidate missing most of the quote's real words below `min_score` and out of results entirely, regardless of what WRatio's character-level score claims. Two existing tests had unknowingly encoded this exact bug as "expected" (a zero-real-word-overlap "weak match" that only appeared because of it) and needed updating once the bug was understood, not just made to pass. Verified against the real 11,463-title cache: the nonsense fragments are gone; remaining results now all genuinely share "manager"/"assistant" as real words; the actual literal Office line (via `/search-episodes-quote`, the correct movies-vs-TV path for this quote) still scores 100 and ranks first, unaffected.
 - **Confirmed, not just theorized: `/snip-search`'s "instant regardless of library size" promise genuinely breaks down at real full-library scale.** A single search against the fully-built 11,463-title cache took **~40 seconds** — dominated by the fuzzy-scoring step against every cached title, which is inherently proportional to corpus size and can't be cached away (unlike the normalize/build-candidates step fixed above). Not an urgent problem today — this developer's library isn't kept fully built this way day-to-day, the cache above was a deliberate one-off stress test — but real, confirmed evidence for whoever picks up Phase 6: a smarter pre-filter/index ahead of the expensive per-candidate fuzzy scoring is a real, not hypothetical, requirement at this scale, not merely a caching problem.
+
+### Planned (not yet built): consolidate the subtitle cache into SQLite + FTS5
+
+Design agreed after prototyping against the real fully-built cache. **Not implemented** — recorded here so the measurements and the reasoning aren't lost. Sequence it before or alongside Phase 6, since Phase 6's manual full-cache build is exactly what makes today's design hurt.
+
+**Where the time actually goes now** (measured per-title, mirroring `search_cached_library()`'s real loop, against the real 10,679-title cache — 7,511,478 subtitle entries, 13,971,474 candidates):
+
+| Step | Time | Share |
+| --- | --- | --- |
+| Raw subtitle JSON read | 15.8s | 14% |
+| Candidates JSON read (deserialising 14M objects) | 49.1s | 42% |
+| Fuzzy scoring (14M `WRatio` calls) | 50.9s | 44% |
+
+(That 115.8s is scanning *everything*; the observed ~40s for `/snip-search` is because it filters to movie-type libraries only, ~35% of the corpus. TV is unaffected in practice — `/snip-tv`'s whole-show search only ever scans one show, measured at 0.68s.)
+
+**The non-obvious finding: the disk-based candidates cache inverts at scale.** It was a clear win at 216 titles (4.78s → 2.94s, verified above), because it traded CPU-bound normalise/build work for a disk read. But at 10,679 titles, deserialising 14M candidate objects out of JSON costs *as much as the fuzzy scoring itself*. Both of those costs are O(corpus) and neither can be cached away by doing more of the same thing — the only fix is to stop touching the whole corpus per search.
+
+**Design: one SQLite DB with an FTS5 inverted index as a pre-filter.**
+
+```sql
+CREATE TABLE titles(title_id INTEGER PRIMARY KEY, guid TEXT UNIQUE NOT NULL, ...);
+CREATE TABLE entries(
+  id INTEGER PRIMARY KEY, title_id INTEGER NOT NULL, idx INTEGER NOT NULL,
+  start REAL NOT NULL, end REAL NOT NULL, display_text TEXT NOT NULL);
+CREATE VIRTUAL TABLE entries_fts USING fts5(normalized_text, content='');
+```
+
+Query flow: normalise the quote → `MATCH` its OR'd tokens against `entries_fts`, `ORDER BY rank LIMIT ~4000` (BM25 does the coarse ranking) → fetch only those rows → recompute `normalized_text` and build adjacent-cue windows *for the survivors only* → run the existing `find_quote_matches()` scoring/literal-boost/overlap-cap logic unchanged on that narrow set.
+
+Three consequences worth being explicit about:
+- **The candidates cache disappears entirely** — no precomputed candidates stored at all (2.5GB of today's 3.6GB). Windows get built on the fly for a few thousand rows, which is trivial.
+- **`normalized_text` is never stored** — contentless FTS5 (`content=''`) keeps only the inverted index, and normalisation is recomputed for survivors, which is cheap at that size.
+- **The existing `quote_index.db` folds into the same DB** as the `titles` table, rather than being a separate SQLite file alongside JSON.
+
+**Measured on a real 1,000-title / 1.3M-entry prototype built from the actual cache:**
+
+| | Today (JSON) | Prototype (SQLite+FTS5) |
+| --- | --- | --- |
+| Size | 3.6 GB (22,121 files) | **1.57 GB** (1 file, extrapolated from 146.9 KB/title) |
+| Search | ~40s (movies) / ~116s (all) | **2ms – 740ms end-to-end** |
+| Narrowing | scores all 14M candidates | 0.016%–0.3% of entries reach scoring |
+
+Correctness held on the prototype: "May the Force be with you" → 100.0, "Here's Johnny!" → 100.0, "Assistant to the Regional Manager" → 95.0. Normalising `guid` into a `title_id` FK is worth a full 1GB on its own (2.57GB → 1.57GB) — a ~40-char GUID repeated across 7.5M rows is not free.
+
+**The real risk, and it is a genuine behaviour change, not just a speedup:** an index pre-filter changes *which* results come back, and this app's whole promise is *fuzzy* matching. FTS5 matches whole tokens, so a typo'd word simply is not in the index. Measured recall:
+
+| Query | Indexed hits |
+| --- | --- |
+| `here's johnny` (exact) | 2,289 |
+| `here's jonny` (1-word typo, multi-word) | 1,348 — **fine**, other tokens carry it |
+| `hitler` (single word, exact) | 170 |
+| `hitlr` (single word, typo) | **0 — total miss** |
+| `may the forse be with you` | 509,137 (common tokens match broadly; BM25 + LIMIT handles it) |
+
+So multi-word queries tolerate typos well, but a **single-word typo'd query returns nothing**, where today's full fuzzy scan would still find it. Mitigation, in preference order: (1) **fall back to the existing full scan when FTS5 returns zero/near-zero hits** — costs the old ~40s only in the rare case the fast path found nothing, and preserves 100% of current recall; (2) the `trigram` tokenizer (confirmed available) is more typo-tolerant at the cost of a larger index. Also unvalidated and worth checking before shipping: whether `LIMIT 4000` on BM25 rank can ever exclude the true best match for pathological common-word queries — it did not for any query tested, but "did not on five queries" is not "cannot".
+
+**No external search engine.** SQLite FTS5 is in the stdlib's bundled SQLite — verified present in the running container (SQLite 3.40.1, FTS5 and trigram tokenizer both available), so this adds **zero new dependencies**. Whoosh (pure-Python, slower), Tantivy (new Rust dep), and Elasticsearch/Meilisearch/Typesense (a whole separate service) were all considered and rejected: the last group in particular would contradict Section 11's single-container self-hosted model and undo the image-size work in Section 8 for a problem the stdlib already solves.
+
+**Migration**: one-off rebuild from the existing JSON cache (prototype built 1,000 titles in ~23s → roughly 4 minutes for the full library), then delete the JSON files. Freshness must carry over — the existing `(mtime, size)` fingerprint logic and the "candidates are stale if the raw cache is newer" mtime comparison both need porting to columns on `titles`, not dropped. Worth keeping the JSON reader around for one release to migrate lazily rather than forcing a rebuild.
 - **Multiple subtitle tracks**: default to original-language, non-SDH; let the user pick if ambiguous.
 - **Realistic expectations**: strong hit rate for well-known lines with a good subtitle track; harder cases include paraphrased quotes, dubbing/translation drift, and lines split across subtitle entries — design the UI around "likely candidates," not guaranteed exact matches.
 - **Library-wide quote search (`/snip-search`, V2)**: searches the subtitle cache described in Section 1, not the live filesystem, so its scope is exactly "titles CineSnip has already parsed via any flow" — which starts small and grows with normal use. Two tiers, so a `/snip-search` call never surprises the user with a multi-minute wait:
