@@ -12,7 +12,16 @@
 
   {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
 
-  <div class="pin-badge">{{ pin.pin }}</div>
+  <div class="pin-badge">
+    <span class="pin-badge-text">{{ pin.pin }}</span>
+    <div class="copy-wrap">
+      <button type="button" class="btn-copy-pin" title="Copy code" onclick="cinesnipCopy(this, '{{ pin.pin }}')">
+        <svg class="icon-copy" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="1.5"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg>
+        <svg class="icon-check" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+      </button>
+      <span class="copy-toast">Copied!</span>
+    </div>
+  </div>
 
   <div class="waiting-pill">
     <span class="dot"></span>

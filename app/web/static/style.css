@@ -91,16 +91,52 @@ input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px 
 .btn-ghost { background: none; color: var(--text-tertiary); padding: 8px 0; }
 .btn-block { width: 100%; }
 
+/* Loading state: htmx adds .htmx-request to the <form> for the duration of
+   its own in-flight request (Section 14's Plex-connect step in particular
+   can take several real seconds — library enumeration plus a per-library
+   sample lookup — with no feedback otherwise, easy to mistake for a dead
+   button). Toggled purely via CSS, no JS needed. */
+.btn .btn-spinner { display: none; width: 15px; height: 15px; border-radius: 999px; border: 2px solid currentColor; border-top-color: transparent; animation: spin 0.7s linear infinite; }
+form.htmx-request .btn[type="submit"] { pointer-events: none; opacity: 0.8; }
+form.htmx-request .btn[type="submit"] .btn-spinner { display: inline-block; }
+form.htmx-request .btn[type="submit"] .btn-label-idle { display: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
 .error-banner {
   background: var(--danger-soft); border: 1px solid var(--danger); color: var(--danger);
   border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 18px;
 }
 
 .pin-badge {
-  font-family: var(--font-display); font-size: 34px; font-weight: 700; letter-spacing: 0.1em;
+  display: flex; align-items: center; justify-content: center; gap: 14px;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
-  padding: 10px 20px; color: var(--accent); text-align: center;
+  padding: 10px 14px 10px 24px; margin-bottom: 24px;
 }
+.pin-badge-text {
+  font-family: var(--font-display); font-size: 34px; font-weight: 700; letter-spacing: 0.1em; color: var(--accent);
+}
+.btn-copy-pin {
+  width: 34px; height: 34px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  background: none; border: none; border-radius: 6px;
+  color: var(--text-tertiary); cursor: pointer; transition: color 0.15s ease, background-color 0.15s ease;
+}
+.btn-copy-pin:hover { color: var(--text); background: var(--surface); }
+.btn-copy-pin .icon-check { display: none; }
+.btn-copy-pin.copied .icon-copy { display: none; }
+.btn-copy-pin.copied .icon-check { display: block; }
+.btn-copy-pin.copied { background: var(--accent-soft); }
+.copy-wrap { position: relative; display: flex; }
+.copy-toast {
+  position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%) translateY(4px);
+  margin-bottom: 8px; background: var(--accent); color: var(--accent-ink); font-size: 11px; font-weight: 700;
+  padding: 4px 10px; border-radius: 6px; white-space: nowrap; opacity: 0; pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.copy-toast::after {
+  content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+  border: 5px solid transparent; border-top-color: var(--accent);
+}
+.copy-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .waiting-pill {
   display: flex; align-items: center; justify-content: center; gap: 8px;
   margin: 24px 0; padding: 10px; background: var(--accent-soft); border-radius: 999px;
@@ -111,14 +147,44 @@ input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px 
 
 .footnote { margin-top: 24px; font-size: 12px; color: var(--text-tertiary); max-width: 460px; text-align: center; line-height: 1.6; }
 
-.lib-row {
-  display: flex; align-items: center; gap: 12px; padding: 12px;
-  background: var(--surface-2); border: 1px solid var(--border-subtle); border-radius: 8px; margin-bottom: 10px;
+.lib-block {
+  padding: 14px 16px; background: var(--surface-2); border: 1px solid var(--border-subtle);
+  border-radius: 8px; margin-bottom: 12px;
 }
-.lib-row input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--accent); }
-.lib-row .lib-name { font-weight: 600; font-size: 14px; flex: 0 0 140px; }
-.lib-row .lib-type { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; margin-left: 4px; }
-.lib-row select { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; color: var(--text); font-size: 13px; }
+.lib-block-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.lib-block-header input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--accent); }
+.lib-block-header .lib-name { font-weight: 600; font-size: 14px; }
+.lib-block-header .lib-type { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; }
+.mapping-rows { display: flex; flex-direction: column; gap: 8px; margin-left: 27px; }
+.mapping-row { display: flex; align-items: center; gap: 8px; }
+.mapping-row .mapping-prefix {
+  flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 10px; color: var(--text); font-size: 12.5px; font-family: var(--font-mono);
+}
+.mapping-row .mapping-arrow { color: var(--text-tertiary); font-size: 13px; flex-shrink: 0; }
+.mapping-row .mapping-container {
+  flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 10px; color: var(--text); font-size: 13px;
+}
+.btn-add-row {
+  margin: 10px 0 0 27px; background: none; border: none; color: var(--accent);
+  font-size: 12.5px; font-weight: 600; font-family: var(--font-body); cursor: pointer;
+  padding: 4px 0; transition: color 0.15s ease;
+}
+.btn-add-row:hover { color: var(--accent-strong); }
+.btn-remove-row {
+  flex-shrink: 0; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+  background: none; border: none; color: var(--text-tertiary); font-size: 17px; line-height: 1; cursor: pointer;
+  border-radius: 6px; transition: color 0.15s ease, background-color 0.15s ease;
+}
+.btn-remove-row:hover { color: var(--danger); background: var(--danger-soft); }
+.restore-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 0 27px; }
+.btn-restore-row {
+  background: var(--surface); border: 1px dashed var(--border); color: var(--text-tertiary);
+  font-size: 11.5px; font-family: var(--font-mono); padding: 5px 10px; border-radius: 6px; cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.btn-restore-row:hover { color: var(--accent); border-color: var(--accent); }
 
 .check-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border-subtle); font-size: 13.5px; }
 .check-row:last-child { border-bottom: none; }
