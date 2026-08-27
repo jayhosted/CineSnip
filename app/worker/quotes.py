@@ -332,6 +332,26 @@ def find_quote_matches(
                 bonus = 60.0 + (overlap - 0.5) * 70.0  # 0.5 -> 60, 1.0 -> 95
                 if bonus > score_by_candidate_index.get(idx, 0.0):
                     score_by_candidate_index[idx] = bonus
+            else:
+                # WRatio itself (not just this bonus) can score a short
+                # fragment sharing only a word or two with a much longer
+                # quote surprisingly high, via its internal partial-ratio
+                # weighting for large length-ratio pairs — confirmed on the
+                # real full-library cache: searching "Assistant to the
+                # Regional Manager" (11,463 titles) returned "to the",
+                # "manage.", and "MANAGER" all scoring 90 ahead of every
+                # genuine match, none of which shares more than one real
+                # word with the quote. Invisible at small scale (not enough
+                # short coincidental-overlap candidates existed to surface
+                # it), but a real correctness bug at real-library scale — a
+                # candidate missing most of a multi-word quote's actual
+                # words cannot be a good match regardless of what WRatio's
+                # character-level score says, so cap it here rather than
+                # trust WRatio's raw number for this shape of candidate.
+                cap = overlap * 60.0
+                score_by_candidate_index[idx] = min(
+                    score_by_candidate_index.get(idx, 0.0), cap
+                )
 
     score_by_candidate_index = {
         idx: score for idx, score in score_by_candidate_index.items() if score >= min_score

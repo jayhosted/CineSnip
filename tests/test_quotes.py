@@ -259,15 +259,39 @@ def test_literal_match_word_boundary_does_not_match_inside_another_word():
 def test_partial_word_overlap_ranks_above_unrelated_lines():
     """A multi-word quote whose words are all present in a candidate, just
     out of order/interleaved with other words, isn't a literal substring
-    match — this is what the directional word-overlap bonus is for.
+    match — this is what the directional word-overlap bonus is for. The
+    truly unrelated line shares no real words with the quote, so it's
+    correctly suppressed entirely (see the low-overlap score cap below),
+    leaving only the genuine match.
     """
     entries = _entries(
         (0.0, 1.0, "Your father, I am, whether you like it or not."),
         (10.0, 11.0, "Completely unrelated line about the weather."),
     )
     matches = find_quote_matches(entries, "I am your father", limit=2)
+    assert len(matches) == 1
     assert matches[0].entry_indices == (0,)
-    assert matches[0].score > matches[1].score
+
+
+def test_low_word_overlap_candidate_is_suppressed_even_when_wratio_scores_it_high():
+    """Real bug found via a full-library search (11,463 titles): WRatio
+    itself — not the overlap bonus — can score a short fragment sharing
+    only a word or two with a much longer quote surprisingly high, via its
+    internal partial-ratio weighting for large length-ratio pairs.
+    Confirmed: WRatio("assistant to the regional manager", "to the") == 90,
+    with only "to"/"the" (2 of 5 query words) actually present. Invisible
+    at small scale — not enough short coincidental-overlap candidates
+    existed to surface it — but at real-library scale this flooded results
+    with noise ahead of the genuine match. A candidate missing most of a
+    multi-word quote's actual words must never survive regardless of what
+    WRatio's raw score says.
+    """
+    entries = _entries(
+        (0.0, 1.0, "To the moon and back, my friend."),
+        (10.0, 12.0, "She was named Assistant to the Regional Manager today."),
+    )
+    matches = find_quote_matches(entries, "Assistant to the Regional Manager", limit=5)
+    assert [m.entry_indices for m in matches] == [(1,)]
 
 
 def test_short_candidate_subset_of_long_quote_is_not_inflated():
