@@ -14,7 +14,7 @@
   <form hx-post="/wizard/discord" hx-target="#wizard-panel" hx-swap="innerHTML">
     <label class="field-label" for="discord_token">BOT TOKEN</label>
     <input type="password" id="discord_token" name="discord_token" placeholder="••••••••••••••••••••••••••" autocomplete="off" style="margin-bottom: 20px;">
-    <button class="btn btn-primary btn-block" type="submit">Validate &amp; continue</button>
+    <button class="btn btn-primary btn-block" type="submit"><span class="btn-spinner"></span><span class="btn-label-idle">Validate &amp; continue</span></button>
   </form>
 </div>
 <p class="footnote">Tokens are written directly to your local .env file &mdash; nothing leaves this machine.</p>

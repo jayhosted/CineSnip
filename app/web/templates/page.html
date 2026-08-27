@@ -6,7 +6,7 @@
   <title>CineSnip &mdash; Setup</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/htmx.min.js"></script>
 </head>
@@ -28,5 +28,44 @@
   </div>
 
 </div>
+
+<script>
+  // navigator.clipboard needs a secure context (https, or localhost) —
+  // reaching the wizard over plain http on a LAN address (the normal way
+  // to reach a self-hosted tool from another device) doesn't qualify, so
+  // it's silently unavailable there. The hidden-textarea + execCommand
+  // fallback works regardless. Defined once here (not inside a panel
+  // template) since panels get swapped in/out repeatedly by htmx polling —
+  // redefining it on every poll would be harmless but wasteful.
+  function cinesnipCopy(btn, text) {
+    function announce() {
+      btn.classList.add('copied');
+      var toast = btn.parentElement.querySelector('.copy-toast');
+      if (toast) toast.classList.add('show');
+      clearTimeout(btn._t);
+      btn._t = setTimeout(function () {
+        btn.classList.remove('copied');
+        if (toast) toast.classList.remove('show');
+      }, 1500);
+    }
+    if (window.isSecureContext && navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(announce, function () { cinesnipFallbackCopy(text, announce); });
+    } else {
+      cinesnipFallbackCopy(text, announce);
+    }
+  }
+  function cinesnipFallbackCopy(text, done) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+    done();
+  }
+</script>
 </body>
 </html>

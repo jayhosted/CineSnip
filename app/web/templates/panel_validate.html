@@ -23,7 +23,7 @@
 
   {% if all_ok %}
     <form hx-post="/wizard/finish" hx-target="#wizard-panel" hx-swap="innerHTML" style="margin-top: 24px;">
-      <button class="btn btn-primary btn-block" type="submit">Finish setup</button>
+      <button class="btn btn-primary btn-block" type="submit"><span class="btn-spinner"></span><span class="btn-label-idle">Finish setup</span></button>
     </form>
   {% else %}
     <p class="error-banner" style="margin-top: 20px;">Something above needs fixing before CineSnip can start. Go back and correct it, then this check will re-run.</p>

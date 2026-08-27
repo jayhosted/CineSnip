@@ -3,30 +3,61 @@
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
     <h1>Pick your libraries</h1>
   </div>
-  <p class="desc">Choose which Plex libraries CineSnip should search, and confirm where each one's files actually live inside this container. We've suggested a match where we found one.</p>
+  <p class="desc">Choose which Plex libraries CineSnip should search. A library can span more than one folder or drive &mdash; we've suggested a mapping for each one we found; use "Add another location" for one we missed.</p>
 
   {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
 
   <form hx-post="/wizard/libraries" hx-target="#wizard-panel" hx-swap="innerHTML">
     {% for choice in state.library_choices %}
-      <div class="lib-row">
-        <input type="checkbox" name="lib_{{ loop.index0 }}_selected" {% if choice.selected %}checked{% endif %}>
-        <div>
+      {% set i = loop.index0 %}
+      <div class="lib-block">
+        <div class="lib-block-header">
+          <input type="checkbox" name="lib_{{ i }}_selected" {% if choice.selected %}checked{% endif %}>
           <span class="lib-name">{{ choice.name }}</span>
           <span class="lib-type">{{ choice.section_type }}</span>
         </div>
-        <select name="lib_{{ loop.index0 }}_container_path">
-          <option value="" {% if not choice.container_path %}selected{% endif %}>&mdash; no mapping &mdash;</option>
-          {% for mount in mounts %}
-            <option value="{{ mount }}" {% if mount == choice.container_path %}selected{% endif %}>
-              {{ mount }}{% if mount == choice.suggested_container_path %} (suggested){% endif %}
-            </option>
+        <div class="mapping-rows">
+          {% for row in choice.mapping_rows %}
+            {% set j = loop.index0 %}
+            <div class="mapping-row">
+              <input type="text" class="mapping-prefix" name="lib_{{ i }}_mapping_{{ j }}_plex_prefix"
+                     placeholder="Plex path, e.g. D:\Plex Additional\Movies" value="{{ row.plex_prefix }}">
+              <span class="mapping-arrow">&rarr;</span>
+              <select name="lib_{{ i }}_mapping_{{ j }}_container_path" class="mapping-container">
+                <option value="" {% if not row.container_path %}selected{% endif %}>&mdash; no mapping &mdash;</option>
+                {% for mount in mounts %}
+                  <option value="{{ mount }}" {% if mount == row.container_path %}selected{% endif %}>{{ mount }}</option>
+                {% endfor %}
+              </select>
+              <button type="button" class="btn-remove-row" title="Remove this location"
+                      hx-post="/wizard/libraries/remove-row/{{ i }}/{{ j }}" hx-include="closest form"
+                      hx-target="#wizard-panel" hx-swap="innerHTML">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1V7m2 0-.8 12.4a2 2 0 0 1-2 1.6H9.8a2 2 0 0 1-2-1.6L7 7"/><path d="M10 11v6M14 11v6"/></svg>
+              </button>
+            </div>
           {% endfor %}
-        </select>
+        </div>
+
+        {% set missing = choice.missing_suggestions() %}
+        {% if missing %}
+          <div class="restore-chips">
+            {% for suggested_index, suggestion in missing %}
+              <button type="button" class="btn-restore-row"
+                      hx-post="/wizard/libraries/restore-row/{{ i }}/{{ suggested_index }}" hx-include="closest form"
+                      hx-target="#wizard-panel" hx-swap="innerHTML">
+                &#8635; Restore {{ suggestion.container_path }}
+              </button>
+            {% endfor %}
+          </div>
+        {% endif %}
+
+        <button type="button" class="btn-add-row"
+                hx-post="/wizard/libraries/add-row/{{ i }}" hx-include="closest form"
+                hx-target="#wizard-panel" hx-swap="innerHTML">+ Add another location</button>
       </div>
     {% else %}
       <p style="color: var(--text-tertiary); font-size: 13px;">No movie or show libraries found on this Plex server.</p>
     {% endfor %}
-    <button class="btn btn-primary btn-block" type="submit" style="margin-top: 8px;">Continue</button>
+    <button class="btn btn-primary btn-block" type="submit" style="margin-top: 8px;"><span class="btn-spinner"></span><span class="btn-label-idle">Continue</span></button>
   </form>
 </div>

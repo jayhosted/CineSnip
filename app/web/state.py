@@ -5,23 +5,48 @@ from pathlib import Path
 
 from app.settings import LibraryConfig, PathMapping
 
+# A library can span more than one physical drive/folder (Section 3: "add
+# one entry per folder that library spans" — this developer's own Movies
+# and TV Shows libraries each really do span two drives). The wizard can
+# only ever *suggest* however many distinct mappings it found in its
+# sample, so the UI shows exactly those rows (never an arbitrary fixed
+# count) plus a per-library "+ Add another location" (htmx, appends one row
+# server-side and returns just that row's fragment) for anything the
+# sampler missed or a library with more locations than were auto-detected.
+
+
+@dataclass
+class MappingRow:
+    plex_prefix: str = ""
+    container_path: str = ""
+
 
 @dataclass
 class LibraryChoice:
-    # One row in the step-3 checklist: a Plex library section the user can
-    # opt into, plus the path-mapping guess we're offering them a chance to
-    # confirm/correct before it's written to config.yaml. suggested_plex_prefix
-    # is the library ROOT on the Plex side (e.g. "D:\Plex Additional\Movies"),
-    # derived from where the sample file was actually found under the
-    # suggested container mount — not just the sample file's own parent
-    # folder, which would only be correct for that one title.
+    # One block in the step-3 checklist: a Plex library section the user
+    # can opt into, plus the path-mapping guesses we're offering a chance
+    # to confirm/correct/extend before they're written to config.yaml.
+    # suggested_rows is a frozen snapshot of what auto-discovery actually
+    # found — mapping_rows is the live, user-editable copy. Kept separate so
+    # an accidentally-deleted suggested row can be brought back with a
+    # "Restore suggested" action rather than being gone for good (no other
+    # way to reconstruct it short of reconnecting to Plex again).
     name: str
     section_type: str  # "movie" | "show"
-    sample_plex_path: str | None
-    suggested_container_path: str | None
-    suggested_plex_prefix: str | None = None
     selected: bool = False
-    container_path: str = ""
+    mapping_rows: list[MappingRow] = field(default_factory=lambda: [MappingRow()])
+    suggested_rows: list[MappingRow] = field(default_factory=list)
+
+    def missing_suggestions(self) -> list[tuple[int, MappingRow]]:
+        # (index into suggested_rows, the row) for every auto-suggested
+        # mapping that isn't currently present in mapping_rows — the index
+        # is what the "Restore" button needs to identify which suggestion
+        # to bring back, since suggested_rows itself never changes.
+        return [
+            (idx, suggestion)
+            for idx, suggestion in enumerate(self.suggested_rows)
+            if suggestion not in self.mapping_rows
+        ]
 
 
 @dataclass
@@ -33,6 +58,7 @@ class WizardState:
     # config files they belong in).
     discord_token: str | None = None
     discord_username: str | None = None
+    discord_bot_id: str | None = None
 
     plex_pin: object | None = None  # plexapi.myplex.MyPlexPinLogin, once requested
     plex_account_token: str | None = None
@@ -46,16 +72,11 @@ class WizardState:
         return [
             LibraryConfig(
                 name=choice.name,
-                path_mappings=(
-                    [
-                        PathMapping(
-                            plex_prefix=choice.suggested_plex_prefix or _parent_dir(choice.sample_plex_path),
-                            container_path=choice.container_path,
-                        )
-                    ]
-                    if choice.container_path
-                    else []
-                ),
+                path_mappings=[
+                    PathMapping(plex_prefix=row.plex_prefix, container_path=row.container_path)
+                    for row in choice.mapping_rows
+                    if row.plex_prefix and row.container_path
+                ],
             )
             for choice in self.library_choices
             if choice.selected
@@ -70,20 +91,6 @@ class WizardState:
         if not any(c.selected for c in self.library_choices):
             return 3
         return 4
-
-
-def _parent_dir(path: str | None) -> str:
-    # Fallback only reached when suggestion couldn't derive a real library
-    # root (see wizard.py's _suggest_mapping) and the user picked a
-    # container path by hand — this only handles the one sampled file
-    # correctly, not necessarily every other title under the library, since
-    # there's no way to know the library's actual Plex-side root without a
-    # match to derive it from. Handles both Windows and POSIX separators,
-    # unlike a plain str.rsplit("/", 1).
-    if not path:
-        return ""
-    normalized = path.replace("\\", "/")
-    return normalized.rsplit("/", 1)[0]
 
 
 def media_mount_candidates(media_root: Path = Path("/media")) -> list[str]:
