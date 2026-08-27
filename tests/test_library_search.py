@@ -44,7 +44,12 @@ def test_search_cached_library_returns_best_match_per_title(tmp_path):
 
 
 def test_search_cached_library_sorts_by_score_descending(tmp_path):
-    _write_title(tmp_path, "guid-1", ["Something else entirely, roughly similar in length"])
+    # "Weak Match" shares real words with the quote (the/force/with/you) so
+    # it's a genuine, if partial, match — not the zero-word-overlap case a
+    # real bug (found via a full-library search) used to let sneak into
+    # results purely off WRatio's character-level scoring. That class of
+    # candidate is now correctly suppressed entirely rather than ranked low.
+    _write_title(tmp_path, "guid-1", ["The Force is strong with this one, but not with you."])
     _write_title(tmp_path, "guid-2", ["May the Force be with you."])
 
     cached_titles = [
