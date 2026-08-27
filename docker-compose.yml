@@ -4,12 +4,18 @@ services:
     env_file:
       - .env
     ports:
-      # Setup wizard only (Section 14) — loopback-only on the host by
-      # default, matching "binds to localhost only by default, exposing it
-      # on the LAN is an explicit opt-in". The worker API stays
-      # loopback-only *inside* the container with no port published at all
-      # (Section 9) — this is a separate, wizard-specific exception.
-      - "127.0.0.1:1919:1919"
+      # Local web app — wizard (Section 14) + /generate manual clip UI.
+      # Deliberately opted into LAN exposure here (binds all interfaces,
+      # not just 127.0.0.1) so other devices on this network can reach
+      # /generate and reconfigure setup. This is still only as safe as the
+      # LAN itself: nothing at the app layer gates /wizard/restart (raw
+      # token entry) beyond this port binding — see app/main.py's comment
+      # on why an app-level "reject non-LAN" check doesn't work on this
+      # Docker topology. Do NOT port-forward 1919 on the router — that
+      # would expose it to the internet, not just the LAN. The worker API
+      # itself stays loopback-only *inside* the container with no port
+      # published at all (Section 9), unaffected by this.
+      - "1919:1919"
     volumes:
       # Read-write: the wizard writes these directly on first run (Section
       # 14). .env didn't need a bind mount before the wizard existed —
