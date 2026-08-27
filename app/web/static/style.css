@@ -155,6 +155,13 @@ form.htmx-request .btn[type="submit"] .btn-label-idle { display: none; }
 .lib-block-header input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--accent); }
 .lib-block-header .lib-name { font-weight: 600; font-size: 14px; }
 .lib-block-header .lib-type { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; }
+.three-d-row {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 12px 27px; flex-wrap: wrap;
+}
+.three-d-row select {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 8px; color: var(--text); font-size: 12.5px;
+}
 .mapping-rows { display: flex; flex-direction: column; gap: 8px; margin-left: 27px; }
 .mapping-row { display: flex; align-items: center; gap: 8px; }
 .mapping-row .mapping-prefix {

@@ -168,8 +168,21 @@ class SettingsError(RuntimeError):
 def load_settings(
     env_path: Path = Path(".env"),
     config_path: Path = Path("config.yaml"),
+    override_env: bool = False,
 ) -> Settings:
-    load_dotenv(env_path)
+    # override_env=False (default) matches python-dotenv's own default: an
+    # already-set os.environ key wins over the .env file, even if that
+    # key's existing value is an empty string. That's normally what you
+    # want (real environment/compose-level overrides shouldn't be clobbered
+    # by a stale .env), but it's a real trap for the one caller that needs
+    # the opposite: app/main.py's post-wizard reload. Docker's `env_file:`
+    # directive (docker-compose.yml) has already loaded .env.example's
+    # empty DISCORD_TOKEN=/PLEX_TOKEN= placeholders into os.environ before
+    # the process even starts, so a plain load_dotenv() call after the
+    # wizard writes real tokens to disk would see those keys as "already
+    # set" and silently keep the stale empty values — see app/main.py's
+    # post-wizard load_settings(override_env=True) call for the fix.
+    load_dotenv(env_path, override=override_env)
 
     discord_token = os.environ.get("DISCORD_TOKEN", "").strip()
     plex_url = os.environ.get("PLEX_URL", "").strip()

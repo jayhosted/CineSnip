@@ -16,6 +16,15 @@
           <span class="lib-name">{{ choice.name }}</span>
           <span class="lib-type">{{ choice.section_type }}</span>
         </div>
+        <div class="three-d-row">
+          <label for="lib_{{ i }}_three_d_format" style="font-size: 12px; color: var(--text-secondary);">3D packing</label>
+          <select name="lib_{{ i }}_three_d_format" id="lib_{{ i }}_three_d_format">
+            <option value="none" {% if choice.three_d_format == "none" %}selected{% endif %}>None &mdash; normal flat video</option>
+            <option value="side_by_side" {% if choice.three_d_format == "side_by_side" %}selected{% endif %}>Side-by-side 3D</option>
+            <option value="over_under" {% if choice.three_d_format == "over_under" %}selected{% endif %}>Over/under 3D</option>
+          </select>
+          <span style="font-size: 12px; color: var(--text-tertiary);">Leave as "None" unless this library holds 3D encodes that pack both eyes into one frame &mdash; otherwise clips from it will render squished/doubled.</span>
+        </div>
         <div class="mapping-rows">
           {% for row in choice.mapping_rows %}
             {% set j = loop.index0 %}

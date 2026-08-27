@@ -1,37 +1,48 @@
 <div class="card"
      id="plex-pin-waiting"
+     {% if pin %}
      hx-get="/wizard/plex/status"
      hx-trigger="every 2s"
      hx-swap="innerHTML"
-     hx-target="#wizard-panel">
+     hx-target="#wizard-panel"
+     {% endif %}>
   <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 15h3"/></svg>
     <h1>Connect your Plex account</h1>
   </div>
-  <p class="desc">Enter this code at <a href="https://plex.tv/link" target="_blank" rel="noopener">plex.tv/link</a> to authorize CineSnip. It expires in 15 minutes.</p>
 
   {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
 
-  <div class="pin-badge">
-    <span class="pin-badge-text">{{ pin.pin }}</span>
-    <div class="copy-wrap">
-      <button type="button" class="btn-copy-pin" title="Copy code" onclick="cinesnipCopy(this, '{{ pin.pin }}')">
-        <svg class="icon-copy" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="1.5"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg>
-        <svg class="icon-check" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-      </button>
-      <span class="copy-toast">Copied!</span>
-    </div>
-  </div>
+  {% if pin %}
+    <p class="desc">Enter this code at <a href="https://plex.tv/link" target="_blank" rel="noopener">plex.tv/link</a> to authorize CineSnip. It expires in 15 minutes.</p>
 
-  <div class="waiting-pill">
-    <span class="dot"></span>
-    <span class="label">Waiting for authorization&hellip;</span>
-  </div>
+    <div class="pin-badge">
+      <span class="pin-badge-text">{{ pin.pin }}</span>
+      <div class="copy-wrap">
+        <button type="button" class="btn-copy-pin" title="Copy code" onclick="cinesnipCopy(this, '{{ pin.pin }}')">
+          <svg class="icon-copy" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="1.5"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg>
+          <svg class="icon-check" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+        </button>
+        <span class="copy-toast">Copied!</span>
+      </div>
+    </div>
+
+    <div class="waiting-pill">
+      <span class="dot"></span>
+      <span class="label">Waiting for authorization&hellip;</span>
+    </div>
+  {% else %}
+    <p class="desc">Couldn't get a code from Plex — see above.</p>
+  {% endif %}
 
   <div style="height:1px; background: var(--border-subtle); margin-bottom:20px;"></div>
   <div style="display:flex; align-items:center; justify-content:space-between;">
     <button class="btn btn-ghost" type="button" hx-get="/wizard/discord" hx-target="#wizard-panel" hx-swap="innerHTML">&larr; Back</button>
-    <span></span>
+    {% if not pin %}
+      <button class="btn btn-primary" type="button" hx-get="/wizard/plex" hx-target="#wizard-panel" hx-swap="innerHTML">Try again</button>
+    {% else %}
+      <span></span>
+    {% endif %}
   </div>
 </div>
 <p class="footnote">Tokens are written directly to your local config &mdash; nothing leaves this machine.</p>
