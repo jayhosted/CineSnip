@@ -5,6 +5,7 @@ import time
 from app.worker.quote_index import CachedTitle
 from app.worker.search_index import (
     _connect,
+    coverage_counts,
     fetch_entries_for_titles,
     get_entries,
     get_fingerprint,
@@ -296,6 +297,47 @@ def test_iter_all_entries(tmp_path):
 
 def test_iter_all_entries_on_missing_db_yields_nothing(tmp_path):
     assert list(iter_all_entries(tmp_path / "does-not-exist.db")) == []
+
+
+def test_coverage_counts_by_source_excludes_none_and_other_libraries(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    upsert_title(
+        db_path, guid="g1", rating_key=1, title="Sidecar Film", library_name="Movies",
+        source="sidecar", sidecar_path=None, stream_index=None, entries=[], fingerprint=None,
+    )
+    upsert_title(
+        db_path, guid="g2", rating_key=2, title="Sidecar Film Two", library_name="Movies",
+        source="sidecar", sidecar_path=None, stream_index=None, entries=[], fingerprint=None,
+    )
+    upsert_title(
+        db_path, guid="g3", rating_key=3, title="Embedded Film", library_name="Movies",
+        source="embedded", sidecar_path=None, stream_index=2, entries=[], fingerprint=None,
+    )
+    upsert_title(
+        db_path, guid="g4", rating_key=4, title="No Subtitle Film", library_name="Movies",
+        source="none", sidecar_path=None, stream_index=None, entries=[], fingerprint=None,
+    )
+    # a different library must not bleed into Movies' counts
+    upsert_title(
+        db_path, guid="g5", rating_key=5, title="3D Film", library_name="3D",
+        source="sidecar", sidecar_path=None, stream_index=None, entries=[], fingerprint=None,
+    )
+
+    assert coverage_counts(db_path, "Movies") == {"sidecar": 2, "embedded": 1}
+    assert coverage_counts(db_path, "3D") == {"sidecar": 1, "embedded": 0}
+
+
+def test_coverage_counts_on_missing_db_returns_zeros(tmp_path):
+    assert coverage_counts(tmp_path / "does-not-exist.db", "Movies") == {"sidecar": 0, "embedded": 0}
+
+
+def test_coverage_counts_on_unknown_library_returns_zeros(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    upsert_title(
+        db_path, guid="g1", rating_key=1, title="Film", library_name="Movies",
+        source="sidecar", sidecar_path=None, stream_index=None, entries=[], fingerprint=None,
+    )
+    assert coverage_counts(db_path, "TV Shows") == {"sidecar": 0, "embedded": 0}
 
 
 def test_wal_mode_allows_concurrent_read_during_write(tmp_path):

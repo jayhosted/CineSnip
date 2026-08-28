@@ -318,6 +318,26 @@ def fetch_entries_for_titles(db_path: Path, title_ids: list[int]) -> dict[int, l
     return result
 
 
+def coverage_counts(db_path: Path, library_name: str) -> dict[str, int]:
+    """sidecar/embedded row counts for a library, for the dashboard's
+    coverage panel. get_subtitles() (subtitles.py) upserts a titles row for
+    every outcome, including the no-subtitle case (source='none'), so that
+    value is deliberately excluded here rather than counted as either
+    bucket — the dashboard sources its no-subtitle count from
+    quote_index.no_subtitle_titles instead, which is unaffected by this
+    migration."""
+    if not db_path.exists():
+        return {"sidecar": 0, "embedded": 0}
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT source, COUNT(*) FROM titles WHERE library_name = ? "
+            "AND source IN ('sidecar', 'embedded') GROUP BY source",
+            (library_name,),
+        ).fetchall()
+    counts = {row[0]: row[1] for row in rows}
+    return {"sidecar": counts.get("sidecar", 0), "embedded": counts.get("embedded", 0)}
+
+
 def iter_all_entries(db_path: Path) -> Iterator[tuple[str, list[SubtitleEntry]]]:
     from app.worker.subtitles import SubtitleEntry
 
