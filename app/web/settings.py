@@ -14,7 +14,7 @@ from app.settings import (
     Settings,
     write_config_yaml,
 )
-from app.worker import quote_index
+from app.worker import search_index
 
 _TABS = [
     ("general", "General"),
@@ -132,7 +132,7 @@ def register_settings_routes(
 
     @app.get("/settings/cache", response_class=HTMLResponse)
     async def settings_cache(request: Request):
-        cached_count = len(quote_index.list_cached_titles(settings_holder.settings.quote_index_db_path))
+        cached_count = len(search_index.list_titles(settings_holder.settings.quote_index_db_path))
         return render_tab(request, "cache", "panel_settings_cache.html", cached_count=cached_count)
 
     @app.post("/settings/cache", response_class=HTMLResponse)
@@ -146,7 +146,7 @@ def register_settings_routes(
                 interval_hours=float(form["interval_hours"]),
             )
         except (KeyError, ValueError) as exc:
-            cached_count = len(quote_index.list_cached_titles(settings.quote_index_db_path))
+            cached_count = len(search_index.list_titles(settings.quote_index_db_path))
             return render_tab(
                 request, "cache", "panel_settings_cache.html", cached_count=cached_count,
                 error=f"Couldn't save — check your values ({exc}).",
@@ -155,7 +155,7 @@ def register_settings_routes(
         updated = settings.model_copy(deep=True)
         updated.library_sync = library_sync
         await apply(updated)
-        cached_count = len(quote_index.list_cached_titles(updated.quote_index_db_path))
+        cached_count = len(search_index.list_titles(updated.quote_index_db_path))
         return render_tab(request, "cache", "panel_settings_cache.html", cached_count=cached_count, saved=True)
 
     # ---- Discord / Plex / Libraries (read-only summary + link to the

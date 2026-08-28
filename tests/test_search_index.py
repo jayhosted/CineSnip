@@ -7,14 +7,16 @@ from app.worker.search_index import (
     _connect,
     coverage_counts,
     fetch_entries_for_titles,
+    fetch_entry_windows,
     get_entries,
     get_fingerprint,
+    get_title_ids_by_guid,
     has_title,
     iter_all_entries,
     list_titles,
     list_titles_for_library,
     remove_title,
-    search_title_ids,
+    search_entry_ids,
     upsert_title,
 )
 from app.worker.subtitles import SubtitleEntry
@@ -25,6 +27,13 @@ def _entries(*texts):
         SubtitleEntry(index=i, start=float(i), end=float(i) + 1.0, text=text)
         for i, text in enumerate(texts)
     ]
+
+
+def _search_title_ids(db_path, tokens, **kwargs):
+    """Test helper: distinct title_ids among search_entry_ids' surviving
+    entry rows — most of this file's existing assertions only care about
+    which TITLES matched, not the underlying entry-level rows."""
+    return sorted({title_id for _, title_id, _idx in search_entry_ids(db_path, tokens, **kwargs)})
 
 
 def test_schema_creation_is_idempotent(tmp_path):
@@ -113,7 +122,7 @@ def test_upsert_title_twice_replaces_entries_not_duplicates(tmp_path):
     assert result == new_entries
 
     # the old word must no longer be searchable at all
-    assert search_title_ids(db_path, ["first"]) == []
+    assert _search_title_ids(db_path, ["first"]) == []
 
 
 def test_get_fingerprint_round_trip(tmp_path):
@@ -199,7 +208,7 @@ def test_list_titles_and_for_library_and_has_and_remove(tmp_path):
     assert has_title(db_path, "unknown-guid") is False
 
     # "zephyr" is unique to guid-2 — confirm it's searchable before removal
-    ids_before = search_title_ids(db_path, ["zephyr"])
+    ids_before = _search_title_ids(db_path, ["zephyr"])
     assert len(ids_before) == 1
 
     remove_title(db_path, "guid-2")
@@ -208,7 +217,7 @@ def test_list_titles_and_for_library_and_has_and_remove(tmp_path):
     assert list_titles_for_library(db_path, "3D") == []
     assert get_entries(db_path, "guid-2") is None
     # no orphaned entries/entries_fts rows left behind
-    assert search_title_ids(db_path, ["zephyr"]) == []
+    assert _search_title_ids(db_path, ["zephyr"]) == []
 
 
 def test_remove_title_on_unknown_guid_is_a_noop(tmp_path):
@@ -230,15 +239,15 @@ def test_search_title_ids_exact_match_and_no_match(tmp_path):
     title_id_map = {t.guid: t for t in list_titles(db_path)}
     assert set(title_id_map) == {"guid-1", "guid-2"}
 
-    fox_ids = search_title_ids(db_path, ["fox"])
+    fox_ids = _search_title_ids(db_path, ["fox"])
     assert len(fox_ids) == 1
 
-    zephyr_ids = search_title_ids(db_path, ["zephyr"])
+    zephyr_ids = _search_title_ids(db_path, ["zephyr"])
     assert len(zephyr_ids) == 1
     assert zephyr_ids != fox_ids
 
-    assert search_title_ids(db_path, ["nonexistentword"]) == []
-    assert search_title_ids(db_path, []) == []
+    assert _search_title_ids(db_path, ["nonexistentword"]) == []
+    assert _search_title_ids(db_path, []) == []
 
 
 def test_search_title_ids_handles_single_character_and_digit_tokens(tmp_path):
@@ -258,8 +267,8 @@ def test_search_title_ids_handles_single_character_and_digit_tokens(tmp_path):
     # single-char token and lone-digit token must not raise FTS5 syntax
     # errors, and must actually match (normalize_for_match's alnum-only
     # output needs no extra quoting for either case)
-    assert search_title_ids(db_path, ["a"]) != []
-    assert search_title_ids(db_path, ["007"]) != []
+    assert _search_title_ids(db_path, ["a"]) != []
+    assert _search_title_ids(db_path, ["007"]) != []
 
 
 def test_fetch_entries_for_titles(tmp_path):
@@ -297,6 +306,193 @@ def test_iter_all_entries(tmp_path):
 
 def test_iter_all_entries_on_missing_db_yields_nothing(tmp_path):
     assert list(iter_all_entries(tmp_path / "does-not-exist.db")) == []
+
+
+def test_iter_all_entries_scoped_to_title_ids_excludes_others(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    _populate_small_corpus(db_path)
+    guid_to_id = {t.guid: t.rating_key for t in list_titles(db_path)}
+    with _connect(db_path) as conn:
+        rows = conn.execute("SELECT guid, title_id FROM titles").fetchall()
+    guid_to_title_id = dict(rows)
+
+    result = dict(iter_all_entries(db_path, title_ids=[guid_to_title_id["guid-1"]]))
+
+    assert set(result.keys()) == {"guid-1"}
+
+
+def test_iter_all_entries_empty_scope_yields_nothing(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    _populate_small_corpus(db_path)
+    assert list(iter_all_entries(db_path, title_ids=[])) == []
+
+
+def test_get_title_ids_by_guid(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    _populate_small_corpus(db_path)
+    with _connect(db_path) as conn:
+        rows = conn.execute("SELECT guid, title_id FROM titles").fetchall()
+    expected = dict(rows)
+
+    result = get_title_ids_by_guid(db_path, ["guid-1", "guid-2", "unknown-guid"])
+
+    assert result == expected
+
+
+def test_get_title_ids_by_guid_empty_input(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    _populate_small_corpus(db_path)
+    assert get_title_ids_by_guid(db_path, []) == {}
+
+
+def test_get_title_ids_by_guid_missing_db(tmp_path):
+    assert get_title_ids_by_guid(tmp_path / "does-not-exist.db", ["guid-1"]) == {}
+
+
+def test_fetch_entry_windows(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    _populate_small_corpus(db_path)
+    with _connect(db_path) as conn:
+        rows = conn.execute("SELECT guid, title_id FROM titles").fetchall()
+    guid_to_title_id = dict(rows)
+    id1 = guid_to_title_id["guid-1"]
+
+    # guid-1's entries have idx 0 and 1 (see _entries()) — a window of
+    # (0, 0) must fetch only the first, not the whole title.
+    result = fetch_entry_windows(db_path, [(id1, 0, 0)])
+
+    assert set(result.keys()) == {id1}
+    ordered = result[id1]
+    assert [entry.text for _, entry in ordered] == ["the quick brown fox"]
+    entry_id, entry = ordered[0]
+    assert isinstance(entry_id, int)
+
+
+def test_fetch_entry_windows_covers_full_range_when_window_is_wide(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    _populate_small_corpus(db_path)
+    with _connect(db_path) as conn:
+        rows = conn.execute("SELECT guid, title_id FROM titles").fetchall()
+    guid_to_title_id = dict(rows)
+    id1 = guid_to_title_id["guid-1"]
+
+    result = fetch_entry_windows(db_path, [(id1, 0, 999)])
+
+    assert [entry.text for _, entry in result[id1]] == [
+        "the quick brown fox",
+        "jumps over the lazy dog",
+    ]
+
+
+def test_fetch_entry_windows_excludes_entries_outside_every_window(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    texts = ["filler"] * 50
+    texts[10] = "first hit line"
+    texts[40] = "second hit line"
+    upsert_title(
+        db_path, guid="guid-1", rating_key=1, title="Film", library_name="Movies",
+        source="sidecar", sidecar_path=None, stream_index=None,
+        entries=_entries(*texts), fingerprint=None,
+    )
+    with _connect(db_path) as conn:
+        title_id = conn.execute("SELECT title_id FROM titles WHERE guid = 'guid-1'").fetchone()[0]
+
+    result = fetch_entry_windows(db_path, [(title_id, 8, 12), (title_id, 38, 42)])
+
+    ordered = result[title_id]
+    assert len(ordered) == 10  # 5 entries per window * 2 windows
+    fetched_idxs = sorted(entry.index for _, entry in ordered)
+    assert fetched_idxs == list(range(8, 13)) + list(range(38, 43))
+
+
+def test_fetch_entry_windows_empty_input(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    _populate_small_corpus(db_path)
+    assert fetch_entry_windows(db_path, []) == {}
+
+
+def test_fetch_entry_windows_batches_many_windows_beyond_chunk_size(tmp_path):
+    # Regression coverage for fetch_entry_windows' internal chunking
+    # (windows are batched to stay under SQLite's bound-parameter limit) —
+    # more windows than one chunk must still return every window's rows.
+    db_path = tmp_path / "quote_index.db"
+    title_ids = []
+    for i in range(250):
+        upsert_title(
+            db_path, guid=f"guid-{i}", rating_key=i, title=f"Film {i}", library_name="Movies",
+            source="sidecar", sidecar_path=None, stream_index=None,
+            entries=_entries("only line"), fingerprint=None,
+        )
+    with _connect(db_path) as conn:
+        rows = conn.execute("SELECT title_id FROM titles").fetchall()
+    title_ids = [r[0] for r in rows]
+
+    windows = [(tid, 0, 0) for tid in title_ids]
+    result = fetch_entry_windows(db_path, windows)
+
+    assert set(result.keys()) == set(title_ids)
+    assert all(len(v) == 1 for v in result.values())
+
+
+def test_search_entry_ids_is_entry_level_not_title_level(tmp_path):
+    # A single title with many entries where only ONE entry contains the
+    # search term must yield exactly one (entry_id, title_id, idx) row, not
+    # a blanket "every entry of this title" result — this is the crux of
+    # the entry-vs-title LIMIT bug: capping at the title level meant every
+    # entry of a survivor title got fuzzy-scored downstream, not just the
+    # entries that actually matched.
+    db_path = tmp_path / "quote_index.db"
+    texts = ["irrelevant filler line"] * 50
+    texts[25] = "the treasure is buried under the old oak tree"
+    upsert_title(
+        db_path, guid="guid-1", rating_key=1, title="Film", library_name="Movies",
+        source="sidecar", sidecar_path=None, stream_index=None,
+        entries=_entries(*texts), fingerprint=None,
+    )
+
+    hits = search_entry_ids(db_path, ["treasure"])
+
+    assert len(hits) == 1
+    entry_id, title_id, idx = hits[0]
+    assert idx == 25
+    with _connect(db_path) as conn:
+        db_idx = conn.execute("SELECT idx FROM entries WHERE id = ?", (entry_id,)).fetchone()[0]
+    assert db_idx == 25
+
+
+def test_search_entry_ids_respects_limit_across_titles(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    for i in range(10):
+        upsert_title(
+            db_path, guid=f"guid-{i}", rating_key=i, title=f"Film {i}", library_name="Movies",
+            source="sidecar", sidecar_path=None, stream_index=None,
+            entries=_entries("a shared unique keyword here"), fingerprint=None,
+        )
+
+    hits = search_entry_ids(db_path, ["keyword"], limit=3)
+
+    assert len(hits) == 3
+
+
+def test_search_entry_ids_scoped_to_title_ids(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    _populate_small_corpus(db_path)
+    with _connect(db_path) as conn:
+        rows = conn.execute("SELECT guid, title_id FROM titles").fetchall()
+    guid_to_title_id = dict(rows)
+
+    # "the" appears in both titles' entries; scoping to guid-1's title_id
+    # only must exclude guid-2's matching entries even though they'd
+    # otherwise satisfy the FTS5 match.
+    scoped_hits = search_entry_ids(db_path, ["the"], title_ids=[guid_to_title_id["guid-1"]])
+    assert scoped_hits
+    assert all(title_id == guid_to_title_id["guid-1"] for _, title_id, _idx in scoped_hits)
+
+
+def test_search_entry_ids_empty_scope_yields_nothing(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    _populate_small_corpus(db_path)
+    assert search_entry_ids(db_path, ["the"], title_ids=[]) == []
 
 
 def test_coverage_counts_by_source_excludes_none_and_other_libraries(tmp_path):

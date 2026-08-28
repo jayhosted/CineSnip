@@ -360,61 +360,6 @@ def test_run_library_sync_once_resets_status_even_on_plex_error(tmp_path):
     assert get_sync_progress(settings.quote_index_db_path).status == "idle"
 
 
-from app.worker.library_sync import backfill_missing_source_values
-from app.worker.quote_index import list_cached_titles_missing_source
-
-
-def test_backfill_missing_source_values_reads_from_cache_json(tmp_path):
-    # backfill_missing_source_values still targets the old
-    # quote_index.cached_titles table deliberately — app/worker/api.py's
-    # live single-title request path still writes rows there directly, so
-    # the table (and this backfill) aren't dead yet even though
-    # library_sync.py itself no longer writes it. See that function's
-    # docstring.
-    settings = _settings(tmp_path)
-    write_cached_subtitles(
-        settings.cache_dir,
-        SubtitleResult(
-            guid="guid-1", source=SubtitleSource.EMBEDDED,
-            entries=[SubtitleEntry(index=1, start=0.0, end=1.0, text="Hi")],
-        ),
-    )
-    quote_index.upsert_cached_title(settings.quote_index_db_path, "guid-1", 101, "Film", "Movies", "")
-
-    count = backfill_missing_source_values(settings)
-
-    assert count == 1
-    assert list_cached_titles_missing_source(settings.quote_index_db_path) == []
-    coverage = quote_index.library_coverage(settings.quote_index_db_path, "Movies")
-    assert coverage.embedded_count == 1
-
-
-def test_backfill_missing_source_values_skips_rows_with_no_cache_file(tmp_path):
-    settings = _settings(tmp_path)
-    quote_index.upsert_cached_title(settings.quote_index_db_path, "guid-orphan", 101, "Film", "Movies", "")
-
-    count = backfill_missing_source_values(settings)
-
-    assert count == 0
-
-
-def test_backfill_missing_source_values_is_idempotent(tmp_path):
-    settings = _settings(tmp_path)
-    write_cached_subtitles(
-        settings.cache_dir,
-        SubtitleResult(
-            guid="guid-1", source=SubtitleSource.SIDECAR,
-            entries=[SubtitleEntry(index=1, start=0.0, end=1.0, text="Hi")],
-        ),
-    )
-    quote_index.upsert_cached_title(settings.quote_index_db_path, "guid-1", 101, "Film", "Movies", "")
-
-    backfill_missing_source_values(settings)
-    second_run_count = backfill_missing_source_values(settings)
-
-    assert second_run_count == 0
-
-
 def test_both_guards_pass_deletes_removed_title_and_updates_state(tmp_path):
     root = tmp_path / "media"
     root.mkdir(exist_ok=True)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import random
@@ -17,8 +16,6 @@ from app.worker.quote_index import (
     get_library_item_count,
     get_section_updated_at,
     is_no_subtitle_title,
-    list_cached_titles_missing_source,
-    set_cached_title_source,
     set_library_item_count,
     set_section_updated_at,
     start_sync_run,
@@ -306,35 +303,3 @@ async def library_sync_task(settings: Settings, plex: PlexClient) -> None:
         except Exception:
             logger.exception("library sync: unexpected error in sync cycle")
         await asyncio.sleep(settings.library_sync.interval_hours * 3600)
-
-
-def backfill_missing_source_values(settings: Settings) -> int:
-    """One-time-per-install backfill for cached_titles rows written before
-    the `source` column existed (real installs can have thousands of
-    these). Only touches rows still missing it, so it's a cheap no-op on
-    every startup after the first. Called from app/main.py at startup.
-    Returns how many rows were backfilled, for a startup log line.
-
-    Left targeting the old quote_index.cached_titles table deliberately:
-    as of this file's search_index migration, library_sync.py itself no
-    longer writes cached_titles at all (search_index.upsert_title always
-    writes a non-null source, so there's nothing to backfill for rows it
-    produces) — but app/worker/api.py's live single-title request path
-    still calls quote_index.upsert_cached_title directly, so the table
-    isn't dead yet. Revisit once nothing writes cached_titles any more.
-    """
-    db_path = settings.quote_index_db_path
-    backfilled = 0
-    for cached in list_cached_titles_missing_source(db_path):
-        cache_file = cache_path_for_guid(settings.cache_dir, cached.guid)
-        if not cache_file.exists():
-            continue
-        try:
-            payload = json.loads(cache_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        source = payload.get("source")
-        if source in ("sidecar", "embedded"):
-            set_cached_title_source(db_path, cached.guid, source)
-            backfilled += 1
-    return backfilled

@@ -8,7 +8,6 @@ from pathlib import Path
 
 import uvicorn
 import uvloop
-from fastapi.concurrency import run_in_threadpool
 
 from app.bot.client import CineSnipBot, build_bot
 from app.runtime import SettingsHolder
@@ -16,7 +15,6 @@ from app.settings import Settings, SettingsError, load_settings
 from app.web.app import create_web_app
 from app.worker import library_sync, quote_index
 from app.worker.api import create_app
-from app.worker.library_sync import backfill_missing_source_values
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("cinesnip")
@@ -130,9 +128,6 @@ async def main() -> None:
             _clear_scratch_dir(settings.scratch_dir)
             settings.cache_dir.mkdir(parents=True, exist_ok=True)
             quote_index.reset_stale_running_status(settings.quote_index_db_path)
-            backfilled = await run_in_threadpool(backfill_missing_source_values, settings)
-            if backfilled:
-                logger.info("startup: backfilled source for %d previously-untyped cached titles", backfilled)
 
             if worker_server is not None:
                 await _stop_worker(worker_server, worker_task)
