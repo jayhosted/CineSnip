@@ -16,5 +16,8 @@
     <input type="password" id="discord_token" name="discord_token" placeholder="••••••••••••••••••••••••••" autocomplete="off" style="margin-bottom: 20px;">
     <button class="btn btn-primary btn-block" type="submit"><span class="btn-spinner"></span><span class="btn-label-idle">Validate &amp; continue</span></button>
   </form>
+  {% if state.wizard_return_to %}
+  <a href="/settings/{{ state.wizard_return_to }}" class="btn-link" style="display:inline-block; margin-top:16px;">&larr; Cancel, back to Settings</a>
+  {% endif %}
 </div>
 <p class="footnote">Tokens are written directly to your local .env file &mdash; nothing leaves this machine.</p>

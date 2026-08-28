@@ -1,0 +1,13 @@
+<div id="generate-right" class="card preview-card">
+  <div class="waiting-pill" style="margin:0;">
+    <span class="dot"></span>
+    <span class="label">Searching subtitles&hellip;</span>
+  </div>
+  <p class="footnote" style="text-align:left; max-width:none; margin:0;">{{ message }}</p>
+
+  <form hx-post="{{ continue_url }}" hx-trigger="load" hx-target="#generate-right" hx-swap="outerHTML">
+    {% for key, value in hidden_fields.items() %}
+      <input type="hidden" name="{{ key }}" value="{{ value }}">
+    {% endfor %}
+  </form>
+</div>

@@ -215,6 +215,52 @@ def _connect_and_discover_sync(plex_url: str, account_token: str | None) -> tupl
     return server_name, choices
 
 
+async def _seed_wizard_state_from_settings(state: WizardState, settings: Settings) -> None:
+    # Reconfiguration entry point (Section 14's Settings "Edit ___" links):
+    # the wizard is reused as-is for editing an already-working install, so
+    # a GET into any step needs to start from what's actually live instead
+    # of blank. Without this, entering the wizard on a freshly-started
+    # process (app.state.wizard is always a brand new WizardState()) forced
+    # a whole new Discord/Plex re-auth AND showed an empty library
+    # checklist even though config.yaml already lists real libraries — the
+    # guards below (`if state.X is None`) mean this only ever fills in gaps
+    # left by a fresh process, never clobbers real in-progress wizard input.
+    if state.discord_username is None and settings.discord_token:
+        ok, _detail, payload = await _verify_discord_token(settings.discord_token)
+        if ok and payload:
+            state.discord_token = settings.discord_token
+            state.discord_username = payload.get("username", "bot")
+            state.discord_bot_id = payload.get("id")
+
+    if state.plex_account_token is None and settings.plex_token:
+        state.plex_account_token = settings.plex_token
+
+    if not state.library_choices and settings.plex_url and state.plex_account_token:
+        try:
+            server_name, choices = await _call_with_timeout(
+                _connect_and_discover_sync, settings.plex_url, state.plex_account_token
+            )
+        except Exception:
+            # Best-effort: if Plex isn't reachable right now, leave the
+            # wizard to its normal blank-state flow rather than failing the
+            # settings page that triggered this seed attempt.
+            return
+        saved_by_name = {lib.name: lib for lib in settings.libraries}
+        for choice in choices:
+            saved = saved_by_name.get(choice.name)
+            if saved is not None:
+                choice.selected = True
+                choice.three_d_format = saved.three_d_format
+                if saved.path_mappings:
+                    choice.mapping_rows = [
+                        MappingRow(plex_prefix=m.plex_prefix, container_path=m.container_path)
+                        for m in saved.path_mappings
+                    ]
+        state.plex_url = settings.plex_url
+        state.plex_server_name = server_name
+        state.library_choices = choices
+
+
 def _run_validation_sync(state: WizardState) -> list[tuple[str, bool, str]]:
     # Discord's own check is deliberately NOT here — it needs a live async
     # HTTP call (_verify_discord_token), and this function runs off the
@@ -332,8 +378,22 @@ def create_web_app(
 
     # ---- Step 1: Discord ----------------------------------------------
 
+    async def _enter_wizard_step(request: Request) -> WizardState:
+        # Shared by every step's GET entry point: records where to return
+        # to when this visit came from a Settings "Edit ___" link, and
+        # seeds the wizard from the live config on a freshly-started
+        # process so editing one thing doesn't require redoing everything.
+        state: WizardState = request.app.state.wizard
+        return_to = request.query_params.get("return_to")
+        if return_to:
+            state.wizard_return_to = return_to
+        if settings_holder.settings is not None:
+            await _seed_wizard_state_from_settings(state, settings_holder.settings)
+        return state
+
     @app.get("/wizard/discord", response_class=HTMLResponse)
     async def discord_step(request: Request):
+        await _enter_wizard_step(request)
         return render(request, "panel_discord.html")
 
     @app.post("/wizard/discord", response_class=HTMLResponse)
@@ -374,7 +434,15 @@ def create_web_app(
 
     @app.get("/wizard/plex", response_class=HTMLResponse)
     async def plex_step(request: Request):
-        state: WizardState = request.app.state.wizard
+        state = await _enter_wizard_step(request)
+        if state.plex_account_token:
+            # Already have a working Plex account token — either this
+            # session's own PIN login, or reused from the live config on a
+            # reconfiguration (_seed_wizard_state_from_settings above).
+            # Skip straight to the actual "where does Plex live" step
+            # instead of forcing a brand new plex.tv PIN pairing just to
+            # edit a URL.
+            return render(request, "panel_plex_connect.html")
         try:
             pin = await _ensure_pin(state)
         except asyncio.TimeoutError:
@@ -388,6 +456,19 @@ def create_web_app(
                 error="Couldn't get a code from plex.tv. Check your network and try again.",
             )
         return render(request, "panel_plex_pin.html", pin=pin)
+
+    @app.get("/wizard/plex/reauth", response_class=HTMLResponse)
+    async def plex_reauth(request: Request):
+        # Escape hatch for the token-skip above: clears the existing
+        # account token (this session's or seeded from live config) so the
+        # next /wizard/plex visit runs a fresh PIN pairing instead — for
+        # switching Plex accounts, or recovering from a token Plex itself
+        # revoked (the 401 plex_connect below can hit if the seeded token
+        # is stale).
+        state: WizardState = request.app.state.wizard
+        state.plex_account_token = None
+        state.plex_pin = None
+        return await plex_step(request)
 
     @app.get("/wizard/plex/status", response_class=HTMLResponse)
     async def plex_status(request: Request):
@@ -437,7 +518,9 @@ def create_web_app(
         except Unauthorized:
             return render(
                 request, "panel_plex_connect.html",
-                error="Plex rejected that connection — your account may not have access to this server.",
+                error="Plex rejected that connection — your account may not have access to this server, "
+                      "or the saved account token is stale. Try “not the right Plex account?” below "
+                      "to re-authenticate.",
             )
         except asyncio.TimeoutError:
             return render(
@@ -471,6 +554,7 @@ def create_web_app(
 
     @app.get("/wizard/libraries", response_class=HTMLResponse)
     async def libraries_step(request: Request):
+        await _enter_wizard_step(request)
         return render(request, "panel_libraries.html", mounts=media_mount_candidates())
 
     @app.post("/wizard/libraries/add-row/{lib_index}", response_class=HTMLResponse)

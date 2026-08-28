@@ -74,6 +74,14 @@ class WizardState:
     library_choices: list[LibraryChoice] = field(default_factory=list)
     last_validation_ok: bool = False
 
+    # Set when a wizard step is entered via a Settings "Edit ___" link
+    # (?return_to=<tab>) rather than first-run — lets the wizard panels show
+    # a real "back to Settings" path instead of the only way out being the
+    # wizard's own internal Back, and lets panel_complete.html send a
+    # reconfiguring admin back to the tab they came from instead of the
+    # first-run "CineSnip is starting up" screen.
+    wizard_return_to: str | None = None
+
     def selected_libraries(self) -> list[LibraryConfig]:
         return [
             LibraryConfig(

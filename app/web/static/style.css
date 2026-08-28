@@ -114,12 +114,22 @@ input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px 
    its own in-flight request (Section 14's Plex-connect step in particular
    can take several real seconds — library enumeration plus a per-library
    sample lookup — with no feedback otherwise, easy to mistake for a dead
-   button). Toggled purely via CSS, no JS needed. */
-.btn .btn-spinner { display: none; width: 15px; height: 15px; border-radius: 999px; border: 2px solid currentColor; border-top-color: transparent; animation: spin 0.7s linear infinite; }
-form.htmx-request .btn[type="submit"] { pointer-events: none; opacity: 0.8; }
-form.htmx-request .btn[type="submit"] .btn-spinner { display: inline-block; }
-form.htmx-request .btn[type="submit"] .btn-label-idle { display: none; }
+   button). Toggled purely via CSS, no JS needed. Scoped to [type="submit"]
+   rather than .btn specifically so /generate's .match-row picks (real
+   <button type="submit"> elements styled outside the .btn family) get the
+   same spinner treatment as every .btn submit. */
+.btn-spinner { display: none; width: 15px; height: 15px; border-radius: 999px; border: 2px solid currentColor; border-top-color: transparent; animation: spin 0.7s linear infinite; flex-shrink: 0; }
+form.htmx-request [type="submit"] { pointer-events: none; opacity: 0.8; }
+form.htmx-request [type="submit"] .btn-spinner { display: inline-block; }
+form.htmx-request [type="submit"] .btn-label-idle { display: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Visually-hidden form input: keeps a radio/checkbox in the tab order and
+   readable to screen readers while its paired label supplies the actual
+   visible control (.style-pill, .kind-toggle below) — the accessible
+   alternative to `style="display:none"`, which removes the input from the
+   tab order entirely and makes that whole control mouse-only. */
+.visually-hidden-input { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
 .error-banner {
   background: var(--danger-soft); border: 1px solid var(--danger); color: var(--danger);
@@ -342,6 +352,21 @@ form.htmx-request .btn[type="submit"] .btn-label-idle { display: none; }
 }
 .style-pill:hover { border-color: var(--accent); color: var(--text); transform: translateY(-1px); }
 .style-pill:has(input:checked) { background: var(--accent-soft); border: 1.5px solid var(--accent); font-weight: 600; color: var(--accent); }
+.style-pill:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Film / TV Show toggle above the search field — same selectable-pill
+   vocabulary as .style-pill, laid out as a two-up row instead of a grid. */
+.kind-toggle { display: flex; gap: 8px; }
+.kind-toggle label {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 9px 4px; text-align: center; border-radius: 8px;
+  background: var(--surface-2); border: 1px solid var(--border-subtle);
+  font-size: 12.5px; font-weight: 600; color: var(--text-secondary); cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+.kind-toggle label:hover { border-color: var(--accent); color: var(--text); transform: translateY(-1px); }
+.kind-toggle label:has(input:checked) { background: var(--accent-soft); border: 1.5px solid var(--accent); color: var(--accent); }
+.kind-toggle label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .preview-card { display: flex; flex-direction: column; gap: 16px; min-height: 260px; }
 .preview-empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--text-tertiary); font-size: 13.5px; text-align: center; padding: 60px 20px; }

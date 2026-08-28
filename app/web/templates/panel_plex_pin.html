@@ -44,5 +44,8 @@
       <span></span>
     {% endif %}
   </div>
+  {% if state.wizard_return_to %}
+  <a href="/settings/{{ state.wizard_return_to }}" class="btn-link" style="display:inline-block; margin-top:16px;">&larr; Cancel, back to Settings</a>
+  {% endif %}
 </div>
 <p class="footnote">Tokens are written directly to your local config &mdash; nothing leaves this machine.</p>
