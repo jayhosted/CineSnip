@@ -53,7 +53,7 @@ def _precache(settings: Settings, guid: str, library_name: str = "Movies") -> No
             entries=[SubtitleEntry(index=1, start=0.0, end=1.0, text="Hi")],
         ),
     )
-    quote_index.upsert_cached_title(settings.quote_index_db_path, guid, 1, "Film", library_name)
+    quote_index.upsert_cached_title(settings.quote_index_db_path, guid, 1, "Film", library_name, "sidecar")
 
 
 class _FakePlex:
