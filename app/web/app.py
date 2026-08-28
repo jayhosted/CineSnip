@@ -22,10 +22,12 @@ from app.settings import (
     LibrarySyncDefaults,
     QuoteMatchDefaults,
     RenderDefaults,
+    Settings,
     SubtitleDefaults,
     WorkerConfig,
 )
 from app.web.generate import register_generate_routes
+from app.web.settings import register_settings_routes
 from app.web.state import LibraryChoice, MappingRow, WizardState, media_mount_candidates
 
 logger = logging.getLogger(__name__)
@@ -288,6 +290,7 @@ def create_web_app(
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
     register_generate_routes(app, templates, settings_holder)
+    register_settings_routes(app, templates, settings_holder, on_setup_complete)
 
     def render(request: Request, panel: str, **ctx) -> HTMLResponse:
         # A plain page load renders the full shell (page.html) with the
@@ -573,7 +576,7 @@ def create_web_app(
         checks_response = await _validate_panel(request)
         if not state.last_validation_ok:
             return checks_response
-        _write_config_files(state)
+        _write_config_files(state, current_settings=settings_holder.settings)
         await on_setup_complete()
         invite_url = discord_invite_url(state.discord_bot_id) if state.discord_bot_id else None
         return render(request, "panel_complete.html", invite_url=invite_url)
@@ -581,7 +584,12 @@ def create_web_app(
     return app
 
 
-def _write_config_files(state: WizardState, env_path: Path = Path(".env"), config_path: Path = Path("config.yaml")) -> None:
+def _write_config_files(
+    state: WizardState,
+    current_settings: Settings | None = None,
+    env_path: Path = Path(".env"),
+    config_path: Path = Path("config.yaml"),
+) -> None:
     # Written directly to the same two files app/settings.py already reads
     # (Section 14: "the wizard is purely a friendlier way to produce those
     # same two files, not a new runtime secret-handling path"). Tokens are
@@ -600,21 +608,26 @@ def _write_config_files(state: WizardState, env_path: Path = Path(".env"), confi
     ]
     env_path.write_text("\n".join(kept) + "\n")
 
-    # Everything below "libraries" is built from app/settings.py's own
-    # Pydantic defaults rather than hand-copied literals — those already
-    # changed once for a real reason (extraction_timeout_seconds 180->300,
-    # per this project's own build notes), and a wizard-written config.yaml
-    # silently going stale relative to app/settings.py's actual defaults is
-    # exactly the class of bug a hand-copied second source of truth
-    # produces. lib.model_dump() also means any future LibraryConfig field
-    # (e.g. three_d_format) flows into the written file automatically
-    # instead of needing to be added here by hand.
+    # Everything below "libraries" is preserved from the currently-running
+    # Settings when there is one (a reconfiguration — Section 14/decision
+    # #6) rather than rebuilt from Pydantic defaults every time: this
+    # function is the wizard's own write path, and the wizard only ever
+    # collects discord_token/plex_url/plex_token/libraries. Wiping
+    # render_defaults/subtitle_defaults/quote_match/worker/library_sync
+    # back to defaults on every re-run would silently discard anything
+    # edited through the Settings area (app/web/settings.py) — this is
+    # what makes "re-running setup only rewrites Discord/Plex/libraries"
+    # actually true instead of just a claim in the UI copy. Falls back to
+    # fresh Pydantic defaults only on a genuine first run, when there's
+    # nothing yet to preserve. lib.model_dump() still means any future
+    # LibraryConfig field (e.g. three_d_format) flows into the written
+    # file automatically instead of needing to be added here by hand.
     config = {
         "libraries": [lib.model_dump() for lib in state.selected_libraries()],
-        "render_defaults": RenderDefaults().model_dump(),
-        "subtitle_defaults": SubtitleDefaults().model_dump(),
-        "quote_match": QuoteMatchDefaults().model_dump(),
-        "worker": WorkerConfig().model_dump(),
-        "library_sync": LibrarySyncDefaults().model_dump(),
+        "render_defaults": (current_settings.render_defaults if current_settings else RenderDefaults()).model_dump(),
+        "subtitle_defaults": (current_settings.subtitle_defaults if current_settings else SubtitleDefaults()).model_dump(),
+        "quote_match": (current_settings.quote_match if current_settings else QuoteMatchDefaults()).model_dump(),
+        "worker": (current_settings.worker if current_settings else WorkerConfig()).model_dump(),
+        "library_sync": (current_settings.library_sync if current_settings else LibrarySyncDefaults()).model_dump(),
     }
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))

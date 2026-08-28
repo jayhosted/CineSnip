@@ -1,0 +1,5 @@
+<div class="settings-tabs">
+  {% for slug, label in tabs %}
+    <a href="/settings/{{ slug }}" class="settings-tab {{ 'active' if current_tab == slug else '' }}">{{ label }}</a>
+  {% endfor %}
+</div>

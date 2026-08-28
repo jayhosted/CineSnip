@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CineSnip &mdash; {{ page_title }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/htmx.min.js"></script>
+</head>
+<body>
+<div class="app-shell">
+
+  <div class="sidebar">
+    <div class="sidebar-logo">
+      <svg width="23" height="23" viewBox="0 0 240 240"><circle cx="120" cy="120" r="119" fill="var(--icon-black)"/><g transform="rotate(-40 120 120)"><rect x="20" y="89" width="96" height="62" rx="9" fill="var(--strip-grey)"/><rect x="30" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="52" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="73" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="95" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="30" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="52" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="73" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="95" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="35" y="107" width="26" height="26" rx="5" fill="var(--icon-black)"/><rect x="75" y="107" width="26" height="26" rx="5" fill="var(--icon-black)"/><rect x="128" y="89" width="96" height="62" rx="9" fill="var(--strip-grey)"/><rect x="138" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="160" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="181" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="203" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="138" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="160" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="181" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="203" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="143" y="107" width="26" height="26" rx="5" fill="var(--icon-black)"/><rect x="183" y="107" width="26" height="26" rx="5" fill="var(--icon-black)"/><rect x="119" y="80" width="6" height="80" rx="3" fill="var(--accent)"/></g></svg>
+      <span class="sidebar-logo-text">CineSnip</span>
+    </div>
+
+    <nav class="sidebar-nav">
+      <a href="/generate" class="navitem {{ 'active' if current_page == 'generate' else '' }}">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="14" height="10" rx="2"/><path d="M17 9.5 21 7v8l-4-2.5"/></svg>
+        <span>Generate</span>
+      </a>
+      <a href="/settings" class="navitem {{ 'active' if current_page == 'settings' else '' }}">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19 12a7 7 0 0 0-.13-1.34l1.9-1.48-2-3.46-2.24.9a7 7 0 0 0-1.16-.67L15 3.6h-6l-.37 2.35c-.42.18-.8.4-1.16.67l-2.24-.9-2 3.46 1.9 1.48A7 7 0 0 0 5 12c0 .46.05.9.13 1.34l-1.9 1.48 2 3.46 2.24-.9c.36.27.74.49 1.16.67L9 20.4h6l.37-2.35c.42-.18.8-.4 1.16-.67l2.24.9 2-3.46-1.9-1.48c.08-.44.13-.88.13-1.34Z"/></svg>
+        <span>Settings</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-footer">CineSnip &middot; {{ request.url.hostname }}:{{ request.url.port }}</div>
+  </div>
+
+  <div class="main-content">
+    {% include content_template %}
+  </div>
+
+</div>
+</body>
+</html>

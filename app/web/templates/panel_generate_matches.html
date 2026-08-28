@@ -1,13 +1,17 @@
-<div class="generate-matches">
-  <p class="desc" style="margin-top:0;">Pick a line:</p>
+<div id="generate-right" class="card preview-card">
+  <label class="field-label">PICK A LINE</label>
   <div class="match-list">
   {% for m in matches %}
-    <form hx-post="/generate/render" hx-target="#generate-form-area" hx-swap="innerHTML">
+    <form hx-post="/generate/render" hx-target="#generate-right" hx-swap="outerHTML">
       <input type="hidden" name="rating_key" value="{{ m.rating_key if show_titles else rating_key }}">
+      <input type="hidden" name="title" value="{{ m.title if show_titles else title }}">
+      <input type="hidden" name="library_name" value="{{ m.library_name if show_titles else (library_name or '') }}">
       <input type="hidden" name="timecode" value="{{ m.start }}">
+      <input type="hidden" name="display_timecode" value="{{ m.timecode }}">
       <input type="hidden" name="duration" value="{{ m.end - m.start }}">
       <input type="hidden" name="format" value="{{ format or '' }}">
-      <input type="hidden" name="style" value="classic">
+      <input type="hidden" name="style" value="{{ style or 'classic' }}">
+      <input type="hidden" name="caption" value="{{ m.text }}">
       <button type="submit" class="match-row">
         {% if show_titles %}<span class="match-title">{{ m.title }} &mdash; {{ m.library_name }}</span>{% endif %}
         <span class="match-text">{{ m.text }}</span>

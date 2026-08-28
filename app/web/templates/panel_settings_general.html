@@ -1,0 +1,45 @@
+<div id="settings-content">
+  <div class="page-header"><h1>Settings</h1><p>Configuration CineSnip doesn't need to ask for during first-run setup.</p></div>
+  {% include "settings_tabs.html" %}
+
+  <form class="card" style="margin-top:18px; max-width:520px;"
+    hx-post="/settings/general" hx-target="#settings-content" hx-swap="outerHTML">
+    {% if saved %}<div class="save-banner">Saved — applied without a restart.</div>{% endif %}
+    {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+
+    <label class="field-label" for="worker_port">WORKER PORT</label>
+    <input type="text" id="worker_port" name="worker_port" value="{{ settings.worker.port }}" disabled
+      style="margin-top:8px; opacity:0.6;">
+    <p class="footnote" style="text-align:left; max-width:none; margin:8px 0 20px;">
+      The internal worker API's loopback port — no Docker port is published
+      for it (Section 9), so this only matters if it collides with
+      something else inside the container. Not editable here yet.
+    </p>
+
+    <label class="field-label" for="dev_guild_id">DEV GUILD ID <span style="font-weight:400; text-transform:none;">(optional)</span></label>
+    <input type="text" id="dev_guild_id" name="dev_guild_id" value="{{ settings.dev_guild_id or '' }}"
+      placeholder="A Discord server ID, for instant guild-scoped command sync while developing" style="margin-top:8px;">
+    <p class="footnote" style="text-align:left; max-width:none; margin:8px 0 20px;">
+      Leave blank for normal use — global command sync can take up to an
+      hour to propagate to a server, which only matters if you're actively
+      changing slash commands.
+    </p>
+
+    <button class="btn btn-primary" type="submit">Save</button>
+  </form>
+
+  <div class="card" style="margin-top:18px; max-width:520px;">
+    <label class="field-label">LAN ACCESS</label>
+    <p class="footnote" style="text-align:left; max-width:none; margin:8px 0 0;">
+      Controlled by <code>docker-compose.yml</code>'s port mapping for this
+      web app, not a setting here — edit the <code>ports:</code> line under
+      the <code>cinesnip</code> service
+      (<code>127.0.0.1:1919:1919</code> for localhost-only,
+      <code>1919:1919</code> to expose it on your LAN) and recreate the
+      container (<code>docker compose up -d</code>). This can't be changed
+      from inside the running app.
+    </p>
+  </div>
+
+  {% include "settings_rerun_card.html" %}
+</div>
