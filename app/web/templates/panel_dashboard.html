@@ -1,0 +1,63 @@
+<div id="dashboard-content">
+  <div class="page-header">
+    <h1>Library status</h1>
+    <p>Subtitle cache across your {{ stats.library_count }} configured librar{{ 'y' if stats.library_count == 1 else 'ies' }}.</p>
+  </div>
+
+  <div class="stat-grid">
+    <div class="stat-card">
+      <div class="stat-label">TITLES CACHED</div>
+      <div class="stat-value">{{ stats.cached_total }}<span class="stat-value-sub"> / {{ stats.library_total }}</span></div>
+      {% set pct = ((100 * stats.cached_total / stats.library_total) | round(0, 'floor')) if stats.library_total else 0 %}
+      <div class="stat-bar"><div class="stat-bar-fill" style="width: {{ pct }}%;"></div></div>
+      <div class="stat-bar-label">{{ pct | int }}% complete</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">SIDECAR SUBS</div>
+      <div class="stat-value">{{ stats.sidecar_count }}</div>
+      <div class="stat-note">{{ ((100 * stats.sidecar_count / stats.library_total) | round(1)) if stats.library_total else 0 }}% of library</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">EMBEDDED SUBS</div>
+      <div class="stat-value">{{ stats.embedded_count }}</div>
+      <div class="stat-note">{{ ((100 * stats.embedded_count / stats.library_total) | round(1)) if stats.library_total else 0 }}% of library</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">NO SUBTITLES</div>
+      <div class="stat-value stat-value-muted">{{ stats.no_subtitle_count }}</div>
+      <div class="stat-note">timecode-only</div>
+    </div>
+  </div>
+
+  <div class="card coverage-card">
+    <div class="coverage-header">Coverage breakdown</div>
+    {% set sidecar_pct = (100 * stats.sidecar_count / stats.library_total) if stats.library_total else 0 %}
+    {% set embedded_pct = (100 * stats.embedded_count / stats.library_total) if stats.library_total else 0 %}
+    {% set none_pct = (100 * stats.no_subtitle_count / stats.library_total) if stats.library_total else 0 %}
+    <div class="coverage-bar">
+      <div class="coverage-seg coverage-seg-sidecar" style="width: {{ sidecar_pct }}%;"></div>
+      <div class="coverage-seg coverage-seg-embedded" style="width: {{ embedded_pct }}%;"></div>
+      <div class="coverage-seg coverage-seg-none" style="width: {{ none_pct }}%;"></div>
+    </div>
+    <div class="coverage-legend">
+      <span><i class="dot dot-sidecar"></i>Sidecar</span>
+      <span><i class="dot dot-embedded"></i>Embedded</span>
+      <span><i class="dot dot-none"></i>None</span>
+    </div>
+  </div>
+
+  <div id="sync-panel-container">
+    {% include "panel_dashboard_sync.html" %}
+  </div>
+</div>
+
+<script>
+  (function () {
+    var container = document.getElementById('sync-panel-container');
+    var source = new EventSource('/dashboard/sync-stream');
+    source.onmessage = function (event) {
+      container.innerHTML = event.data;
+    };
+    window.addEventListener('beforeunload', function () { source.close(); });
+  })();
+</script>

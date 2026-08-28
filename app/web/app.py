@@ -26,6 +26,7 @@ from app.settings import (
     SubtitleDefaults,
     WorkerConfig,
 )
+from app.web.dashboard import register_dashboard_routes
 from app.web.generate import register_generate_routes
 from app.web.settings import register_settings_routes
 from app.web.state import LibraryChoice, MappingRow, WizardState, media_mount_candidates
@@ -337,6 +338,7 @@ def create_web_app(
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
     register_generate_routes(app, templates, settings_holder)
     register_settings_routes(app, templates, settings_holder, on_setup_complete)
+    register_dashboard_routes(app, templates, settings_holder)
 
     def render(request: Request, panel: str, **ctx) -> HTMLResponse:
         # A plain page load renders the full shell (page.html) with the
@@ -364,7 +366,7 @@ def create_web_app(
             return RedirectResponse(
                 {1: "/wizard/discord", 2: "/wizard/plex", 3: "/wizard/libraries", 4: "/wizard/validate"}[step]
             )
-        return RedirectResponse("/generate")
+        return RedirectResponse("/dashboard")
 
     @app.get("/wizard/restart")
     async def wizard_restart(request: Request):
