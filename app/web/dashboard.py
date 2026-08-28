@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from app.runtime import SettingsHolder
@@ -67,6 +67,10 @@ def _sync_panel_html(templates: Jinja2Templates, request: Request, settings_hold
 def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates, settings_holder: SettingsHolder) -> None:
     @app.get("/dashboard", response_class=HTMLResponse)
     async def dashboard(request: Request):
+        if settings_holder.settings is None:
+            # Setup hasn't completed yet — nothing here can work without a
+            # running worker. Send them into the wizard instead.
+            return RedirectResponse("/")
         stats = await run_in_threadpool(_coverage_stats, settings_holder)
         settings = settings_holder.settings
         progress = quote_index.get_sync_progress(settings.quote_index_db_path)
@@ -85,6 +89,10 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates, settings
 
     @app.post("/sync/run", response_class=HTMLResponse)
     async def sync_run(request: Request):
+        if settings_holder.settings is None:
+            # Setup hasn't completed yet — nothing here can work without a
+            # running worker. Send them into the wizard instead.
+            return RedirectResponse("/")
         # start_sync_run's atomic guard (Task 1/2) makes this safe to call
         # unconditionally — if a run is already in progress (scheduled or a
         # previous manual click), run_library_sync_once no-ops immediately
@@ -97,6 +105,11 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates, settings
 
     @app.get("/dashboard/sync-stream")
     async def dashboard_sync_stream(request: Request):
+        if settings_holder.settings is None:
+            # Setup hasn't completed yet — nothing here can work without a
+            # running worker. Send them into the wizard instead.
+            return RedirectResponse("/")
+
         async def event_source():
             last_payload = None
             while True:

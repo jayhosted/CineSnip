@@ -13,6 +13,7 @@ from app.worker.plex_client import MovieResult, PlexClient
 from app.worker.quote_index import (
     append_sync_log,
     finish_sync_run,
+    get_library_item_count,
     get_section_updated_at,
     has_cached_title,
     is_no_subtitle_title,
@@ -173,9 +174,11 @@ async def sync_library(
     append_sync_log(
         settings.quote_index_db_path, f"Checking library: {library_name} — {total_items} items"
     )
+    # One upfront write so the dashboard shows the correct total/0-processed
+    # state immediately, rather than waiting for the first item to finish.
+    update_sync_progress(settings.quote_index_db_path, library_name, None, 0, total_items)
 
     for index, item in enumerate(live_items, start=1):
-        update_sync_progress(settings.quote_index_db_path, library_name, item.title, index - 1, total_items)
         outcome = await sync_one_title(settings, item)
         if outcome.startswith("CACHED"):
             result.already_cached += 1
@@ -251,7 +254,8 @@ async def run_library_sync_once(settings: Settings, plex: PlexClient) -> list[Li
 
         for library_name, updated_at in current.items():
             stored = get_section_updated_at(db_path, library_name)
-            if stored == updated_at:
+            has_count = get_library_item_count(db_path, library_name) is not None
+            if stored == updated_at and has_count:
                 continue
 
             section = sections_by_name[library_name]

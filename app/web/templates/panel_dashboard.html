@@ -57,6 +57,7 @@
     var source = new EventSource('/dashboard/sync-stream');
     source.onmessage = function (event) {
       container.innerHTML = event.data;
+      htmx.process(container);
     };
     window.addEventListener('beforeunload', function () { source.close(); });
   })();
