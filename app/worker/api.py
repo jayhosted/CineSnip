@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
 from app.settings import Settings, SettingsError
-from app.worker import quote_index
+from app.worker import quote_index, search_index
 from app.worker.ffmpeg import ClipRenderer, RenderTimeoutError, parse_timecode
 from app.worker.library_search import search_cached_library
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
@@ -22,7 +22,13 @@ from app.worker.plex_client import (
     ShowNotFoundError,
 )
 from app.worker.quote_index import CachedTitle
-from app.worker.quotes import find_quote_matches, get_or_build_candidates
+from app.worker.quotes import (
+    PrecomputedCandidates,
+    _build_candidates,
+    _normalize_stripped,
+    find_quote_matches,
+    strip_markup,
+)
 from app.worker.subprocess_utils import SubprocessTimeoutError
 from app.worker.subtitle_render import STYLE_PRESETS
 from app.worker.subtitles import (
@@ -30,7 +36,6 @@ from app.worker.subtitles import (
     SubtitleSource,
     find_sidecar_subtitle,
     get_subtitles,
-    read_cached_subtitles,
 )
 
 logger = logging.getLogger(__name__)
@@ -177,13 +182,29 @@ def _index_if_searchable(settings: Settings, movie: MovieResult, result: Subtitl
     # no_subtitle_titles instead (Section 5's documented gap: not
     # searchable, but still worth knowing "this was checked").
     if result.source is not SubtitleSource.NONE and result.entries:
-        quote_index.upsert_cached_title(
+        # get_subtitles() (app/worker/subtitles.py) already wrote this exact
+        # title into search_index moments earlier via the same guid, with
+        # the correct source-file fingerprint attached — this call is a
+        # redundant second write (kept because it's also the only place a
+        # caller who built its own SubtitleResult, e.g. no such caller today
+        # but matching the pre-existing shape, would land in search_index).
+        # Passing fingerprint=None here would clobber the freshness check
+        # get_subtitles() relies on (a null fingerprint never matches a live
+        # one, forcing a re-extraction on every subsequent request), so the
+        # already-stored fingerprint is read back and passed through
+        # unchanged rather than invented from scratch.
+        fingerprint = search_index.get_fingerprint(settings.quote_index_db_path, result.guid)
+        search_index.upsert_title(
             settings.quote_index_db_path,
             result.guid,
             movie.rating_key,
             movie.title,
             movie.library_name,
             result.source.value,
+            result.sidecar_path,
+            result.stream_index,
+            result.entries,
+            fingerprint,
         )
     elif result.source is SubtitleSource.NONE:
         quote_index.upsert_no_subtitle_title(
@@ -270,8 +291,8 @@ def create_app(settings: Settings) -> FastAPI:
             return SubtitleStatusResponse(rating_key=rating_key, likely_slow=False)
 
         sidecar = find_sidecar_subtitle(Path(container_path))
-        cached = read_cached_subtitles(settings.cache_dir, movie.guid)
-        likely_slow = sidecar is None and cached is None
+        cached = search_index.get_entries(settings.quote_index_db_path, movie.guid) is not None
+        likely_slow = sidecar is None and not cached
         return SubtitleStatusResponse(rating_key=rating_key, likely_slow=likely_slow)
 
     @app.get("/resolve-episode/{show_rating_key}", response_model=ResolveResponse)
@@ -486,9 +507,18 @@ def create_app(settings: Settings) -> FastAPI:
             )
 
         qm = settings.quote_match
-        precomputed = get_or_build_candidates(
-            settings.cache_dir, result.guid, result.entries, qm.max_window_gap_seconds
+        # Single-title, in-request computation — no O(corpus) cost and
+        # nothing to pre-filter (it's already scoped to this one title's
+        # entries), so this builds candidates directly rather than going
+        # through quotes.py's disk-backed get_or_build_candidates(), which
+        # existed only to amortize this same work *across* requests for the
+        # same title.
+        displays = [strip_markup(e.text) for e in result.entries]
+        normalized = [_normalize_stripped(d) for d in displays]
+        candidates = _build_candidates(
+            result.entries, displays, normalized, qm.max_window_gap_seconds
         )
+        precomputed = PrecomputedCandidates(displays=displays, candidates=candidates)
         matches = find_quote_matches(
             result.entries,
             quote,
@@ -543,13 +573,13 @@ def create_app(settings: Settings) -> FastAPI:
         movie_library_names = app.state.plex.movie_library_names
         cached_titles = [
             t
-            for t in quote_index.list_cached_titles(settings.quote_index_db_path)
+            for t in search_index.list_titles(settings.quote_index_db_path)
             if t.library_name in movie_library_names
         ]
 
         qm = settings.quote_match
         matches = search_cached_library(
-            settings.cache_dir,
+            settings.quote_index_db_path,
             cached_titles,
             quote,
             result_limit=qm.candidate_limit,
@@ -651,7 +681,7 @@ def create_app(settings: Settings) -> FastAPI:
 
         qm = settings.quote_match
         matches = search_cached_library(
-            settings.cache_dir,
+            settings.quote_index_db_path,
             cached_titles,
             quote,
             result_limit=qm.candidate_limit,
