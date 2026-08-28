@@ -12,6 +12,7 @@ from pathlib import Path
 
 import srt
 
+from app.worker import search_index
 from app.worker.plex_client import MovieResult
 from app.worker.subprocess_utils import run_and_capture
 
@@ -355,17 +356,79 @@ def delete_cached_subtitles(cache_dir: Path, guid: str) -> bool:
 # --- Orchestration ----------------------------------------------------
 
 
+def _live_fingerprint(path: Path | None) -> tuple[float, int] | None:
+    """Same (mtime, size) semantics as _fingerprint() above, just typed as
+    a tuple to match search_index's get_fingerprint()/upsert_title()
+    signatures directly instead of the list shape the old JSON payload
+    round-tripped."""
+    fp = _fingerprint(path)
+    return (fp[0], fp[1]) if fp is not None else None
+
+
+def _read_cached_via_index(
+    db_path: Path,
+    guid: str,
+    sidecar_path: Path | None,
+    video_path: Path,
+) -> SubtitleResult | None:
+    """search_index-backed replacement for read_cached_subtitles(), used
+    only by get_subtitles(). Which file's fingerprint decides freshness
+    depends on the *cached* source (SIDECAR checks the sidecar, EMBEDDED
+    checks the video) — not on which candidates happen to exist now — so
+    an unrelated sidecar appearing next to an EMBEDDED-sourced cache entry
+    doesn't wrongly invalidate it. A NONE-sourced entry (no subtitles
+    found) has no source file to track and is always considered fresh,
+    same as the old cache-forever behavior for that case."""
+    meta = search_index.get_source_info(db_path, guid)
+    if meta is None:
+        return None
+
+    source_value, cached_sidecar_path, stream_index = meta
+    source = SubtitleSource(source_value) if source_value else SubtitleSource.NONE
+
+    if source is SubtitleSource.SIDECAR:
+        check_path = sidecar_path
+    elif source is SubtitleSource.EMBEDDED:
+        check_path = video_path
+    else:
+        check_path = None
+
+    if source is not SubtitleSource.NONE:
+        stored_fingerprint = search_index.get_fingerprint(db_path, guid)
+        if stored_fingerprint != _live_fingerprint(check_path):
+            return None
+
+    entries = search_index.get_entries(db_path, guid)
+    if entries is None:
+        # Defensive only — a title row existed above, so this shouldn't
+        # actually happen.
+        return None
+
+    return SubtitleResult(
+        guid=guid,
+        source=source,
+        entries=entries,
+        sidecar_path=cached_sidecar_path,
+        stream_index=stream_index,
+    )
+
+
 async def get_subtitles(
     movie: MovieResult,
     container_video_path: str,
     cache_dir: Path,
+    db_path: Path,
     ffprobe_timeout: float = 180.0,
     ffmpeg_timeout: float = 180.0,
 ) -> SubtitleResult:
+    # cache_dir is no longer used for this function's own persistence
+    # (search_index/db_path replaces it), but stays in the signature since
+    # every caller still passes settings.cache_dir for other purposes at
+    # the same call site's surrounding code.
     video_path = Path(container_video_path)
     sidecar = find_sidecar_subtitle(video_path)
 
-    cached = read_cached_subtitles(cache_dir, movie.guid, sidecar, video_path)
+    cached = _read_cached_via_index(db_path, movie.guid, sidecar, video_path)
     if cached is not None:
         return cached
 
@@ -383,7 +446,18 @@ async def get_subtitles(
                 entries=entries,
                 sidecar_path=str(sidecar),
             )
-            write_cached_subtitles(cache_dir, result, sidecar)
+            search_index.upsert_title(
+                db_path,
+                movie.guid,
+                movie.rating_key,
+                movie.title,
+                movie.library_name,
+                result.source.value,
+                result.sidecar_path,
+                result.stream_index,
+                result.entries,
+                _live_fingerprint(sidecar),
+            )
             return result
 
     streams = await probe_subtitle_streams(container_video_path, ffprobe_timeout)
@@ -409,9 +483,31 @@ async def get_subtitles(
                 entries=entries,
                 stream_index=chosen.relative_index,
             )
-            write_cached_subtitles(cache_dir, result, video_path)
+            search_index.upsert_title(
+                db_path,
+                movie.guid,
+                movie.rating_key,
+                movie.title,
+                movie.library_name,
+                result.source.value,
+                result.sidecar_path,
+                result.stream_index,
+                result.entries,
+                _live_fingerprint(video_path),
+            )
             return result
 
     result = SubtitleResult(guid=movie.guid, source=SubtitleSource.NONE, entries=[])
-    write_cached_subtitles(cache_dir, result)
+    search_index.upsert_title(
+        db_path,
+        movie.guid,
+        movie.rating_key,
+        movie.title,
+        movie.library_name,
+        result.source.value,
+        result.sidecar_path,
+        result.stream_index,
+        result.entries,
+        None,
+    )
     return result

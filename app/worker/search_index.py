@@ -183,6 +183,24 @@ def get_entries(db_path: Path, guid: str) -> list[SubtitleEntry] | None:
     return [SubtitleEntry(index=r[0], start=r[1], end=r[2], text=r[3]) for r in rows]
 
 
+def get_source_info(db_path: Path, guid: str) -> tuple[str | None, str | None, int | None] | None:
+    """Returns (source, sidecar_path, stream_index) for a cached title, or
+    None if the guid has no title row at all. Split out from get_entries()/
+    get_fingerprint() because subtitles.get_subtitles() needs this metadata
+    to reconstruct a SubtitleResult on a cache hit, but neither of those
+    two carries it."""
+    if not db_path.exists():
+        return None
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT source, sidecar_path, stream_index FROM titles WHERE guid = ?",
+            (guid,),
+        ).fetchone()
+    if row is None:
+        return None
+    return (row[0], row[1], row[2])
+
+
 def get_fingerprint(db_path: Path, guid: str) -> tuple[float, int] | None:
     if not db_path.exists():
         return None
