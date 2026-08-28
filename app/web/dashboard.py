@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from app.runtime import SettingsHolder
-from app.worker import quote_index
+from app.worker import quote_index, search_index
 from app.worker.library_sync import run_library_sync_once
 
 # How often the SSE stream re-checks quote_index.db for a change. Progress
@@ -34,10 +34,13 @@ def _coverage_stats(settings_holder: SettingsHolder) -> CoverageStats:
 
     sidecar = embedded = no_subtitle = library_total = 0
     for library in settings.libraries:
-        coverage = quote_index.library_coverage(settings.quote_index_db_path, library.name)
-        sidecar += coverage.sidecar_count
-        embedded += coverage.embedded_count
-        no_subtitle += coverage.no_subtitle_count
+        counts = search_index.coverage_counts(settings.quote_index_db_path, library.name)
+        sidecar += counts["sidecar"]
+        embedded += counts["embedded"]
+        # no_subtitle_titles is unaffected by the search_index migration —
+        # keep reading it via quote_index.library_coverage() for that field
+        # only, rather than duplicating its query here.
+        no_subtitle += quote_index.library_coverage(settings.quote_index_db_path, library.name).no_subtitle_count
         library_total += quote_index.get_library_item_count(settings.quote_index_db_path, library.name) or 0
 
     return CoverageStats(
