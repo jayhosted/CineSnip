@@ -165,6 +165,27 @@ class SettingsError(RuntimeError):
     pass
 
 
+def write_config_yaml(settings: Settings, config_path: Path = Path("config.yaml")) -> None:
+    """Dumps every config.yaml-owned field of `settings` back to disk —
+    the write half of the Settings area (app/web/settings.py): callers
+    mutate one field on the in-memory Settings object (already validated
+    by having been a real Settings instance) and then call this to persist
+    the whole object, so a saved change never has to reason about which
+    other sections to leave alone. Secrets (discord_token/plex_url/
+    plex_token) live in .env, not here — see app/web/app.py's
+    _write_config_files for that half, which this mirrors the shape of.
+    """
+    config = {
+        "libraries": [lib.model_dump() for lib in settings.libraries],
+        "render_defaults": settings.render_defaults.model_dump(),
+        "subtitle_defaults": settings.subtitle_defaults.model_dump(),
+        "quote_match": settings.quote_match.model_dump(),
+        "worker": settings.worker.model_dump(),
+        "library_sync": settings.library_sync.model_dump(),
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+
 def load_settings(
     env_path: Path = Path(".env"),
     config_path: Path = Path("config.yaml"),

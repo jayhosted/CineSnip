@@ -1,0 +1,91 @@
+<div id="settings-content">
+  <div class="page-header"><h1>Settings</h1><p>Configuration CineSnip doesn't need to ask for during first-run setup.</p></div>
+  {% include "settings_tabs.html" %}
+
+  <form class="card" style="margin-top:18px; max-width:560px;"
+    hx-post="/settings/render" hx-target="#settings-content" hx-swap="outerHTML">
+    {% if saved %}<div class="save-banner">Saved — applied without a restart.</div>{% endif %}
+    {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+
+    <label class="field-label" style="display:block; margin-bottom:10px;">RENDER DEFAULTS</label>
+
+    <div class="field-row" style="margin-bottom:16px;">
+      <div style="flex:1;">
+        <label class="field-label" for="fps">FPS</label>
+        <input type="text" id="fps" name="fps" value="{{ settings.render_defaults.fps }}" style="margin-top:6px;">
+      </div>
+      <div style="flex:1;">
+        <label class="field-label" for="width">WIDTH (px)</label>
+        <input type="text" id="width" name="width" value="{{ settings.render_defaults.width }}" style="margin-top:6px;">
+      </div>
+    </div>
+
+    <div class="field-row" style="margin-bottom:16px;">
+      <div style="flex:1;">
+        <label class="field-label" for="duration_seconds">DEFAULT DURATION (s)</label>
+        <input type="text" id="duration_seconds" name="duration_seconds" value="{{ settings.render_defaults.duration_seconds }}" style="margin-top:6px;">
+      </div>
+      <div style="flex:1;">
+        <label class="field-label" for="format">DEFAULT FORMAT</label>
+        <select id="format" name="format" class="select-field" style="margin-top:6px;">
+          {% for value in ["gif", "mp4", "webm"] %}
+          <option value="{{ value }}" {% if settings.render_defaults.format == value %}selected{% endif %}>{{ value | upper }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="field-row" style="margin-bottom:16px;">
+      <div style="flex:1;">
+        <label class="field-label" for="min_duration_seconds">MIN CLIP LENGTH (s)</label>
+        <input type="text" id="min_duration_seconds" name="min_duration_seconds" value="{{ settings.render_defaults.min_duration_seconds }}" style="margin-top:6px;">
+      </div>
+      <div style="flex:1;">
+        <label class="field-label" for="max_duration_seconds">MAX CLIP LENGTH (s)</label>
+        <input type="text" id="max_duration_seconds" name="max_duration_seconds" value="{{ settings.render_defaults.max_duration_seconds }}" style="margin-top:6px;">
+      </div>
+    </div>
+
+    <label class="field-label" for="timeout_seconds">ENCODE TIMEOUT (s)</label>
+    <input type="text" id="timeout_seconds" name="timeout_seconds" value="{{ settings.render_defaults.timeout_seconds }}" style="margin:6px 0 22px;">
+
+    <label class="field-label" style="display:block; margin-bottom:10px;">QUOTE MATCHING</label>
+
+    <div class="field-row" style="margin-bottom:16px;">
+      <div style="flex:1;">
+        <label class="field-label" for="min_score">MIN SCORE</label>
+        <input type="text" id="min_score" name="min_score" value="{{ settings.quote_match.min_score }}" style="margin-top:6px;">
+      </div>
+      <div style="flex:1;">
+        <label class="field-label" for="confident_score">CONFIDENT SCORE</label>
+        <input type="text" id="confident_score" name="confident_score" value="{{ settings.quote_match.confident_score }}" style="margin-top:6px;">
+      </div>
+    </div>
+
+    <div class="field-row" style="margin-bottom:16px;">
+      <div style="flex:1;">
+        <label class="field-label" for="candidate_limit">CANDIDATE LIMIT</label>
+        <input type="text" id="candidate_limit" name="candidate_limit" value="{{ settings.quote_match.candidate_limit }}" style="margin-top:6px;">
+      </div>
+      <div style="flex:1;">
+        <label class="field-label" for="library_per_title_limit">PER-TITLE LIMIT (library search)</label>
+        <input type="text" id="library_per_title_limit" name="library_per_title_limit" value="{{ settings.quote_match.library_per_title_limit }}" style="margin-top:6px;">
+      </div>
+    </div>
+
+    <div class="field-row" style="margin-bottom:20px;">
+      <div style="flex:1;">
+        <label class="field-label" for="max_window_gap_seconds">MERGE GAP (s)</label>
+        <input type="text" id="max_window_gap_seconds" name="max_window_gap_seconds" value="{{ settings.quote_match.max_window_gap_seconds }}" style="margin-top:6px;">
+      </div>
+      <div style="flex:1;">
+        <label class="field-label" for="context_lines">CONTEXT LINES</label>
+        <input type="text" id="context_lines" name="context_lines" value="{{ settings.quote_match.context_lines }}" style="margin-top:6px;">
+      </div>
+    </div>
+
+    <button class="btn btn-primary" type="submit">Save</button>
+  </form>
+
+  {% include "settings_rerun_card.html" %}
+</div>

@@ -1,0 +1,18 @@
+<div id="settings-content">
+  <div class="page-header"><h1>Settings</h1><p>Configuration CineSnip doesn't need to ask for during first-run setup.</p></div>
+  {% include "settings_tabs.html" %}
+
+  <div class="card" style="margin-top:18px; max-width:520px;">
+    <label class="field-label">DISCORD BOT TOKEN</label>
+    <p style="font-family: var(--font-mono); font-size: 13px; color: var(--text-secondary); margin:10px 0 0;">
+      &bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;{{ settings.discord_token[-4:] if settings.discord_token else "" }}
+    </p>
+    <p class="footnote" style="text-align:left; max-width:none; margin:12px 0 18px;">
+      This only rewrites your Discord bot token — Plex, libraries, and
+      render/cache settings on the other tabs here are untouched.
+    </p>
+    <a href="/wizard/discord" class="btn btn-primary" style="text-decoration:none; display:inline-block;">Edit Discord connection &rarr;</a>
+  </div>
+
+  {% include "settings_rerun_card.html" %}
+</div>
