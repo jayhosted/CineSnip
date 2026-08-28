@@ -13,6 +13,14 @@
 <body>
 <div class="app-shell">
 
+  <div class="mobile-topbar">
+    <button type="button" class="hamburger-btn" aria-label="Open menu" onclick="cinesnipOpenNav()">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+    </button>
+    <span class="mobile-topbar-title">CineSnip</span>
+  </div>
+  <div class="sidebar-backdrop" onclick="cinesnipCloseNav()"></div>
+
   <div class="sidebar">
     <div class="sidebar-logo">
       <svg width="23" height="23" viewBox="0 0 240 240"><circle cx="120" cy="120" r="119" fill="var(--icon-black)"/><g transform="rotate(-40 120 120)"><rect x="20" y="89" width="96" height="62" rx="9" fill="var(--strip-grey)"/><rect x="30" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="52" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="73" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="95" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="30" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="52" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="73" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="95" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="35" y="107" width="26" height="26" rx="5" fill="var(--icon-black)"/><rect x="75" y="107" width="26" height="26" rx="5" fill="var(--icon-black)"/><rect x="128" y="89" width="96" height="62" rx="9" fill="var(--strip-grey)"/><rect x="138" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="160" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="181" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="203" y="94" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="138" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="160" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="181" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="203" y="135" width="11" height="11" rx="2.5" fill="var(--icon-black)"/><rect x="143" y="107" width="26" height="26" rx="5" fill="var(--icon-black)"/><rect x="183" y="107" width="26" height="26" rx="5" fill="var(--icon-black)"/><rect x="119" y="80" width="6" height="80" rx="3" fill="var(--accent)"/></g></svg>
@@ -38,5 +46,18 @@
   </div>
 
 </div>
+<script>
+  // Full page navigations (every sidebar link, every htmx target in this
+  // app) reset the drawer's open state for free — no persisted state to
+  // manage here, just show/hide.
+  function cinesnipOpenNav() {
+    document.querySelector('.sidebar').classList.add('open');
+    document.querySelector('.sidebar-backdrop').classList.add('show');
+  }
+  function cinesnipCloseNav() {
+    document.querySelector('.sidebar').classList.remove('open');
+    document.querySelector('.sidebar-backdrop').classList.remove('show');
+  }
+</script>
 </body>
 </html>
