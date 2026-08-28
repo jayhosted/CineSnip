@@ -1,7 +1,10 @@
+import asyncio
 import json
 
 import pytest
 
+from app.worker import search_index
+from app.worker.plex_client import MovieResult
 from app.worker.subtitles import (
     SubtitleParseError,
     SubtitleStreamInfo,
@@ -10,6 +13,7 @@ from app.worker.subtitles import (
     choose_subtitle_stream,
     delete_cached_subtitles,
     find_sidecar_subtitle,
+    get_subtitles,
     parse_srt,
     read_cached_subtitles,
     read_sidecar_srt,
@@ -132,7 +136,16 @@ def test_read_sidecar_srt_falls_back_to_latin1(tmp_path):
     assert "caf" in text
 
 
-# --- cache round-trip -------------------------------------------------------
+# --- cache round-trip (legacy JSON-file helpers) ---------------------------
+#
+# cache_path_for_guid/read_cached_subtitles/write_cached_subtitles/
+# delete_cached_subtitles themselves are untouched by the search_index
+# migration (Task 3 only swaps get_subtitles()'s own persistence — see the
+# "get_subtitles() orchestration" section below) because library_sync.py,
+# quotes.py, library_search.py, and api.py's /subtitles diagnostic route
+# still call them directly for their own JSON-cache-based logic; migrating
+# those is later tasks' scope. These tests keep covering that they still
+# work exactly as before.
 
 
 def test_cache_round_trip(tmp_path):
@@ -259,6 +272,225 @@ def test_cache_paths_for_special_character_guids_are_filesystem_safe(tmp_path):
         assert "/" not in path.name
         assert ":" not in path.name
         assert "?" not in path.name
+
+
+# --- get_subtitles() orchestration (search_index-backed) -------------------
+
+
+def _movie(guid="plex://movie/abc", rating_key=101, title="Film", library_name="Movies"):
+    return MovieResult(
+        rating_key=rating_key,
+        title=title,
+        year=2000,
+        duration_ms=1000,
+        thumb_url=None,
+        plex_path="D:\\Movies\\Film.mkv",
+        guid=guid,
+        library_name=library_name,
+    )
+
+
+async def _no_embedded_streams(*args, **kwargs):
+    return []
+
+
+def test_get_subtitles_caches_sidecar_result_in_search_index(tmp_path):
+    video = tmp_path / "Film.mkv"
+    video.write_text("video bytes")
+    sidecar = tmp_path / "Film.srt"
+    sidecar.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+    db_path = tmp_path / "search_index.db"
+    movie = _movie()
+
+    result = asyncio.run(get_subtitles(movie, str(video), tmp_path, db_path))
+
+    assert result.source is SubtitleSource.SIDECAR
+    assert [e.text for e in result.entries] == ["Hello"]
+    assert result.sidecar_path == str(sidecar)
+
+    # Written straight into search_index, not a JSON file.
+    assert search_index.get_entries(db_path, movie.guid) == result.entries
+
+
+def test_get_subtitles_sidecar_result_is_a_true_cache_hit_on_second_call(
+    tmp_path, monkeypatch
+):
+    video = tmp_path / "Film.mkv"
+    video.write_text("video bytes")
+    sidecar = tmp_path / "Film.srt"
+    sidecar.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+    db_path = tmp_path / "search_index.db"
+    movie = _movie()
+
+    first = asyncio.run(get_subtitles(movie, str(video), tmp_path, db_path))
+
+    def _boom(path):
+        raise AssertionError("sidecar should not be re-read on a cache hit")
+
+    monkeypatch.setattr("app.worker.subtitles.read_sidecar_srt", _boom)
+
+    second = asyncio.run(get_subtitles(movie, str(video), tmp_path, db_path))
+    assert second == first
+
+
+def test_get_subtitles_sidecar_cache_invalidated_when_sidecar_changes(tmp_path):
+    video = tmp_path / "Film.mkv"
+    video.write_text("video bytes")
+    sidecar = tmp_path / "Film.srt"
+    sidecar.write_text("1\n00:00:01,000 --> 00:00:02,000\nOriginal\n")
+    db_path = tmp_path / "search_index.db"
+    movie = _movie()
+
+    first = asyncio.run(get_subtitles(movie, str(video), tmp_path, db_path))
+    assert [e.text for e in first.entries] == ["Original"]
+
+    sidecar.write_text("1\n00:00:01,000 --> 00:00:02,000\nResynced\n")
+    second = asyncio.run(get_subtitles(movie, str(video), tmp_path, db_path))
+    assert [e.text for e in second.entries] == ["Resynced"]
+
+
+def test_get_subtitles_sidecar_cache_invalidated_when_sidecar_removed(
+    tmp_path, monkeypatch
+):
+    video = tmp_path / "Film.mkv"
+    video.write_text("video bytes")
+    sidecar = tmp_path / "Film.srt"
+    sidecar.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+    db_path = tmp_path / "search_index.db"
+    movie = _movie()
+
+    first = asyncio.run(get_subtitles(movie, str(video), tmp_path, db_path))
+    assert first.source is SubtitleSource.SIDECAR
+
+    sidecar.unlink()
+    monkeypatch.setattr(
+        "app.worker.subtitles.probe_subtitle_streams", _no_embedded_streams
+    )
+
+    second = asyncio.run(get_subtitles(movie, str(video), tmp_path, db_path))
+    assert second.source is SubtitleSource.NONE
+    assert second.entries == []
+
+
+def test_get_subtitles_embedded_cache_not_invalidated_by_unrelated_sidecar_appearing(
+    tmp_path, monkeypatch
+):
+    video = tmp_path / "Film.mkv"
+    video.write_text("video bytes")
+    db_path = tmp_path / "search_index.db"
+    movie = _movie()
+
+    stream = SubtitleStreamInfo(
+        relative_index=0,
+        codec_name="subrip",
+        language="eng",
+        title=None,
+        forced=False,
+        hearing_impaired=False,
+    )
+
+    async def _one_stream(*args, **kwargs):
+        return [stream]
+
+    async def _extracted_text(*args, **kwargs):
+        return "1\n00:00:01,000 --> 00:00:02,000\nEmbedded line\n"
+
+    monkeypatch.setattr("app.worker.subtitles.probe_subtitle_streams", _one_stream)
+    monkeypatch.setattr(
+        "app.worker.subtitles.extract_embedded_subtitle", _extracted_text
+    )
+
+    first = asyncio.run(get_subtitles(movie, str(video), tmp_path, db_path))
+    assert first.source is SubtitleSource.EMBEDDED
+
+    # A sidecar shows up afterwards, unrelated to what produced the cached
+    # EMBEDDED result — must not be treated as invalidating it.
+    (tmp_path / "Film.srt").write_text("a sidecar that didn't exist when cached")
+
+    async def _boom(*args, **kwargs):
+        raise AssertionError("embedded subtitle should not be re-extracted")
+
+    monkeypatch.setattr("app.worker.subtitles.extract_embedded_subtitle", _boom)
+
+    second = asyncio.run(get_subtitles(movie, str(video), tmp_path, db_path))
+    assert second == first
+
+
+def test_get_subtitles_embedded_cache_invalidated_when_video_changes(
+    tmp_path, monkeypatch
+):
+    video = tmp_path / "Film.mkv"
+    video.write_text("video bytes")
+    db_path = tmp_path / "search_index.db"
+    movie = _movie()
+
+    stream = SubtitleStreamInfo(
+        relative_index=0,
+        codec_name="subrip",
+        language="eng",
+        title=None,
+        forced=False,
+        hearing_impaired=False,
+    )
+
+    async def _one_stream(*args, **kwargs):
+        return [stream]
+
+    async def _extracted_text(*args, **kwargs):
+        return "1\n00:00:01,000 --> 00:00:02,000\nEmbedded line\n"
+
+    monkeypatch.setattr("app.worker.subtitles.probe_subtitle_streams", _one_stream)
+    monkeypatch.setattr(
+        "app.worker.subtitles.extract_embedded_subtitle", _extracted_text
+    )
+
+    first = asyncio.run(get_subtitles(movie, str(video), tmp_path, db_path))
+    assert first.source is SubtitleSource.EMBEDDED
+
+    video.write_text("a re-remuxed file with different bytes")
+
+    reextracted = False
+
+    async def _extracted_text_v2(*args, **kwargs):
+        nonlocal reextracted
+        reextracted = True
+        return "1\n00:00:01,000 --> 00:00:02,000\nRe-extracted line\n"
+
+    monkeypatch.setattr(
+        "app.worker.subtitles.extract_embedded_subtitle", _extracted_text_v2
+    )
+
+    second = asyncio.run(get_subtitles(movie, str(video), tmp_path, db_path))
+    assert reextracted is True
+    assert [e.text for e in second.entries] == ["Re-extracted line"]
+
+
+def test_get_subtitles_no_subtitles_result_is_cached_and_stays_fresh(
+    tmp_path, monkeypatch
+):
+    video = tmp_path / "Film.mkv"
+    video.write_text("video bytes")
+    db_path = tmp_path / "search_index.db"
+    movie = _movie()
+
+    monkeypatch.setattr(
+        "app.worker.subtitles.probe_subtitle_streams", _no_embedded_streams
+    )
+
+    first = asyncio.run(get_subtitles(movie, str(video), tmp_path, db_path))
+    assert first.source is SubtitleSource.NONE
+    assert search_index.get_entries(db_path, movie.guid) == []
+
+    # A NONE result has no source file to fingerprint, so it's always
+    # served from cache once recorded -- prove it by making a repeat probe
+    # blow up if it's ever attempted again.
+    async def _boom(*args, **kwargs):
+        raise AssertionError("should not re-probe once cached as NONE")
+
+    monkeypatch.setattr("app.worker.subtitles.probe_subtitle_streams", _boom)
+
+    second = asyncio.run(get_subtitles(movie, str(video), tmp_path, db_path))
+    assert second == first
 
 
 # --- choose_subtitle_stream -------------------------------------------------

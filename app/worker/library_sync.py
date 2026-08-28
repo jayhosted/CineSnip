@@ -108,6 +108,7 @@ async def sync_one_title(settings: Settings, item: MovieResult, *, force: bool =
             item,
             container_path,
             settings.cache_dir,
+            settings.quote_index_db_path,
             ffprobe_timeout=timeout,
             ffmpeg_timeout=timeout,
         )

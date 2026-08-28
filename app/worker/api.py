@@ -371,6 +371,7 @@ def create_app(settings: Settings) -> FastAPI:
                     movie,
                     container_path,
                     settings.cache_dir,
+                    settings.quote_index_db_path,
                     ffprobe_timeout=timeout,
                     ffmpeg_timeout=timeout,
                 )
@@ -436,6 +437,7 @@ def create_app(settings: Settings) -> FastAPI:
                 movie,
                 container_path,
                 settings.cache_dir,
+                settings.quote_index_db_path,
                 ffprobe_timeout=timeout,
                 ffmpeg_timeout=timeout,
             )
@@ -603,6 +605,7 @@ def create_app(settings: Settings) -> FastAPI:
                 episode,
                 container_path,
                 settings.cache_dir,
+                settings.quote_index_db_path,
                 ffprobe_timeout=timeout,
                 ffmpeg_timeout=timeout,
             )
