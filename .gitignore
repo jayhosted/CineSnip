@@ -17,3 +17,6 @@ venv/
 
 # Testing
 .pytest_cache/
+
+# Claude Code local settings/skills (installed tooling, personal hook config)
+.claude/
