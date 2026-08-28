@@ -60,15 +60,27 @@ a:hover { color: var(--accent-strong); }
 .step-nav .rule { width: 36px; height: 1.5px; background: var(--border); }
 .step-nav .rule.done { background: var(--accent); }
 
+@media (max-width: 480px) {
+  /* Four dots + labels + rules don't fit a phone-width step nav — drop the
+     labels and shrink the connecting rules rather than letting it wrap
+     into a ragged two-line mess or force horizontal scroll on the whole
+     page. */
+  .shell { padding: 32px 16px; }
+  .step-nav { gap: 4px; margin-bottom: 32px; }
+  .step-nav .label { display: none; }
+  .step-nav .rule { width: 14px; }
+}
+
 .card {
-  width: 460px;
+  width: 100%;
+  max-width: 460px;
   background: var(--surface);
   border: 1px solid var(--border-subtle);
   border-radius: 14px;
   padding: 40px 36px;
   box-shadow: 0 20px 60px -20px rgb(0 0 0 / 0.5);
 }
-.card.wide { width: 620px; }
+.card.wide { max-width: 620px; }
 .card h1 { font-family: var(--font-display); font-size: 19px; font-weight: 600; margin: 0 0 6px; }
 .card p.desc { font-size: 14px; line-height: 1.6; color: var(--text-secondary); margin: 0 0 24px; }
 
@@ -224,10 +236,46 @@ form.htmx-request .btn[type="submit"] .btn-label-idle { display: none; }
 .navitem.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .sidebar-footer { margin-top: auto; padding: 10px 12px; font-size: 11.5px; color: var(--text-tertiary); }
 
-.main-content { flex: 1; padding: 32px 40px; max-width: 1160px; }
+.main-content { flex: 1; min-width: 0; padding: 32px 40px; max-width: 1160px; }
 .page-header { margin-bottom: 22px; }
 .page-header h1 { font-family: var(--font-display); font-size: 22px; font-weight: 600; margin: 0 0 4px; }
 .page-header p { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
+
+.mobile-topbar { display: none; }
+.sidebar-backdrop { display: none; }
+
+@media (max-width: 860px) {
+  /* Below this, the fixed 220px sidebar plus the generate grid's fixed
+     400px left column no longer leave enough room for real content —
+     confirmed by measuring actual overflow (1182px of content in a
+     386px viewport) rather than guessing at a breakpoint. The sidebar
+     becomes an off-canvas drawer behind a hamburger button in a mobile
+     top bar; app-shell stacks the (now-hidden-by-default) sidebar and
+     main content vertically instead of side by side. */
+  .app-shell { flex-direction: column; }
+
+  .mobile-topbar {
+    display: flex; align-items: center; gap: 12px; padding: 14px 16px;
+    background: var(--sidebar); border-bottom: 1px solid var(--border-subtle);
+    position: sticky; top: 0; z-index: 30;
+  }
+  .hamburger-btn {
+    background: none; border: none; color: var(--text); cursor: pointer;
+    padding: 4px; display: flex; align-items: center;
+  }
+  .mobile-topbar-title { font-family: var(--font-display); font-weight: 600; font-size: 15px; }
+
+  .sidebar {
+    position: fixed; top: 0; bottom: 0; left: -240px; width: 220px; z-index: 50;
+    transition: left 0.2s ease; box-shadow: 0 0 40px rgb(0 0 0 / 0.45);
+  }
+  .sidebar.open { left: 0; }
+  .sidebar-backdrop.show {
+    display: block; position: fixed; inset: 0; background: rgb(0 0 0 / 0.5); z-index: 40;
+  }
+
+  .main-content { padding: 20px 16px; }
+}
 
 /* /generate — two-column layout matching the approved design canvas
    (Generate.dc.html). Reuses .card/.field-label/.btn/.error-banner/
@@ -340,3 +388,16 @@ form.htmx-request .btn[type="submit"] .btn-label-idle { display: none; }
 }
 
 input[type="text"]:disabled { opacity: 0.6; cursor: not-allowed; }
+
+@media (max-width: 860px) {
+  /* Same breakpoint as the sidebar-drawer rules above — the fixed 400px
+     left column is what actually caused the measured overflow, not the
+     sidebar alone. Preview card moves below the form instead of beside it. */
+  .generate-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 480px) {
+  /* Side-by-side timecode/season-episode pairs get too cramped once the
+     card itself is down near phone width — stack them instead. */
+  .field-row { flex-direction: column; }
+}
