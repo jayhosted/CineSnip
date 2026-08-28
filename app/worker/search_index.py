@@ -266,6 +266,19 @@ def remove_title(db_path: Path, guid: str) -> None:
         conn.execute("DELETE FROM titles WHERE title_id = ?", (title_id,))
 
 
+def get_title_id(db_path: Path, guid: str) -> int | None:
+    """guid -> title_id lookup, needed by library_search.py's fast path to
+    filter a caller-supplied list[CachedTitle] (which carries no title_id of
+    its own — a CachedTitle built synthetically for a request, e.g. TV
+    whole-show search, has no such field) down to the survivors of
+    search_title_ids()."""
+    if not db_path.exists():
+        return None
+    with _connect(db_path) as conn:
+        row = conn.execute("SELECT title_id FROM titles WHERE guid = ?", (guid,)).fetchone()
+    return row[0] if row is not None else None
+
+
 def search_title_ids(db_path: Path, tokens: list[str], limit: int = 4000) -> list[int]:
     if not tokens:
         return []
