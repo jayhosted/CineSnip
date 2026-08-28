@@ -14,9 +14,11 @@ from app.worker.quote_index import (
     list_cached_titles,
     list_cached_titles_for_library,
     list_cached_titles_missing_source,
+    get_library_item_count,
     remove_cached_title,
     reset_stale_running_status,
     set_cached_title_source,
+    set_library_item_count,
     set_section_updated_at,
     start_sync_run,
     tail_sync_log,
@@ -278,3 +280,29 @@ def test_latest_sync_log_seq_tracks_inserts(tmp_path):
 
     append_sync_log(db_path, "two")
     assert latest_sync_log_seq(db_path) == first_seq + 1
+
+
+def test_set_and_get_library_item_count_round_trip(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    set_library_item_count(db_path, "Movies", 5000)
+
+    assert get_library_item_count(db_path, "Movies") == 5000
+
+
+def test_set_library_item_count_overwrites_on_second_set(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    set_library_item_count(db_path, "Movies", 5000)
+    set_library_item_count(db_path, "Movies", 5100)
+
+    assert get_library_item_count(db_path, "Movies") == 5100
+
+
+def test_get_library_item_count_on_missing_db_returns_none(tmp_path):
+    assert get_library_item_count(tmp_path / "does-not-exist.db", "Movies") is None
+
+
+def test_get_library_item_count_for_unknown_library_returns_none(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    set_library_item_count(db_path, "Movies", 5000)
+
+    assert get_library_item_count(db_path, "TV Shows") is None

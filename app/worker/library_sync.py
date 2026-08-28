@@ -20,6 +20,7 @@ from app.worker.quote_index import (
     list_cached_titles_missing_source,
     remove_cached_title,
     set_cached_title_source,
+    set_library_item_count,
     set_section_updated_at,
     start_sync_run,
     update_sync_progress,
@@ -168,6 +169,7 @@ async def sync_library(
         return result
 
     total_items = len(live_items)
+    set_library_item_count(settings.quote_index_db_path, library_name, total_items)
     append_sync_log(
         settings.quote_index_db_path, f"Checking library: {library_name} — {total_items} items"
     )

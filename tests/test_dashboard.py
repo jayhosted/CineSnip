@@ -12,35 +12,16 @@ def _settings(tmp_path, library_names: list[str]) -> Settings:
     )
 
 
-class _FakePlexByName:
-    """Keyed by section identity isn't practical for a fake — instead this
-    fake's enumerate_section looks up counts via a small wrapper object
-    library_sections() returns, so _coverage_stats' `sections.get(name)`
-    -> `plex.enumerate_section(section)` round-trip works without needing
-    real plexapi Section objects."""
-
-    class _Section:
-        def __init__(self, count: int):
-            self.count = count
-
-    def __init__(self, section_counts: dict[str, int]):
-        self._counts = section_counts
-
-    def library_sections(self):
-        return [(name, self._Section(count)) for name, count in self._counts.items()]
-
-    def enumerate_section(self, section):
-        return [object()] * section.count
-
-
 def test_coverage_stats_aggregates_across_libraries(tmp_path):
     settings = _settings(tmp_path, ["Movies", "3D"])
     quote_index.upsert_cached_title(settings.quote_index_db_path, "g1", 1, "F1", "Movies", "sidecar")
     quote_index.upsert_cached_title(settings.quote_index_db_path, "g2", 2, "F2", "Movies", "embedded")
     quote_index.upsert_no_subtitle_title(settings.quote_index_db_path, "g3", 3, "F3", "Movies")
     quote_index.upsert_cached_title(settings.quote_index_db_path, "g4", 4, "F4", "3D", "sidecar")
+    quote_index.set_library_item_count(settings.quote_index_db_path, "Movies", 5)
+    quote_index.set_library_item_count(settings.quote_index_db_path, "3D", 2)
 
-    holder = SettingsHolder(settings=settings, plex_client=_FakePlexByName({"Movies": 5, "3D": 2}))
+    holder = SettingsHolder(settings=settings, plex_client=None)
 
     stats = _coverage_stats(holder)
 
@@ -50,7 +31,7 @@ def test_coverage_stats_aggregates_across_libraries(tmp_path):
     )
 
 
-def test_coverage_stats_handles_no_plex_client(tmp_path):
+def test_coverage_stats_handles_no_persisted_count_yet(tmp_path):
     settings = _settings(tmp_path, ["Movies"])
     holder = SettingsHolder(settings=settings, plex_client=None)
 
@@ -62,7 +43,7 @@ def test_coverage_stats_handles_no_plex_client(tmp_path):
 
 def test_coverage_stats_handles_no_libraries_configured(tmp_path):
     settings = _settings(tmp_path, [])
-    holder = SettingsHolder(settings=settings, plex_client=_FakePlexByName({}))
+    holder = SettingsHolder(settings=settings, plex_client=None)
 
     stats = _coverage_stats(holder)
 
