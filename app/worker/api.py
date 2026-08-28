@@ -171,11 +171,22 @@ def _resolve_container_path(movie: MovieResult, settings: Settings) -> str:
 
 
 def _index_if_searchable(settings: Settings, movie: MovieResult, result: SubtitleResult) -> None:
-    # Only titles with real, usable subtitles are worth surfacing from
-    # /snip-search — a NONE result (Section 5's documented gap) has no
-    # entries to search, so indexing it would only cost lookups for nothing.
+    # Every title actually checked gets *some* record — a searchable
+    # result goes into cached_titles (with its source type, for the
+    # dashboard's coverage stats), a NONE result goes into
+    # no_subtitle_titles instead (Section 5's documented gap: not
+    # searchable, but still worth knowing "this was checked").
     if result.source is not SubtitleSource.NONE and result.entries:
         quote_index.upsert_cached_title(
+            settings.quote_index_db_path,
+            result.guid,
+            movie.rating_key,
+            movie.title,
+            movie.library_name,
+            result.source.value,
+        )
+    elif result.source is SubtitleSource.NONE:
+        quote_index.upsert_no_subtitle_title(
             settings.quote_index_db_path,
             result.guid,
             movie.rating_key,
