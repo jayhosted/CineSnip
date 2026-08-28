@@ -1,7 +1,7 @@
 import asyncio
 
 from app.settings import LibraryConfig, PathMapping, Settings
-from app.worker import quote_index
+from app.worker import quote_index, search_index
 from app.worker.library_sync import _mount_check, sync_library
 from app.worker.plex_client import MovieResult
 from app.worker.subtitles import (
@@ -41,19 +41,22 @@ def _item(guid, rating_key, title="Film", library_name="Movies", plex_path="D:\\
     )
 
 
-def _precache(settings: Settings, guid: str, library_name: str = "Movies") -> None:
-    # Makes sync_one_title() treat this title as already cached (a bare
-    # existence check), so tests exercise the sync/removal orchestration
-    # without needing real Plex/ffmpeg access.
-    write_cached_subtitles(
-        settings.cache_dir,
-        SubtitleResult(
-            guid=guid,
-            source=SubtitleSource.SIDECAR,
-            entries=[SubtitleEntry(index=1, start=0.0, end=1.0, text="Hi")],
-        ),
+def _precache(settings: Settings, guid: str, library_name: str = "Movies", rating_key: int = 1) -> None:
+    # Makes sync_one_title() treat this title as already indexed (via
+    # search_index, the authoritative store), so tests exercise the
+    # sync/removal orchestration without needing real Plex/ffmpeg access.
+    search_index.upsert_title(
+        settings.quote_index_db_path,
+        guid,
+        rating_key,
+        "Film",
+        library_name,
+        "sidecar",
+        None,
+        None,
+        [SubtitleEntry(index=1, start=0.0, end=1.0, text="Hi")],
+        None,
     )
-    quote_index.upsert_cached_title(settings.quote_index_db_path, guid, 1, "Film", library_name, "sidecar")
 
 
 class _FakePlex:
@@ -161,9 +164,9 @@ def test_mount_check_failure_blocks_removal_but_not_addition(tmp_path):
 
     assert result.removal_skipped_reason == "mount_check_failed"
     assert result.removed == 0
-    # The removed title's cache must still be intact.
+    # The removed title's index entry must still be intact.
     assert quote_index.get_section_updated_at(settings.quote_index_db_path, "Movies") == 100
-    assert any(t.guid == "guid-removed" for t in quote_index.list_cached_titles(settings.quote_index_db_path))
+    assert any(t.guid == "guid-removed" for t in search_index.list_titles(settings.quote_index_db_path))
 
 
 def test_spot_check_failure_blocks_removal(tmp_path):
@@ -188,7 +191,7 @@ def test_spot_check_failure_blocks_removal(tmp_path):
 
 
 from app.worker.library_sync import sync_one_title
-from app.worker.quote_index import has_cached_title, is_no_subtitle_title, library_coverage
+from app.worker.quote_index import is_no_subtitle_title
 
 
 def test_sync_one_title_records_no_subtitle_titles(tmp_path):
@@ -200,21 +203,19 @@ def test_sync_one_title_records_no_subtitle_titles(tmp_path):
     # once ffprobe/ffmpeg see a genuinely nonexistent/unmapped file... but
     # to keep this test hermetic (no real ffmpeg/ffprobe process), precache
     # a NONE result directly instead of exercising get_subtitles().
-    from app.worker.subtitles import SubtitleResult, SubtitleSource, write_cached_subtitles
     write_cached_subtitles(settings.cache_dir, SubtitleResult(guid="guid-1", source=SubtitleSource.NONE, entries=[]))
 
     outcome = asyncio.run(sync_one_title(settings, item))
 
     assert outcome.startswith("CACHED (backfilled index)")
     assert is_no_subtitle_title(settings.quote_index_db_path, "guid-1") is True
-    assert has_cached_title(settings.quote_index_db_path, "guid-1") is False
+    assert search_index.has_title(settings.quote_index_db_path, "guid-1") is False
 
 
 def test_sync_one_title_backfills_legacy_cached_title_missing_from_index(tmp_path):
     settings = _settings(tmp_path)
     item = _item("guid-1", 101, title="Film One")
 
-    from app.worker.subtitles import SubtitleEntry, SubtitleResult, SubtitleSource, write_cached_subtitles
     write_cached_subtitles(
         settings.cache_dir,
         SubtitleResult(
@@ -222,24 +223,44 @@ def test_sync_one_title_backfills_legacy_cached_title_missing_from_index(tmp_pat
             entries=[SubtitleEntry(index=1, start=0.0, end=1.0, text="Hi")],
         ),
     )
-    # Deliberately NOT calling quote_index.upsert_cached_title — simulates
-    # a cache file from before source/no-subtitle tracking existed.
+    # Deliberately not writing into search_index — simulates a legacy cache
+    # file from before this migration (or before source/no-subtitle
+    # tracking existed at all).
+    assert search_index.has_title(settings.quote_index_db_path, "guid-1") is False
 
     outcome = asyncio.run(sync_one_title(settings, item))
 
     assert outcome.startswith("CACHED (backfilled index)")
-    assert has_cached_title(settings.quote_index_db_path, "guid-1") is True
-    coverage = library_coverage(settings.quote_index_db_path, "Movies")
-    assert coverage.sidecar_count == 1
+    assert search_index.has_title(settings.quote_index_db_path, "guid-1") is True
+    source, sidecar_path, stream_index = search_index.get_source_info(
+        settings.quote_index_db_path, "guid-1"
+    )
+    assert source == "sidecar"
+    entries = search_index.get_entries(settings.quote_index_db_path, "guid-1")
+    assert len(entries) == 1
+    assert entries[0].text == "Hi"
 
 
 def test_sync_one_title_skips_already_indexed_no_subtitle_title(tmp_path, monkeypatch):
     settings = _settings(tmp_path)
     item = _item("guid-1", 101)
 
-    from app.worker.subtitles import SubtitleResult, SubtitleSource, write_cached_subtitles
     write_cached_subtitles(settings.cache_dir, SubtitleResult(guid="guid-1", source=SubtitleSource.NONE, entries=[]))
     quote_index.upsert_no_subtitle_title(settings.quote_index_db_path, "guid-1", 101, "Film", "Movies")
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("read_cached_subtitles should not be called for an already-indexed title")
+    monkeypatch.setattr("app.worker.library_sync.read_cached_subtitles", _boom)
+
+    outcome = asyncio.run(sync_one_title(settings, item))
+
+    assert outcome.startswith("CACHED (already have it)")
+
+
+def test_sync_one_title_skips_already_indexed_search_index_title(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    item = _item("guid-1", 101)
+    _precache(settings, "guid-1")
 
     def _boom(*args, **kwargs):
         raise AssertionError("read_cached_subtitles should not be called for an already-indexed title")
@@ -344,8 +365,13 @@ from app.worker.quote_index import list_cached_titles_missing_source
 
 
 def test_backfill_missing_source_values_reads_from_cache_json(tmp_path):
+    # backfill_missing_source_values still targets the old
+    # quote_index.cached_titles table deliberately — app/worker/api.py's
+    # live single-title request path still writes rows there directly, so
+    # the table (and this backfill) aren't dead yet even though
+    # library_sync.py itself no longer writes it. See that function's
+    # docstring.
     settings = _settings(tmp_path)
-    from app.worker.subtitles import SubtitleEntry, SubtitleResult, SubtitleSource, write_cached_subtitles
     write_cached_subtitles(
         settings.cache_dir,
         SubtitleResult(
@@ -374,7 +400,6 @@ def test_backfill_missing_source_values_skips_rows_with_no_cache_file(tmp_path):
 
 def test_backfill_missing_source_values_is_idempotent(tmp_path):
     settings = _settings(tmp_path)
-    from app.worker.subtitles import SubtitleEntry, SubtitleResult, SubtitleSource, write_cached_subtitles
     write_cached_subtitles(
         settings.cache_dir,
         SubtitleResult(
@@ -399,6 +424,17 @@ def test_both_guards_pass_deletes_removed_title_and_updates_state(tmp_path):
     settings = _settings(tmp_path, mappings=mappings)
 
     _precache(settings, "guid-removed")
+    # A legacy JSON cache file also happens to exist for this guid (e.g.
+    # left over from before this migration) — removal must not touch it,
+    # since deleting legacy JSON is explicitly out of scope for this
+    # migration.
+    write_cached_subtitles(
+        settings.cache_dir,
+        SubtitleResult(
+            guid="guid-removed", source=SubtitleSource.SIDECAR,
+            entries=[SubtitleEntry(index=1, start=0.0, end=1.0, text="Hi")],
+        ),
+    )
     quote_index.set_section_updated_at(settings.quote_index_db_path, "Movies", 100)
 
     plex = _FakePlex(
@@ -409,6 +445,7 @@ def test_both_guards_pass_deletes_removed_title_and_updates_state(tmp_path):
 
     assert result.removal_skipped_reason is None
     assert result.removed == 1
-    assert quote_index.list_cached_titles(settings.quote_index_db_path) == []
-    assert read_cached_subtitles(settings.cache_dir, "guid-removed") is None
+    assert search_index.list_titles(settings.quote_index_db_path) == []
+    # Legacy JSON is left alone, not deleted.
+    assert read_cached_subtitles(settings.cache_dir, "guid-removed") is not None
     assert quote_index.get_section_updated_at(settings.quote_index_db_path, "Movies") == 200

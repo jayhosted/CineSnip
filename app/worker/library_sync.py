@@ -8,6 +8,7 @@ import random
 from dataclasses import dataclass
 
 from app.settings import Settings, SettingsError
+from app.worker import search_index
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 from app.worker.plex_client import MovieResult, PlexClient
 from app.worker.quote_index import (
@@ -15,24 +16,18 @@ from app.worker.quote_index import (
     finish_sync_run,
     get_library_item_count,
     get_section_updated_at,
-    has_cached_title,
     is_no_subtitle_title,
-    list_cached_titles_for_library,
     list_cached_titles_missing_source,
-    remove_cached_title,
     set_cached_title_source,
     set_library_item_count,
     set_section_updated_at,
     start_sync_run,
     update_sync_progress,
-    upsert_cached_title,
     upsert_no_subtitle_title,
 )
-from app.worker.quotes import delete_cached_candidates, get_or_build_candidates
 from app.worker.subtitles import (
     SubtitleSource,
     cache_path_for_guid,
-    delete_cached_subtitles,
     get_subtitles,
     read_cached_subtitles,
 )
@@ -63,34 +58,48 @@ class LibrarySyncResult:
 async def sync_one_title(settings: Settings, item: MovieResult, *, force: bool = False) -> str:
     """Extracted from scripts/build_full_cache.py's process_one() — the one
     shared implementation for both the manual script and the automatic
-    sync task. Skips a title entirely (bare file-existence check, no read/
-    parse) unless forced, so re-running this against an already-synced
-    library costs almost nothing — UNLESS the cache file exists but isn't
-    indexed yet (a title cached before source/no-subtitle tracking existed,
-    or a title only ever touched via /snip rather than a sync). That case
-    is self-healing: one cheap local JSON read (no ffmpeg) classifies and
-    backfills it, and it's never revisited after that.
+    sync task. Skips a title entirely once it's authoritatively indexed in
+    search_index (or no_subtitle_titles) unless forced, so re-running this
+    against an already-synced library costs almost nothing.
+
+    search_index is the authoritative gate, not legacy-JSON-file existence:
+    since get_subtitles() (Task 3) writes only into search_index and no
+    longer touches the legacy JSON cache, a title fully indexed there has
+    no JSON file at all — checking JSON existence first would wrongly fall
+    through to a full re-extraction on every run.
+
+    A title cached before this migration (or before source/no-subtitle
+    tracking existed) still has its legacy JSON file with nothing in
+    search_index yet. That case is self-healing: one cheap local JSON read
+    (no ffmpeg) classifies and backfills it into search_index, and it's
+    never revisited after that.
     """
     db_path = settings.quote_index_db_path
-    cache_file_exists = cache_path_for_guid(settings.cache_dir, item.guid).exists()
 
-    if not force and cache_file_exists:
-        already_indexed = has_cached_title(db_path, item.guid) or is_no_subtitle_title(db_path, item.guid)
+    if not force:
+        already_indexed = search_index.has_title(db_path, item.guid) or is_no_subtitle_title(db_path, item.guid)
         if already_indexed:
             return f"CACHED (already have it): {item.title}"
 
-        cached = read_cached_subtitles(settings.cache_dir, item.guid)
-        if cached is not None:
-            if cached.source is SubtitleSource.NONE:
-                upsert_no_subtitle_title(db_path, item.guid, item.rating_key, item.title, item.library_name)
-            else:
-                upsert_cached_title(
-                    db_path, item.guid, item.rating_key, item.title, item.library_name, cached.source.value
-                )
-                get_or_build_candidates(
-                    settings.cache_dir, cached.guid, cached.entries, settings.quote_match.max_window_gap_seconds
-                )
-            return f"CACHED (backfilled index): {item.title}"
+        if cache_path_for_guid(settings.cache_dir, item.guid).exists():
+            cached = read_cached_subtitles(settings.cache_dir, item.guid)
+            if cached is not None:
+                if cached.source is SubtitleSource.NONE:
+                    upsert_no_subtitle_title(db_path, item.guid, item.rating_key, item.title, item.library_name)
+                else:
+                    search_index.upsert_title(
+                        db_path,
+                        item.guid,
+                        item.rating_key,
+                        item.title,
+                        item.library_name,
+                        cached.source.value,
+                        cached.sidecar_path,
+                        cached.stream_index,
+                        cached.entries,
+                        None,  # same-release migration convenience, not relied on for freshness
+                    )
+                return f"CACHED (backfilled index): {item.title}"
 
     try:
         container_path = resolve_container_path(
@@ -116,14 +125,13 @@ async def sync_one_title(settings: Settings, item: MovieResult, *, force: bool =
         return f"ERROR: {item.title}: {exc}"
 
     if result.source is SubtitleSource.NONE:
+        # no_subtitle_titles is a separate table search_index doesn't own —
+        # get_subtitles() already wrote the NONE result into search_index
+        # itself, so this is the only bookkeeping left to do here.
         upsert_no_subtitle_title(db_path, result.guid, item.rating_key, item.title, item.library_name)
-    elif result.entries:
-        upsert_cached_title(
-            db_path, result.guid, item.rating_key, item.title, item.library_name, result.source.value
-        )
-        get_or_build_candidates(
-            settings.cache_dir, result.guid, result.entries, settings.quote_match.max_window_gap_seconds
-        )
+    # else: a searchable result. get_subtitles() (Task 3) already wrote it
+    # into search_index itself — no further write needed here, and
+    # candidates are never persisted in the new design.
 
     return f"OK ({result.source.value}, {len(result.entries)} entries): {item.title}"
 
@@ -197,7 +205,11 @@ async def sync_library(
         update_sync_progress(settings.quote_index_db_path, library_name, item.title, index, total_items)
 
     live_guids = {item.guid for item in live_items}
-    existing = list_cached_titles_for_library(settings.quote_index_db_path, library_name)
+    # search_index is authoritative for what sync_one_title has actually
+    # indexed (quote_index.cached_titles is no longer written by this
+    # file — see module docstring notes above), so the removal diff reads
+    # from there, not the old bookkeeping table.
+    existing = search_index.list_titles_for_library(settings.quote_index_db_path, library_name)
     removal_candidates = [t for t in existing if t.guid not in live_guids]
 
     if removal_candidates:
@@ -224,9 +236,10 @@ async def sync_library(
                 return result
 
         for cached in removal_candidates:
-            remove_cached_title(settings.quote_index_db_path, cached.guid)
-            delete_cached_subtitles(settings.cache_dir, cached.guid)
-            delete_cached_candidates(settings.cache_dir, cached.guid)
+            search_index.remove_title(settings.quote_index_db_path, cached.guid)
+            # Legacy JSON (if any survives from before this migration) is
+            # deliberately left on disk untouched — deleting it isn't this
+            # migration's job.
             result.removed += 1
 
     # Only persisted once the cycle (including any removal work) has fully
@@ -301,6 +314,14 @@ def backfill_missing_source_values(settings: Settings) -> int:
     these). Only touches rows still missing it, so it's a cheap no-op on
     every startup after the first. Called from app/main.py at startup.
     Returns how many rows were backfilled, for a startup log line.
+
+    Left targeting the old quote_index.cached_titles table deliberately:
+    as of this file's search_index migration, library_sync.py itself no
+    longer writes cached_titles at all (search_index.upsert_title always
+    writes a non-null source, so there's nothing to backfill for rows it
+    produces) — but app/worker/api.py's live single-title request path
+    still calls quote_index.upsert_cached_title directly, so the table
+    isn't dead yet. Revisit once nothing writes cached_titles any more.
     """
     db_path = settings.quote_index_db_path
     backfilled = 0
