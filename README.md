@@ -216,6 +216,25 @@ is nearly free when nothing's changed (a handful of lightweight Plex calls,
 not a full library scan), so a short interval costs very little even on a
 quiet day.
 
+## Upgrading an existing install
+
+If you already had CineSnip running before its subtitle search moved to
+SQLite+FTS5, your existing per-title JSON cache isn't automatically
+migrated into the new index — after upgrading, run the one-off migration
+script once:
+
+```
+docker compose exec cinesnip .venv/bin/python scripts/migrate_to_fts5.py
+```
+
+(or the equivalent outside Docker if you run CineSnip natively). It's a
+pure local read of your already-cached subtitles into the new index —
+no Plex or ffmpeg calls — and it's safe to re-run; a title already migrated
+is skipped unless you pass `--force`. Until you run it (or enable library
+auto-sync above, which backfills titles gradually as they're touched),
+`/snip-search` will silently return no results, since the new index starts
+empty on upgrade.
+
 ## Troubleshooting
 
 - **Bot fails to log in (401)** — `DISCORD_TOKEN` in `.env` is wrong or was reset since you copied it.

@@ -1,11 +1,15 @@
-# Planned (not yet built): consolidate the subtitle cache into SQLite + FTS5
+# Built: the subtitle cache is consolidated into SQLite + FTS5
 
-Design agreed after prototyping against the real fully-built cache. **Not
-implemented** — recorded here so the measurements and the reasoning aren't
-lost. Sequence it before or alongside any future full-library manual cache
-build (`scripts/build_full_cache.py`) — that's exactly what makes today's
-design hurt (see `docs/build-notes/subtitles-and-search.md`'s "instant
-regardless of library size" finding).
+**Status: built and running against the real ~10,695-title library.**
+Originally recorded here as a design proposal before implementation — kept
+below largely as written (prototype numbers, rejected alternatives, the
+recall tradeoff) since that reasoning is still exactly why the shipped
+design looks the way it does. The one thing the prototype's numbers got
+wrong at real full-library scale — an entry-vs-title `LIMIT` bug — is
+called out in its own section near the bottom, with the real before/after
+measurements. `scripts/build_full_cache.py` and `library_sync.py` both now
+write into this index directly; there is no more JSON-based candidates
+cache to keep in sync.
 
 **Where the time actually goes now** (measured per-title, mirroring
 `search_cached_library()`'s real loop, against the real 10,679-title cache
@@ -139,3 +143,106 @@ fingerprint logic and the "candidates are stale if the raw cache is newer"
 mtime comparison both need porting to columns on `titles`, not dropped.
 Worth keeping the JSON reader around for one release to migrate lazily
 rather than forcing a rebuild.
+
+Shipped as `scripts/migrate_to_fts5.py` — a one-off, idempotent/resumable
+backfill from the legacy `cached_titles` table + per-title JSON cache into
+`search_index`'s schema, non-destructive (leaves the legacy table and JSON
+files untouched on disk). See the script's own docstring for the exact
+fingerprint-handling tradeoffs. `README.md`'s "Upgrading an existing
+install" section tells existing installers to run it once after upgrading.
+
+## Real-scale finding: the entry-vs-title `LIMIT` bug
+
+The 1,000-title prototype above reported "0.016%–0.3% of entries reach
+scoring" — that number **did not reproduce** at the real 10,695-title
+scale once this was actually built, and the reason is a design/
+implementation gap worth recording so it isn't reintroduced.
+
+The query flow section above says the FTS5 pre-filter should `MATCH` →
+`ORDER BY rank LIMIT ~4000` → fetch **only those rows** → build adjacent-
+cue windows for the survivors. The first shipped implementation instead
+capped the pre-filter to `SELECT DISTINCT title_id ... LIMIT 4000` — 4,000
+distinct *titles*, not 4,000 entry *rows*. Every entry of every one of
+those survivor titles then got fuzzy-scored in full, not just the entries
+near an actual FTS5 hit. Measured against the real library before the fix:
+
+| Query | Entries scored | Time |
+| --- | --- | --- |
+| `hitler` | 245,779 | ~2.5s |
+| `here's johnny` | up to ~3,462,510 (46% of the 7.5M-entry corpus) | 31–92s |
+| `may the forse be with you` | similarly corpus-scale | ~90s |
+
+A ~700x amplification over the intended ~4,000-entry budget — the coarse
+pre-filter was doing its job (narrowing to a few thousand *titles* out of
+10,695), but the expensive step downstream (fuzzy-scoring) was still
+effectively O(corpus) because "narrow the titles" and "narrow the entries
+actually scored" were conflated.
+
+**Fix**: `search_index.search_entry_ids()` now caps individual FTS5 entry
+rows directly (`SELECT entries.id, entries.title_id, entries.idx ...
+ORDER BY rank LIMIT 4000`), matching the original design's intent exactly.
+`library_search.py` expands each surviving entry into a small adjacent-cue
+window (idx ± a pad, at least `context_lines + 1`) via the new
+`search_index.fetch_entry_windows()` — which fetches only the rows inside
+those windows, not each survivor title's full entry list (an early version
+of the fix still called a "fetch this whole title's entries" helper once a
+title had any hit, which independently dominated real-query time; fixed by
+adding the windowed fetch instead). Multiple windows within the same title
+are merged and re-limited to `per_title_limit` before the shared
+diversity-ranking step, so one title with many scattered hits can't flood
+the results at another title's expense.
+
+Post-fix, measured against the same real library and the same three
+queries:
+
+| Query | Entries scored | Time |
+| --- | --- | --- |
+| `hitler` | 1,331 | 0.04s |
+| `here's johnny` | 19,666 | 0.63s |
+| `may the forse be with you` | 26,607 | 3.97s |
+
+All three land in the range the original design intended (well under 5s),
+consistent with an independent prototype validated separately during the
+review that caught this bug (0.11s / 0.79s / 4.08s on a similar scan
+scale — the small remaining differences are query-set/corpus-slice
+differences, not a different fix shape). `may the forse be with you`
+stays the slowest of the three because its tokens (`may`, `the`, `with`,
+`you`) are individually common enough that the FTS5 `MATCH ... OR ...`
+itself has to rank a very large candidate set to find the top 4,000 by
+BM25 — this is inherent to how common the words are, not something the
+entry-level `LIMIT` fix changes further; scoping the pre-filter to a
+narrower title set (see below) does not measurably help this query either,
+since the cost is in the FTS5 ranking step itself, before scoping is
+applied.
+
+## Real-scale finding: pre-filter/fallback scope must follow the caller, not the whole corpus
+
+A related gap, also only visible at real scale with more than one caller:
+`search_cached_library()` is shared by both `/search-quote` (library-wide,
+deliberately unscoped — every cached movie-library title) and
+`/search-episodes-quote` (`/snip-tv`'s whole-show search, deliberately
+scoped to one show's handful of episodes). The FTS5 pre-filter and the
+zero-hit fallback's full scan both originally ran over the *entire* corpus
+regardless of which caller was asking, including all TV episodes indexed
+via the same shared DB. Two consequences, both confirmed against the real
+library:
+- A global top-4000 *entry* cap (post the fix above) could still starve a
+  narrow-scoped show search of its own episodes if enough of the rest of
+  the corpus ranked higher for the same query. Confirmed directly: for
+  "that's what she said" against a real 12-episode "The Office" (cached in
+  this library), an **unscoped** top-4000 cap left only **1 of 12**
+  episodes with any surviving entry at all; scoped to just that show's
+  guids, all 12 are searched and the show-search returns 8 correct,
+  diverse results.
+- The fallback (triggered on a typo'd query that misses FTS5 entirely)
+  streamed the whole ~7.5M-entry corpus even for a whole-show search.
+
+**Fix**: `search_entry_ids()` and `iter_all_entries()` both take an
+optional `title_ids` scope. `search_cached_library()` resolves its
+caller-supplied `cached_titles` to `title_id`s up front and always passes
+that as the scope — for `/search-quote`, `cached_titles` already IS "every
+cached movie-library title", so scoping to it changes nothing about what's
+searched, it just also stops TV episodes from consuming the entry budget;
+for whole-show search, it narrows correctly. No caller-type flag needed —
+the scope falls naturally out of whatever `cached_titles` list the caller
+already builds.

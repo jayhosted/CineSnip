@@ -130,9 +130,22 @@ relevant section before touching any of those files.
   to corpus size. Not urgent (this developer's library isn't kept fully
   built this way day-to-day), but real evidence that a pre-filter/index
   ahead of the expensive per-candidate scoring is a real requirement at
-  scale — see `docs/design/fts5-search-migration.md` for the planned fix.
+  scale — see `docs/design/fts5-search-migration.md` for the fix that
+  eventually shipped (SQLite+FTS5), including the real-scale numbers.
 
-## Precomputed candidates cache (`get_or_build_candidates()` in `app/worker/quotes.py`)
+## Precomputed candidates cache (superseded — `get_or_build_candidates()` no longer exists)
+
+**Historical.** This whole section describes a disk-based candidates
+cache (`get_or_build_candidates()`, `cache/<guid-digest>.candidates.json`)
+that was deleted when the subtitle cache was consolidated into SQLite+FTS5
+— an FTS5 pre-filter now narrows a query to a bounded set of candidate
+lines before any candidate-building/scoring happens, so there's nothing
+per-title left to precompute or cache at all. See
+`docs/design/fts5-search-migration.md` for the replacement design and its
+own real-scale numbers. Left below for historical context (what the
+problem looked like before FTS5, and why an in-memory cache was rejected
+in favor of a disk-based one at the time) — none of it describes live code
+any more.
 
 - **✅ Closed a real scaling gap found while stress-testing against the
   developer's actual library size.** Normalizing every subtitle line and
