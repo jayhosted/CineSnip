@@ -1,0 +1,33 @@
+<div id="discord-post-area" style="display:contents;">
+  {% if posted_channel_label %}
+    <span class="btn-secondary" style="background:var(--accent-soft); border-color:var(--accent); color:var(--accent-strong); cursor:default;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+      Posted to {{ posted_channel_label }}
+    </span>
+  {% else %}
+    {% if discord_error %}
+    <p class="error-banner" style="margin:0; padding:6px 10px; font-size:12px;">{{ discord_error }}</p>
+    {% endif %}
+    {% if discord_channels %}
+    <form hx-post="/generate/post-discord" hx-target="#discord-post-area" hx-swap="outerHTML" style="display:contents;">
+      <input type="hidden" name="clip_id" value="{{ clip_id }}">
+      <select name="channel_id" class="select-field" style="width:auto;" title="Channel to post to">
+        {% for cid, label in discord_channels %}
+        <option value="{{ cid }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn-secondary">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+        Post to Discord
+      </button>
+    </form>
+    {% else %}
+    <button type="button" class="btn-secondary" disabled
+      title="The bot isn't in any Discord server it can post attachments to yet."
+      style="opacity:0.5; cursor:not-allowed;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+      Post to Discord
+    </button>
+    {% endif %}
+  {% endif %}
+</div>

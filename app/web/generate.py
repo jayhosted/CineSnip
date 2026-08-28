@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-import base64
+import io
 
+import discord
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
+from app.bot.client import CineSnipBot
 from app.bot.worker_client import RenderResult, WorkerClient
 from app.runtime import SettingsHolder
+from app.web.clip_store import ClipStore
 
 # Mirrors app/bot/cogs/gif.py's _STYLE_OPTIONS exactly (same worker `style`
 # values, same catalog, same order per CLAUDE.md Section 2) — the web app is
@@ -78,6 +81,28 @@ def _error_html(exc: httpx.HTTPError) -> HTMLResponse:
     return HTMLResponse(f'<p class="error-banner">{_error_detail(exc)}</p>')
 
 
+def _postable_channels(bot: CineSnipBot | None) -> list[tuple[int, str]]:
+    # Computed fresh on every render rather than cached — cheap (it's just
+    # walking discord.py's own in-memory guild/channel cache, no API call),
+    # and the alternative (a stale list surviving a mid-session server-add
+    # or permission change) is worse than the cost of recomputing.
+    if bot is None or not bot.is_ready():
+        return []
+    multi_guild = len(bot.guilds) > 1
+    channels: list[tuple[int, str]] = []
+    for guild in bot.guilds:
+        me = guild.me
+        if me is None:
+            continue
+        for channel in guild.text_channels:
+            perms = channel.permissions_for(me)
+            if not (perms.send_messages and perms.attach_files):
+                continue
+            label = f"{guild.name} — #{channel.name}" if multi_guild else f"#{channel.name}"
+            channels.append((channel.id, label))
+    return channels
+
+
 def _left_error_html(message: str) -> HTMLResponse:
     # Any /generate/search|select|reset response must keep the
     # #generate-left wrapper (htmx targets it with hx-swap="outerHTML") —
@@ -108,6 +133,7 @@ def register_generate_routes(
     app: FastAPI, templates: Jinja2Templates, settings_holder: SettingsHolder
 ) -> None:
     client_cache = _WorkerClientCache()
+    clip_store = ClipStore()
 
     def fragment(panel: str, **ctx) -> HTMLResponse:
         template = templates.env.get_template(panel)
@@ -133,11 +159,20 @@ def register_generate_routes(
             )
         except httpx.HTTPError as exc:
             return _error_html(exc)
-        content_b64 = base64.b64encode(result.content).decode("ascii")
+        # Stored server-side and referenced by URL rather than embedded as a
+        # base64 data URI — a multi-MB clip turning into ~4MB of inline text
+        # in the page, re-sent on every format switch, is exactly the kind
+        # of thing the clip store exists to avoid. It's also what makes
+        # "Post to Discord" possible below without re-rendering: the bytes
+        # are already sitting here under an id the result panel can hand
+        # back.
+        filename = f"clip.{result.format}"
+        clip_id = clip_store.put(result.content, result.format, filename)
         return fragment(
             "panel_generate_result.html",
             render=result,
-            content_b64=content_b64,
+            clip_id=clip_id,
+            clip_url=f"/generate/clip/{clip_id}",
             media_type=_MEDIA_TYPES[result.format],
             size_label=_size_label(len(result.content)),
             title=title,
@@ -145,6 +180,20 @@ def register_generate_routes(
             caption=caption,
             style_label=_style_label(result.style),
             no_subtitles_note=_no_subtitles_note(style, result.style),
+            # Carried through as hidden fields so the result panel's own
+            # format selector can re-POST straight to /generate/render (the
+            # already-resolved-timecode endpoint) instead of re-running
+            # quote resolution — changing format shouldn't force the user
+            # back through the "pick a line" confirm step for an ambiguous
+            # quote match they already resolved once.
+            rating_key=rating_key,
+            timecode=timecode,
+            duration=duration,
+            end_timecode=end_timecode,
+            style=style,
+            discord_channels=_postable_channels(settings_holder.bot),
+            posted_channel_label=None,
+            discord_error=None,
         )
 
     @app.get("/generate", response_class=HTMLResponse)
@@ -340,4 +389,89 @@ def register_generate_routes(
         return await do_render(
             worker, rating_key, timecode, None, end_timecode, format, style,
             title=title, display_timecode=timecode, caption=None,
+        )
+
+    @app.get("/generate/clip/{clip_id}")
+    async def generate_clip(clip_id: str):
+        # Backs the result panel's <img>/<video><source>/Download — a plain
+        # same-origin URL instead of the base64 data URI this used to be,
+        # per the do_render comment above. clip_id is an unguessable
+        # uuid4.hex (ClipStore), and this whole app only ever binds to
+        # localhost/LAN for a single trusted operator (Section 9/11 —
+        # there's no multi-tenant boundary here to enforce), so a bare
+        # lookup with no additional auth matches every other route in this
+        # module.
+        entry = clip_store.get(clip_id)
+        if entry is None:
+            # Expired (30min TTL) or evicted (LRU cap) — the result panel's
+            # own actions (format switch, post-to-Discord) already handle
+            # this by surfacing a "generate again" error rather than a
+            # broken image, so a bare 404 here is fine.
+            return Response(status_code=404)
+        return Response(content=entry.content, media_type=_MEDIA_TYPES[entry.format])
+
+    @app.post("/generate/post-discord", response_class=HTMLResponse)
+    async def generate_post_discord(request: Request):
+        # Second thin client of the same live bot instance the Discord
+        # commands themselves use (decision #3's reasoning, extended past
+        # the worker API to the bot connection itself — see runtime.py's
+        # SettingsHolder.bot docstring). Mirrors GifCog's own
+        # ClipResultView.post (app/bot/cogs/gif.py) almost exactly: same
+        # discord.File-from-bytes call, same "disable after posting" idea
+        # (here: swap the form for a static confirmation pill via the
+        # panel_generate_discord_post.html partial) — just reached from a
+        # channel picker instead of always the invoking channel, since a
+        # browser session has no implicit "channel this came from".
+        form = await request.form()
+        clip_id = str(form.get("clip_id", ""))
+        channel_id_raw = str(form.get("channel_id", ""))
+
+        def retry(error: str) -> HTMLResponse:
+            return fragment(
+                "panel_generate_discord_post.html",
+                clip_id=clip_id,
+                discord_channels=_postable_channels(settings_holder.bot),
+                posted_channel_label=None,
+                discord_error=error,
+            )
+
+        entry = clip_store.get(clip_id)
+        if entry is None:
+            return retry("This clip has expired — generate it again before posting.")
+
+        bot = settings_holder.bot
+        if bot is None or not bot.is_ready():
+            return retry("The Discord bot isn't connected right now.")
+
+        try:
+            channel_id = int(channel_id_raw)
+        except ValueError:
+            return retry("Pick a channel.")
+
+        channel = bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(channel_id)
+            except (discord.NotFound, discord.Forbidden):
+                channel = None
+        if channel is None or not isinstance(channel, discord.TextChannel):
+            return retry("That channel is no longer available to the bot.")
+
+        me = channel.guild.me
+        perms = channel.permissions_for(me) if me else None
+        if perms is None or not (perms.send_messages and perms.attach_files):
+            return retry("The bot no longer has permission to post attachments there.")
+
+        try:
+            file = discord.File(io.BytesIO(entry.content), filename=entry.filename)
+            await channel.send(file=file)
+        except discord.HTTPException as exc:
+            return retry(f"Discord rejected the post: {exc.text or exc}")
+
+        return fragment(
+            "panel_generate_discord_post.html",
+            clip_id=clip_id,
+            discord_channels=[],
+            posted_channel_label=f"{channel.guild.name} — #{channel.name}",
+            discord_error=None,
         )

@@ -2,17 +2,17 @@
 
   <div class="clip-media-box">
     {% if render.format == "gif" %}
-      <img id="clip-media" src="data:{{ media_type }};base64,{{ content_b64 }}" alt="Generated clip">
+      <img id="clip-media" src="{{ clip_url }}" alt="Generated clip">
     {% else %}
       <video id="clip-media" controls>
-        <source src="data:{{ media_type }};base64,{{ content_b64 }}" type="{{ media_type }}">
+        <source src="{{ clip_url }}" type="{{ media_type }}">
       </video>
     {% endif %}
     <div class="clip-badge-overlay">
       <span class="dot"></span>
       <span>{{ render.format | upper }} &middot; {{ size_label }}</span>
     </div>
-    {% if caption %}
+    {% if caption and render.style == "none" %}
     <div class="clip-caption-overlay"><span>{{ caption }}</span></div>
     {% endif %}
   </div>
@@ -27,21 +27,25 @@
       <div class="clip-sub">{{ size_label }} &middot; {{ style_label }} style</div>
     </div>
     <div class="actions">
-      {% if render.format == "gif" %}
-      <button type="button" class="btn-secondary" onclick="cinesnipCopyClip(this, '{{ content_b64 }}', '{{ media_type }}')">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="1.5"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg>
-        <span class="copy-label">Copy</span>
-      </button>
-      {% else %}
-      <button type="button" class="btn-secondary" disabled
-        title="Browsers don't support copying video clips to the clipboard — use Download instead."
-        style="opacity:0.5; cursor:not-allowed;">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="1.5"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg>
-        <span>Copy</span>
-      </button>
-      {% endif %}
+      <form style="display:contents;">
+        <input type="hidden" name="rating_key" value="{{ rating_key }}">
+        <input type="hidden" name="title" value="{{ title }}">
+        <input type="hidden" name="timecode" value="{{ timecode }}">
+        <input type="hidden" name="display_timecode" value="{{ display_timecode }}">
+        {% if duration is not none %}<input type="hidden" name="duration" value="{{ duration }}">{% endif %}
+        {% if end_timecode %}<input type="hidden" name="end_timecode" value="{{ end_timecode }}">{% endif %}
+        <input type="hidden" name="style" value="{{ style }}">
+        {% if caption %}<input type="hidden" name="caption" value="{{ caption }}">{% endif %}
+        <select name="format" class="select-field" style="width:auto;" title="Change format"
+          hx-post="/generate/render" hx-target="#generate-right" hx-swap="outerHTML" hx-trigger="change">
+          <option value="" {% if render.format == "gif" %}selected{% endif %}>GIF</option>
+          <option value="mp4" {% if render.format == "mp4" %}selected{% endif %}>MP4</option>
+          <option value="webm" {% if render.format == "webm" %}selected{% endif %}>WebM</option>
+        </select>
+      </form>
+      {% include "panel_generate_discord_post.html" %}
       <a class="btn-secondary" style="background:var(--accent); border:none; color:var(--accent-ink); text-decoration:none;"
-        href="data:{{ media_type }};base64,{{ content_b64 }}" download="clip.{{ render.format }}">
+        href="{{ clip_url }}" download="clip.{{ render.format }}">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v13m0 0-4.5-4.5M12 16l4.5-4.5"/><path d="M4 18v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"/></svg>
         Download
       </a>
@@ -49,30 +53,3 @@
   </div>
 
 </div>
-<script>
-  // Clipboard image write needs a Blob, not a data URI string — decode the
-  // base64 payload already embedded in the page rather than re-fetching it.
-  // Scoped as a global (not per-panel) since this script tag gets swapped
-  // in fresh every time the result panel re-renders, which is fine — it's
-  // idempotent, unlike the wizard's cinesnipCopy which is defined once in
-  // shell.html's page level. GIF-only: browser Clipboard API image support
-  // doesn't reliably cover video formats, so the Copy button itself is only
-  // rendered above for format == "gif".
-  function cinesnipCopyClip(btn, base64, mediaType) {
-    try {
-      const bin = atob(base64);
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      const blob = new Blob([bytes], { type: mediaType });
-      navigator.clipboard.write([new ClipboardItem({ [mediaType]: blob })]).then(function () {
-        const label = btn.querySelector('.copy-label');
-        const original = label.textContent;
-        label.textContent = 'Copied';
-        setTimeout(function () { label.textContent = original; }, 1500);
-      });
-    } catch (e) {
-      // Clipboard API unavailable (insecure context, unsupported browser) —
-      // the Download button next to it always works as a fallback.
-    }
-  }
-</script>

@@ -144,8 +144,10 @@ async def main() -> None:
             )
             if needs_new_bot:
                 if bot is not None:
+                    settings_holder.bot = None
                     await _stop_bot(bot, bot_task)
                 bot, bot_task = await _start_bot(settings)
+                settings_holder.bot = bot
                 current_discord_token = settings.discord_token
                 current_worker_port = settings.worker.port
 
