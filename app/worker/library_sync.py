@@ -1,21 +1,38 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import random
 from dataclasses import dataclass
 
 from app.settings import Settings, SettingsError
-from app.worker import quote_index
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 from app.worker.plex_client import MovieResult, PlexClient
+from app.worker.quote_index import (
+    append_sync_log,
+    finish_sync_run,
+    get_section_updated_at,
+    has_cached_title,
+    is_no_subtitle_title,
+    list_cached_titles_for_library,
+    list_cached_titles_missing_source,
+    remove_cached_title,
+    set_cached_title_source,
+    set_section_updated_at,
+    start_sync_run,
+    update_sync_progress,
+    upsert_cached_title,
+    upsert_no_subtitle_title,
+)
 from app.worker.quotes import delete_cached_candidates, get_or_build_candidates
 from app.worker.subtitles import (
     SubtitleSource,
     cache_path_for_guid,
     delete_cached_subtitles,
     get_subtitles,
+    read_cached_subtitles,
 )
 
 logger = logging.getLogger("cinesnip.library_sync")
@@ -46,10 +63,32 @@ async def sync_one_title(settings: Settings, item: MovieResult, *, force: bool =
     shared implementation for both the manual script and the automatic
     sync task. Skips a title entirely (bare file-existence check, no read/
     parse) unless forced, so re-running this against an already-synced
-    library costs almost nothing.
+    library costs almost nothing — UNLESS the cache file exists but isn't
+    indexed yet (a title cached before source/no-subtitle tracking existed,
+    or a title only ever touched via /snip rather than a sync). That case
+    is self-healing: one cheap local JSON read (no ffmpeg) classifies and
+    backfills it, and it's never revisited after that.
     """
-    if not force and cache_path_for_guid(settings.cache_dir, item.guid).exists():
-        return f"CACHED (already have it): {item.title}"
+    db_path = settings.quote_index_db_path
+    cache_file_exists = cache_path_for_guid(settings.cache_dir, item.guid).exists()
+
+    if not force and cache_file_exists:
+        already_indexed = has_cached_title(db_path, item.guid) or is_no_subtitle_title(db_path, item.guid)
+        if already_indexed:
+            return f"CACHED (already have it): {item.title}"
+
+        cached = read_cached_subtitles(settings.cache_dir, item.guid)
+        if cached is not None:
+            if cached.source is SubtitleSource.NONE:
+                upsert_no_subtitle_title(db_path, item.guid, item.rating_key, item.title, item.library_name)
+            else:
+                upsert_cached_title(
+                    db_path, item.guid, item.rating_key, item.title, item.library_name, cached.source.value
+                )
+                get_or_build_candidates(
+                    settings.cache_dir, cached.guid, cached.entries, settings.quote_match.max_window_gap_seconds
+                )
+            return f"CACHED (backfilled index): {item.title}"
 
     try:
         container_path = resolve_container_path(
@@ -73,9 +112,11 @@ async def sync_one_title(settings: Settings, item: MovieResult, *, force: bool =
     except Exception as exc:  # noqa: BLE001 - one bad file must not stop the run
         return f"ERROR: {item.title}: {exc}"
 
-    if result.source is not SubtitleSource.NONE and result.entries:
-        quote_index.upsert_cached_title(
-            settings.quote_index_db_path, result.guid, item.rating_key, item.title, item.library_name
+    if result.source is SubtitleSource.NONE:
+        upsert_no_subtitle_title(db_path, result.guid, item.rating_key, item.title, item.library_name)
+    elif result.entries:
+        upsert_cached_title(
+            db_path, result.guid, item.rating_key, item.title, item.library_name, result.source.value
         )
         get_or_build_candidates(
             settings.cache_dir, result.guid, result.entries, settings.quote_match.max_window_gap_seconds
@@ -126,12 +167,19 @@ async def sync_library(
         result.plex_error = True
         return result
 
-    for item in live_items:
+    total_items = len(live_items)
+    append_sync_log(
+        settings.quote_index_db_path, f"Checking library: {library_name} — {total_items} items"
+    )
+
+    for index, item in enumerate(live_items, start=1):
+        update_sync_progress(settings.quote_index_db_path, library_name, item.title, index - 1, total_items)
         outcome = await sync_one_title(settings, item)
         if outcome.startswith("CACHED"):
             result.already_cached += 1
         elif outcome.startswith("OK"):
             result.added += 1
+            append_sync_log(settings.quote_index_db_path, f"Extracted subtitles — {item.title}")
         elif outcome.startswith("SKIP (no path mapping"):
             result.skipped_no_mapping += 1
         elif outcome.startswith("SKIP (file not found"):
@@ -139,9 +187,11 @@ async def sync_library(
         elif outcome.startswith("ERROR"):
             result.errors += 1
             logger.warning("library sync: %s", outcome)
+            append_sync_log(settings.quote_index_db_path, f"Error — {item.title}")
+        update_sync_progress(settings.quote_index_db_path, library_name, item.title, index, total_items)
 
     live_guids = {item.guid for item in live_items}
-    existing = quote_index.list_cached_titles_for_library(settings.quote_index_db_path, library_name)
+    existing = list_cached_titles_for_library(settings.quote_index_db_path, library_name)
     removal_candidates = [t for t in existing if t.guid not in live_guids]
 
     if removal_candidates:
@@ -168,7 +218,7 @@ async def sync_library(
                 return result
 
         for cached in removal_candidates:
-            quote_index.remove_cached_title(settings.quote_index_db_path, cached.guid)
+            remove_cached_title(settings.quote_index_db_path, cached.guid)
             delete_cached_subtitles(settings.cache_dir, cached.guid)
             delete_cached_candidates(settings.cache_dir, cached.guid)
             result.removed += 1
@@ -177,43 +227,51 @@ async def sync_library(
     # completed for this library — if either safety layer aborted above,
     # this is never reached, so the next cycle's cheap check still sees
     # "changed" and retries the whole thing rather than giving up silently.
-    quote_index.set_section_updated_at(settings.quote_index_db_path, library_name, updated_at)
+    set_section_updated_at(settings.quote_index_db_path, library_name, updated_at)
     return result
 
 
 async def run_library_sync_once(settings: Settings, plex: PlexClient) -> list[LibrarySyncResult]:
-    try:
-        current = await asyncio.to_thread(plex.current_section_updated_ats)
-    except Exception as exc:  # noqa: BLE001 - Plex being briefly unreachable must not crash the sync loop
-        logger.warning("library sync: could not check for library changes — Plex unreachable: %s", exc)
+    db_path = settings.quote_index_db_path
+    if not start_sync_run(db_path):
+        logger.info("library sync: skipped — a run is already in progress")
         return []
 
-    sections_by_name = dict(plex.library_sections())
     results: list[LibrarySyncResult] = []
+    try:
+        try:
+            current = await asyncio.to_thread(plex.current_section_updated_ats)
+        except Exception as exc:  # noqa: BLE001 - Plex being briefly unreachable must not crash the sync loop
+            logger.warning("library sync: could not check for library changes — Plex unreachable: %s", exc)
+            return []
 
-    for library_name, updated_at in current.items():
-        stored = quote_index.get_section_updated_at(settings.quote_index_db_path, library_name)
-        if stored == updated_at:
-            continue
+        sections_by_name = dict(plex.library_sections())
 
-        section = sections_by_name[library_name]
-        result = await sync_library(settings, plex, library_name, section, updated_at)
-        results.append(result)
-        skip_note = f" (cleanup skipped: {result.removal_skipped_reason})" if result.removal_skipped_reason else ""
-        logger.info(
-            "library sync: '%s' changed — added=%d already_cached=%d removed=%d errors=%d%s",
-            library_name,
-            result.added,
-            result.already_cached,
-            result.removed,
-            result.errors,
-            skip_note,
-        )
+        for library_name, updated_at in current.items():
+            stored = get_section_updated_at(db_path, library_name)
+            if stored == updated_at:
+                continue
 
-    if not results:
-        logger.info("library sync: no changes (%d libraries checked)", len(current))
+            section = sections_by_name[library_name]
+            result = await sync_library(settings, plex, library_name, section, updated_at)
+            results.append(result)
+            skip_note = f" (cleanup skipped: {result.removal_skipped_reason})" if result.removal_skipped_reason else ""
+            logger.info(
+                "library sync: '%s' changed — added=%d already_cached=%d removed=%d errors=%d%s",
+                library_name,
+                result.added,
+                result.already_cached,
+                result.removed,
+                result.errors,
+                skip_note,
+            )
 
-    return results
+        if not results:
+            logger.info("library sync: no changes (%d libraries checked)", len(current))
+
+        return results
+    finally:
+        finish_sync_run(db_path, new_count=sum(r.added for r in results))
 
 
 async def library_sync_task(settings: Settings, plex: PlexClient) -> None:
@@ -228,3 +286,27 @@ async def library_sync_task(settings: Settings, plex: PlexClient) -> None:
         except Exception:
             logger.exception("library sync: unexpected error in sync cycle")
         await asyncio.sleep(settings.library_sync.interval_hours * 3600)
+
+
+def backfill_missing_source_values(settings: Settings) -> int:
+    """One-time-per-install backfill for cached_titles rows written before
+    the `source` column existed (real installs can have thousands of
+    these). Only touches rows still missing it, so it's a cheap no-op on
+    every startup after the first. Called from app/main.py at startup.
+    Returns how many rows were backfilled, for a startup log line.
+    """
+    db_path = settings.quote_index_db_path
+    backfilled = 0
+    for cached in list_cached_titles_missing_source(db_path):
+        cache_file = cache_path_for_guid(settings.cache_dir, cached.guid)
+        if not cache_file.exists():
+            continue
+        try:
+            payload = json.loads(cache_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        source = payload.get("source")
+        if source in ("sidecar", "embedded"):
+            set_cached_title_source(db_path, cached.guid, source)
+            backfilled += 1
+    return backfilled
