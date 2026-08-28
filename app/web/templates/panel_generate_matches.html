@@ -13,9 +13,12 @@
       <input type="hidden" name="style" value="{{ style or 'classic' }}">
       <input type="hidden" name="caption" value="{{ m.text }}">
       <button type="submit" class="match-row">
-        {% if show_titles %}<span class="match-title">{{ m.title }} &mdash; {{ m.library_name }}</span>{% endif %}
-        <span class="match-text">{{ m.text }}</span>
-        <span class="match-meta">{{ m.timecode }} &middot; {{ m.score | round(0) }}%</span>
+        <span class="btn-spinner"></span>
+        <span class="btn-label-idle" style="display:contents;">
+          {% if show_titles %}<span class="match-title">{{ m.title }} &mdash; {{ m.library_name }}</span>{% endif %}
+          <span class="match-text">{{ m.text }}</span>
+          <span class="match-meta">{{ m.timecode }} &middot; {{ m.score | round(0) }}%</span>
+        </span>
       </button>
     </form>
   {% endfor %}

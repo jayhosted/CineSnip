@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-28T03:18:07Z",
+  "title": "Design System: CineSnip",
+  "extensions": {
+    "colorMeta": {
+      "bg": {
+        "role": "neutral",
+        "displayName": "Chassis Black",
+        "canonical": "oklch(0.16 0.012 250)",
+        "tonalRamp": ["oklch(0.10 0.010 250)", "oklch(0.135 0.011 250)", "oklch(0.16 0.012 250)", "oklch(0.205 0.013 250)", "oklch(0.245 0.014 250)", "oklch(0.33 0.015 250)", "oklch(0.50 0.012 250)", "oklch(0.68 0.012 250)"]
+      },
+      "sidebar": {
+        "role": "neutral",
+        "displayName": "Sidebar Black",
+        "canonical": "oklch(0.135 0.011 250)",
+        "tonalRamp": ["oklch(0.08 0.009 250)", "oklch(0.135 0.011 250)", "oklch(0.16 0.012 250)", "oklch(0.205 0.013 250)", "oklch(0.245 0.014 250)", "oklch(0.33 0.015 250)", "oklch(0.50 0.012 250)", "oklch(0.68 0.012 250)"]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Panel Surface",
+        "canonical": "oklch(0.205 0.013 250)",
+        "tonalRamp": ["oklch(0.10 0.010 250)", "oklch(0.16 0.012 250)", "oklch(0.205 0.013 250)", "oklch(0.245 0.014 250)", "oklch(0.33 0.015 250)", "oklch(0.50 0.012 250)", "oklch(0.68 0.012 250)", "oklch(0.85 0.008 250)"]
+      },
+      "surface-2": {
+        "role": "neutral",
+        "displayName": "Raised Surface",
+        "canonical": "oklch(0.245 0.014 250)",
+        "tonalRamp": ["oklch(0.135 0.011 250)", "oklch(0.205 0.013 250)", "oklch(0.245 0.014 250)", "oklch(0.33 0.015 250)", "oklch(0.50 0.012 250)", "oklch(0.68 0.012 250)", "oklch(0.85 0.008 250)", "oklch(0.95 0.005 250)"]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "Primary Text",
+        "canonical": "oklch(0.93 0.006 250)",
+        "tonalRamp": ["oklch(0.16 0.012 250)", "oklch(0.33 0.015 250)", "oklch(0.50 0.012 250)", "oklch(0.68 0.012 250)", "oklch(0.80 0.008 250)", "oklch(0.87 0.007 250)", "oklch(0.93 0.006 250)", "oklch(0.97 0.004 250)"]
+      },
+      "phosphor-teal": {
+        "role": "primary",
+        "displayName": "Phosphor Teal",
+        "canonical": "oklch(0.84 0.14 174)",
+        "tonalRamp": ["oklch(0.16 0.02 174)", "oklch(0.28 0.06 174)", "oklch(0.42 0.10 174)", "oklch(0.56 0.13 174)", "oklch(0.72 0.16 174)", "oklch(0.84 0.14 174)", "oklch(0.90 0.10 174)", "oklch(0.96 0.05 174)"]
+      },
+      "danger": {
+        "role": "semantic-error",
+        "displayName": "Danger Is Foreign",
+        "canonical": "oklch(0.68 0.18 25)",
+        "tonalRamp": ["oklch(0.20 0.05 25)", "oklch(0.32 0.09 25)", "oklch(0.45 0.13 25)", "oklch(0.56 0.16 25)", "oklch(0.68 0.18 25)", "oklch(0.78 0.14 25)", "oklch(0.87 0.09 25)", "oklch(0.95 0.04 25)"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Card titles, page headers, the wordmark. Space Grotesk carries all instrument-panel headline moments." },
+      "body": { "displayName": "Body", "purpose": "Descriptive prose, match text, general copy. Public Sans, 1.6 line-height for readability." },
+      "label": { "displayName": "Label", "purpose": "Field labels, badges, uppercase tags — small, deliberate, always paired with a control." },
+      "mono": { "displayName": "Mono", "purpose": "Precise literal tokens only: timecodes, path mappings, restore-row chips." },
+      "stat": { "displayName": "Stat Display", "purpose": "The Stat Display Exception: one glanceable number/code as a card's sole subject — the cached-title-count stat (26px) and the Plex PIN badge (34px, set in mono instead of display)." }
+    },
+    "shadows": [
+      { "name": "card-float", "value": "0 20px 60px -20px rgb(0 0 0 / 0.5)", "purpose": "The one floating-above-chassis surface per view — wizard/settings card, generate-grid cards." },
+      { "name": "drawer-overlay", "value": "0 0 40px rgb(0 0 0 / 0.45)", "purpose": "Mobile off-canvas sidebar drawer only." },
+      { "name": "result-dropdown", "value": "0 12px 32px -8px rgb(0 0 0 / 0.5)", "purpose": "Floating search-results/match-list dropdown anchored under an input." }
+    ],
+    "motion": [
+      { "name": "ease-control", "value": "150ms ease", "purpose": "Default transition for borders, colors, backgrounds — firm and immediate, no elastic/spring easing." },
+      { "name": "ease-lift", "value": "150ms ease, transform", "purpose": "Button hover/active lift (translateY(-1px) to translateY(0)) paired with brightness(1.06)." },
+      { "name": "ease-drawer", "value": "200ms ease", "purpose": "Mobile sidebar drawer slide (left: -240px to left: 0)." },
+      { "name": "fade-up-card", "value": "300ms cubic-bezier(0.16,1,0.3,1)", "purpose": "Generate-grid card entrance animation (fadeUp keyframes)." }
+    ],
+    "breakpoints": [
+      { "name": "app-shell-collapse", "value": "860px" },
+      { "name": "wizard-compact", "value": "480px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Solid Phosphor Teal call-to-action button with a firm lift-and-brighten hover.",
+      "html": "<button class=\"ds-btn ds-btn-primary\" type=\"button\">Generate Clip</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: none; border-radius: 10px; padding: 12px 20px; font-family: 'Public Sans', system-ui, sans-serif; font-size: 14px; font-weight: 700; cursor: pointer; background: oklch(0.84 0.14 174); color: oklch(0.16 0.02 174); transition: transform 150ms ease, filter 150ms ease; } .ds-btn-primary:hover { transform: translateY(-1px); filter: brightness(1.06); } .ds-btn-primary:active { transform: translateY(0); } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px oklch(0.84 0.14 174 / 0.13); }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "No-background secondary action, used for cancel/skip.",
+      "html": "<button class=\"ds-btn ds-btn-ghost\" type=\"button\">Cancel</button>",
+      "css": ".ds-btn-ghost { background: none; border: none; color: oklch(0.50 0.012 250); font-family: 'Public Sans', system-ui, sans-serif; font-size: 14px; font-weight: 700; padding: 8px 0; cursor: pointer; transition: color 150ms ease; } .ds-btn-ghost:hover { color: oklch(0.93 0.006 250); } .ds-btn-ghost:focus-visible { outline: 2px solid oklch(0.84 0.14 174); outline-offset: 2px; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Standard field input with the system's accent focus ring.",
+      "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"Search your library…\" />",
+      "css": ".ds-input { width: 100%; background: oklch(0.245 0.014 250); border: 1px solid oklch(0.33 0.015 250); border-radius: 8px; padding: 10px 12px; font-family: 'Public Sans', system-ui, sans-serif; font-size: 16px; color: oklch(0.93 0.006 250); transition: border-color 150ms ease, box-shadow 150ms ease; } .ds-input::placeholder { color: oklch(0.50 0.012 250); } .ds-input:focus { outline: none; border-color: oklch(0.84 0.14 174); box-shadow: 0 0 0 3px oklch(0.84 0.14 174 / 0.13); }"
+    },
+    {
+      "name": "Sidebar Nav Item",
+      "kind": "nav",
+      "refersTo": "navitem-active",
+      "description": "Persistent sidebar navigation row with an active teal-wash state.",
+      "html": "<a class=\"ds-navitem ds-navitem-active\" href=\"#\">Generate</a>",
+      "css": ".ds-navitem-active { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; font-size: 13.5px; font-weight: 600; text-decoration: none; background: oklch(0.84 0.14 174 / 0.13); color: oklch(0.84 0.14 174); transition: background-color 150ms ease, color 150ms ease; } .ds-navitem-active:hover { background: oklch(0.84 0.14 174 / 0.18); } .ds-navitem-active:focus-visible { outline: 2px solid oklch(0.84 0.14 174); outline-offset: 2px; }"
+    },
+    {
+      "name": "Style Pill (selected)",
+      "kind": "chip",
+      "refersTo": "style-pill",
+      "description": "Selectable style-preset chip; checked state gets a border-and-wash pair, never a plain color swap.",
+      "html": "<label class=\"ds-style-pill ds-style-pill-checked\"><input type=\"radio\" checked style=\"display:none\" />Classic</label>",
+      "css": ".ds-style-pill-checked { display: block; padding: 9px 4px; text-align: center; border-radius: 8px; font-size: 12.5px; font-weight: 600; cursor: pointer; background: oklch(0.84 0.14 174 / 0.13); border: 1.5px solid oklch(0.84 0.14 174); color: oklch(0.84 0.14 174); transition: transform 150ms ease; } .ds-style-pill-checked:hover { transform: translateY(-1px); }"
+    },
+    {
+      "name": "Clip Preview Card",
+      "kind": "custom",
+      "refersTo": "clip-media-box",
+      "description": "The system's signature component: a 16:9 media box with a blurred status badge overlay and a bottom-scrim caption overlay for the burned-in quote preview.",
+      "html": "<div class=\"ds-clip-media\"><div class=\"ds-clip-badge\"><span class=\"ds-clip-badge-dot\"></span>GIF · 4s</div><div class=\"ds-clip-caption\"><span>\"May the Force be with you.\"</span></div></div>",
+      "css": ".ds-clip-media { position: relative; aspect-ratio: 16/9; border-radius: 10px; overflow: hidden; background: linear-gradient(160deg, oklch(0.24 0.02 260), oklch(0.13 0.015 260)); display: flex; align-items: center; justify-content: center; } .ds-clip-badge { position: absolute; top: 12px; left: 12px; display: flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 999px; background: oklch(0 0 0 / 0.45); backdrop-filter: blur(4px); font-size: 11px; font-weight: 600; color: white; font-family: 'Public Sans', system-ui, sans-serif; } .ds-clip-badge-dot { width: 6px; height: 6px; border-radius: 999px; background: oklch(0.84 0.14 174); } .ds-clip-caption { position: absolute; bottom: 0; left: 0; right: 0; padding: 20px 18px 14px; background: linear-gradient(to top, oklch(0 0 0 / 0.65), transparent); text-align: center; } .ds-clip-caption span { font-weight: 700; font-size: 16px; color: white; text-shadow: 0 2px 6px rgb(0 0 0 / 0.6); font-family: 'Public Sans', system-ui, sans-serif; }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "The system's one floating surface — the only element carrying the Card Float shadow.",
+      "html": "<div class=\"ds-card\"><h1 class=\"ds-card-title\">Connect Plex</h1><p class=\"ds-card-desc\">Enter your Plex server details to continue.</p></div>",
+      "css": ".ds-card { width: 100%; max-width: 460px; background: oklch(0.205 0.013 250); border: 1px solid oklch(0.27 0.013 250); border-radius: 14px; padding: 40px 36px; box-shadow: 0 20px 60px -20px rgb(0 0 0 / 0.5); } .ds-card-title { font-family: 'Space Grotesk', system-ui, sans-serif; font-size: 19px; font-weight: 600; margin: 0 0 6px; color: oklch(0.93 0.006 250); } .ds-card-desc { font-size: 14px; line-height: 1.6; color: oklch(0.68 0.012 250); margin: 0; font-family: 'Public Sans', system-ui, sans-serif; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Control Room",
+    "overview": "CineSnip's web app is a precision instrument panel, not a marketing surface: a near-black chassis with a single glowing indicator color reserved for what's active, valid, or selected right now. Every other surface — cards, inputs, the sidebar — sits in a tight band of near-neutral dark tones, so the one accent (Phosphor Teal) reads unmistakably as \"this is the thing that matters\" whether that's a completed wizard step, a selected style preset, or the currently-playing clip preview. The two shells it runs — the wizard's centered single-card flow and the app-shell's persistent sidebar — are two panels of the same instrument, not two different products.\n\nThe mood is technical and precise, not glossy. Borders are thin and exact rather than soft; hover states are a firm lift-and-brighten, not a fade; motion is short and functional (150ms transitions, no easing flourishes beyond what a physical control needs). This deliberately steers away from two common self-hosted-tool traps: the generic blue/purple gradient SaaS-admin look, and glossy corporate marketing polish. CineSnip should read like a tool an enthusiast built for their own Plex server, not a startup's dashboard product.",
+    "keyCharacteristics": [
+      "Near-black chassis (bg/surface/surface-2/sidebar) with one reserved accent color, never a secondary or tertiary hue",
+      "Thin, exact borders over soft shadows; the one heavy shadow in the system is reserved for cards/panels floating above the chassis",
+      "Tactile, confident interactive states — buttons lift on hover, inputs get a focus ring, selected items get an accent border, never just a color swap alone",
+      "Monospace used narrowly and meaningfully: timecodes, path mappings, PIN codes — anywhere the value is a precise machine-readable token, not prose"
+    ],
+    "rules": [
+      { "name": "The One Signal Rule", "body": "Phosphor Teal marks exactly one thing at a time per view: what's active, selected, valid, or complete. It is never used decoratively or for anything at rest — if nothing is selected/active/complete, nothing on screen is teal.", "section": "colors" },
+      { "name": "The Danger Is Foreign Rule", "body": "oklch(0.68 0.18 25) (red-orange) exists solely for errors and destructive actions. It is the only other saturated hue in the system and must never be reused for anything else, so its appearance is always unambiguous.", "section": "colors" },
+      { "name": "The Precision Token Rule", "body": "Monospace is reserved for values a user might type, copy, or compare character-by-character (timecodes, paths, PINs). It is never used for prose or labels, even short ones.", "section": "typography" },
+      { "name": "The Stat Display Exception", "body": "Display's 19-22px ceiling is for headings. A card whose entire purpose is one glanceable number or code (a PIN, a live count) may go larger -- up to 34px -- but only when that number/code is the card's single subject, never as emphasis on body or label text.", "section": "typography" },
+      { "name": "The Radius-Follows-Size Rule", "body": "A surface's corner radius scales with its own footprint: small controls (6–8px) sit inside larger containers (10–14px) — never the reverse, and never a uniform radius across every level.", "section": "shapes" },
+      { "name": "The Flat Interior Rule", "body": "Nothing nested inside a card casts its own shadow. Depth inside a card comes only from the surface/surface-2 tonal step and a border — shadows are reserved for things floating above the chassis itself.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do treat Phosphor Teal as a single reserved signal — active, selected, valid, complete — never decorative.",
+      "Do pair every selection/active state with both a border-color change and a background wash together.",
+      "Do use monospace only for precise, literal tokens (timecodes, paths, PINs), never for prose.",
+      "Do scale corner radius up with container size — small controls inside larger ones always get a smaller radius.",
+      "Do keep card interiors flat; reserve shadow for the outermost floating surface per view.",
+      "Do use firm, physical hover motion (lift + brighten) rather than opacity fades."
+    ],
+    "donts": [
+      "Don't introduce a second or third accent hue — the palette's entire expressive range is one teal against near-neutral dark tones.",
+      "Don't reuse the danger red-orange for anything other than errors/destructive actions.",
+      "Don't add gradient-heavy, glossy, or corporate-SaaS styling — cards, buttons, and chrome stay flat and precise.",
+      "Don't give a nested surface (input, pill, row) its own shadow — depth there comes from tonal steps only.",
+      "Don't use a uniform border-radius across every component regardless of size."
+    ]
+  }
+}

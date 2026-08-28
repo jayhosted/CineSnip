@@ -37,6 +37,26 @@ def _size_label(num_bytes: int) -> str:
     return f"{num_bytes / 1024:.0f} KB"
 
 
+async def _subtitle_slow_warning(worker: WorkerClient, rating_key: int) -> str:
+    # Mirrors app/bot/cogs/gif.py's _slow_subtitle_warning — a cheap
+    # (no ffmpeg) best-effort hint that a quote search is about to fall
+    # through to a cold embedded-subtitle extraction, which can take
+    # several minutes on a large file. Kept as this module's own copy
+    # rather than importing the bot-package helper directly, same reasoning
+    # as _STYLE_OPTIONS above: the web app is a thin second client of the
+    # worker API, not a place to reach into the bot package's internals.
+    try:
+        status = await worker.subtitle_status(rating_key)
+    except httpx.HTTPError:
+        return ""
+    if not status.likely_slow:
+        return ""
+    return (
+        "First time reading this title's subtitles from the video file itself — "
+        "can take a few minutes for a large file. Future searches for it will be instant."
+    )
+
+
 def _no_subtitles_note(requested_style: str, resolved_style: str) -> str:
     # Mirrors app/bot/cogs/gif.py's _no_subtitles_note exactly — the worker
     # silently degrades a styled request to no-burn-in when a title has no
@@ -276,6 +296,26 @@ def register_generate_routes(
                 )
         else:
             rating_key = rating_key_posted
+
+        if quote and not form.get("_slow_ack"):
+            # Cheap upfront check (no ffmpeg) before the potentially
+            # multi-minute cold-extraction call below — if it's likely to
+            # be slow, hand back an interim "searching…" fragment that
+            # immediately re-posts itself (hx-trigger="load") with
+            # _slow_ack set, so the user sees a real status message instead
+            # of a spinner-less button that looks dead. Mirrors the
+            # Discord bot's own _slow_subtitle_warning, reached here via
+            # htmx's load-triggered self-repost instead of message editing.
+            warning = await _subtitle_slow_warning(worker, rating_key)
+            if warning:
+                hidden_fields = {k: str(v) for k, v in form.items()}
+                hidden_fields["_slow_ack"] = "1"
+                return fragment(
+                    "panel_generate_loading.html",
+                    message=warning,
+                    continue_url="/generate/render-start",
+                    hidden_fields=hidden_fields,
+                )
 
         if quote:
             try:

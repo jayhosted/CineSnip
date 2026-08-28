@@ -15,12 +15,12 @@
     {% else %}
       <div class="kind-toggle" style="margin-top:8px;">
         <label>
-          <input type="radio" name="kind" value="film" {% if kind != "show" %}checked{% endif %}
+          <input type="radio" name="kind" value="film" class="visually-hidden-input" {% if kind != "show" %}checked{% endif %}
             hx-get="/generate/search" hx-include="[name='query'],[name='kind']" hx-target="#generate-left" hx-swap="outerHTML">
           Film
         </label>
         <label>
-          <input type="radio" name="kind" value="show" {% if kind == "show" %}checked{% endif %}
+          <input type="radio" name="kind" value="show" class="visually-hidden-input" {% if kind == "show" %}checked{% endif %}
             hx-get="/generate/search" hx-include="[name='query'],[name='kind']" hx-target="#generate-left" hx-swap="outerHTML">
           TV Show
         </label>
@@ -89,7 +89,7 @@
       <div class="style-pill-grid">
         {% for value, label in style_options %}
         <label class="style-pill">
-          <input type="radio" name="style" value="{{ value }}" {% if value == "classic" %}checked{% endif %} style="display:none;">
+          <input type="radio" name="style" value="{{ value }}" class="visually-hidden-input" {% if value == "classic" %}checked{% endif %}>
           {{ label.split(" (")[0] }}
         </label>
         {% endfor %}
@@ -106,8 +106,11 @@
     </div>
 
     <button class="btn btn-primary btn-block" type="submit" style="justify-content:center; gap:8px; display:flex;">
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 3 14 9-14 9V3Z"/></svg>
-      Generate clip
+      <span class="btn-spinner"></span>
+      <span class="btn-label-idle" style="display:flex; align-items:center; gap:8px;">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 3 14 9-14 9V3Z"/></svg>
+        Generate clip
+      </span>
     </button>
   </form>
   {% endif %}
