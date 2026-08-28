@@ -31,8 +31,6 @@ class CoverageStats:
 
 def _coverage_stats(settings_holder: SettingsHolder) -> CoverageStats:
     settings = settings_holder.settings
-    plex = settings_holder.plex_client
-    sections_by_name = dict(plex.library_sections()) if plex is not None else {}
 
     sidecar = embedded = no_subtitle = library_total = 0
     for library in settings.libraries:
@@ -40,9 +38,7 @@ def _coverage_stats(settings_holder: SettingsHolder) -> CoverageStats:
         sidecar += coverage.sidecar_count
         embedded += coverage.embedded_count
         no_subtitle += coverage.no_subtitle_count
-        section = sections_by_name.get(library.name)
-        if plex is not None and section is not None:
-            library_total += len(plex.enumerate_section(section))
+        library_total += quote_index.get_library_item_count(settings.quote_index_db_path, library.name) or 0
 
     return CoverageStats(
         cached_total=sidecar + embedded,

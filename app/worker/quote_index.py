@@ -100,6 +100,19 @@ def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
             "message TEXT NOT NULL"
             ")"
         )
+
+        # Each library's total item count as of the last time sync_library
+        # actually enumerated it (not updated on a "no changes" skip) —
+        # lets the dashboard show a "titles cached / library total"
+        # denominator without ever calling Plex's expensive enumerate_section
+        # from a page-load hot path (see library_sync.py's sync_library).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS library_item_counts ("
+            "library_name TEXT PRIMARY KEY, "
+            "item_count INTEGER NOT NULL, "
+            "updated_at TEXT NOT NULL"
+            ")"
+        )
         yield conn
         conn.commit()
     finally:
@@ -361,3 +374,25 @@ def latest_sync_log_seq(db_path: Path) -> int:
     with _connect(db_path) as conn:
         row = conn.execute("SELECT MAX(seq) FROM library_sync_log").fetchone()
     return row[0] or 0
+
+
+def set_library_item_count(db_path: Path, library_name: str, item_count: int) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO library_item_counts (library_name, item_count, updated_at) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(library_name) DO UPDATE SET "
+            "item_count=excluded.item_count, updated_at=excluded.updated_at",
+            (library_name, item_count, datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def get_library_item_count(db_path: Path, library_name: str) -> int | None:
+    if not db_path.exists():
+        return None
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT item_count FROM library_item_counts WHERE library_name = ?",
+            (library_name,),
+        ).fetchone()
+    return row[0] if row else None

@@ -136,6 +136,16 @@ def test_no_removal_candidates_updates_state_without_safety_checks(tmp_path):
     assert quote_index.get_section_updated_at(settings.quote_index_db_path, "Movies") == 200
 
 
+def test_sync_library_persists_item_count(tmp_path):
+    settings = _settings(tmp_path)
+    _precache(settings, "guid-1")
+    plex = _FakePlex(items=[_item("guid-1", 1), _item("guid-2", 2)])
+
+    asyncio.run(sync_library(settings, plex, "Movies", section=None, updated_at=200))
+
+    assert quote_index.get_library_item_count(settings.quote_index_db_path, "Movies") == 2
+
+
 def test_mount_check_failure_blocks_removal_but_not_addition(tmp_path):
     bad_root = tmp_path / "gone"  # never created -> mount check fails
     mappings = [PathMapping(plex_prefix="D:\\Movies", container_path=str(bad_root))]
