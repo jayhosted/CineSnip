@@ -20,38 +20,16 @@ def _movie(rating_key=101, title="Film", library_name="Movies"):
     )
 
 
-def test_index_if_searchable_records_source_for_a_real_match(tmp_path):
-    settings = _settings(tmp_path)
-    result = SubtitleResult(
-        guid="guid-1", source=SubtitleSource.SIDECAR,
-        entries=[SubtitleEntry(index=1, start=0.0, end=1.0, text="Hi")],
-        sidecar_path="/media/film.en.srt",
-    )
-
-    _index_if_searchable(settings, _movie(), result)
-
-    entries = search_index.get_entries(settings.quote_index_db_path, "guid-1")
-    assert entries is not None
-    assert len(entries) == 1
-    assert entries[0].text == "Hi"
-
-    source, sidecar_path, stream_index = search_index.get_source_info(
-        settings.quote_index_db_path, "guid-1"
-    )
-    assert source == "sidecar"
-    assert sidecar_path == "/media/film.en.srt"
-
-    # _index_if_searchable no longer writes the legacy quote_index tables —
-    # that write now happens exclusively via search_index (subtitles.py's
-    # get_subtitles() writes there directly too).
-    assert has_cached_title(settings.quote_index_db_path, "guid-1") is False
-
-
-def test_index_if_searchable_preserves_an_existing_fingerprint(tmp_path):
-    """A redundant second write (get_subtitles() already wrote this title
-    into search_index moments earlier in the real request flow) must not
-    clobber the stored fingerprint with None — that would force a cold
-    re-extraction on every subsequent request for this title."""
+def test_index_if_searchable_does_not_rewrite_search_index_for_a_searchable_result(tmp_path):
+    """get_subtitles() (app/worker/subtitles.py) already unconditionally
+    writes a searchable result into search_index before every real caller
+    invokes _index_if_searchable — so this must be a genuine no-op for the
+    SIDECAR/EMBEDDED case, not a redundant second write (which would cost a
+    full delete+reinsert of every subtitle line/FTS row on every /render,
+    /resolve-quote, and episode-cache request for data that didn't change).
+    Simulates that prior write directly via search_index.upsert_title, the
+    same way get_subtitles() would have, then asserts _index_if_searchable
+    leaves it byte-for-byte untouched."""
     settings = _settings(tmp_path)
     entries = [SubtitleEntry(index=1, start=0.0, end=1.0, text="Hi")]
     search_index.upsert_title(
@@ -66,7 +44,19 @@ def test_index_if_searchable_preserves_an_existing_fingerprint(tmp_path):
     )
     _index_if_searchable(settings, _movie(), result)
 
+    # Untouched: same fingerprint, same entries, same source metadata —
+    # not just "still present" (a rewrite with correct data would also
+    # pass that), but identical to what was there before the call.
     assert search_index.get_fingerprint(settings.quote_index_db_path, "guid-1") == (123.0, 456)
+    assert search_index.get_entries(settings.quote_index_db_path, "guid-1") == entries
+    source, sidecar_path, stream_index = search_index.get_source_info(
+        settings.quote_index_db_path, "guid-1"
+    )
+    assert (source, sidecar_path, stream_index) == ("sidecar", "/media/film.en.srt", None)
+
+    # Never wrote the legacy quote_index table either — that write was
+    # removed for the searchable branch entirely, not redirected.
+    assert has_cached_title(settings.quote_index_db_path, "guid-1") is False
 
 
 def test_index_if_searchable_records_no_subtitle_titles(tmp_path):
