@@ -13,6 +13,7 @@
   --accent-ink: oklch(0.16 0.02 174);
   --danger: oklch(0.68 0.18 25);
   --danger-soft: oklch(0.68 0.18 25 / 0.14);
+  --neutral-fill: oklch(0.42 0.008 250);
   --icon-black: oklch(0.155 0.009 265);
   --strip-grey: oklch(0.48 0.006 220);
   --sidebar: oklch(0.135 0.011 250);
@@ -451,3 +452,80 @@ input[type="text"]:disabled { opacity: 0.6; cursor: not-allowed; }
      card itself is down near phone width — stack them instead. */
   .field-row { flex-direction: column; }
 }
+
+/* ---- Dashboard --------------------------------------------------------- */
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 20px;
+}
+@media (max-width: 720px) {
+  .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 20px;
+}
+.stat-label { font-size: 12px; color: var(--text-tertiary); font-weight: 500; margin-bottom: 10px; }
+.stat-value { font-family: var(--font-display); font-size: 26px; font-weight: 700; }
+.stat-value-sub { font-size: 14px; color: var(--text-tertiary); font-weight: 500; }
+.stat-value-muted { color: var(--text-secondary); }
+.stat-bar { margin-top: 12px; height: 5px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.stat-bar-fill { height: 100%; background: var(--accent); border-radius: 999px; }
+.stat-bar-label { margin-top: 7px; font-size: 12px; color: var(--accent); }
+.stat-note { margin-top: 12px; font-size: 12px; color: var(--text-secondary); }
+
+.coverage-card { margin-top: 20px; padding: 22px 24px; }
+.coverage-header { font-size: 13.5px; font-weight: 600; margin-bottom: 14px; }
+.coverage-bar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--surface-2); }
+.coverage-seg-sidecar { background: var(--accent); }
+.coverage-seg-embedded { background: var(--neutral-fill); }
+.coverage-seg-none { background: var(--border); }
+.coverage-legend { display: flex; gap: 22px; margin-top: 12px; flex-wrap: wrap; }
+.coverage-legend span { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-secondary); }
+.dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.dot-sidecar { background: var(--accent); }
+.dot-embedded { background: var(--neutral-fill); }
+.dot-none { background: var(--border); }
+
+.sync-card { margin-top: 20px; padding: 24px; }
+.sync-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; flex-wrap: wrap; gap: 12px; }
+.sync-title { font-size: 15px; font-weight: 600; margin-bottom: 3px; }
+.sync-subtitle { font-size: 12.5px; color: var(--text-tertiary); }
+.sync-controls { display: flex; align-items: center; gap: 10px; }
+.sync-pill { display: flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: 999px; background: var(--surface-2); font-size: 12px; font-weight: 600; color: var(--text-tertiary); }
+.sync-pill-active { background: var(--accent-soft); color: var(--accent); }
+.sync-pulse { width: 6px; height: 6px; border-radius: 999px; background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+
+.sync-progress-track { height: 7px; border-radius: 999px; background: var(--surface-2); overflow: hidden; margin-bottom: 8px; margin-top: 4px; }
+.sync-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background-image: repeating-linear-gradient(45deg, var(--accent) 0 7px, var(--accent-strong) 7px 14px);
+  background-size: 28px 100%;
+  animation: dashboard-stripes 0.9s linear infinite;
+}
+@keyframes dashboard-stripes { from { background-position: 0 0; } to { background-position: 28px 0; } }
+.sync-progress-label { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-tertiary); margin-bottom: 16px; }
+
+.sync-disabled-note { margin: 16px 0 0; }
+
+.sync-log {
+  background: var(--bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.9;
+  color: var(--text-secondary);
+  max-height: 132px;
+  overflow-y: auto;
+  margin-top: 16px;
+}
+.sync-log-line { color: var(--text-tertiary); }
+.sync-log-empty { font-style: italic; }
