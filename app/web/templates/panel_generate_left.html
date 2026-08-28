@@ -13,15 +13,7 @@
           hx-get="/generate/reset?kind={{ kind }}" hx-target="#generate-left" hx-swap="outerHTML">Change</button>
       </div>
     {% else %}
-      <div class="input-icon-wrap">
-        <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-        <input type="text" id="query" name="query" autocomplete="off" value="{{ query or '' }}"
-          hx-get="/generate/search" hx-trigger="keyup changed delay:300ms"
-          hx-include="[name='kind']" hx-target="#generate-left" hx-swap="outerHTML"
-          placeholder="Search for a film or show…">
-      </div>
-
-      <div class="kind-toggle">
+      <div class="kind-toggle" style="margin-top:8px;">
         <label>
           <input type="radio" name="kind" value="film" {% if kind != "show" %}checked{% endif %}
             hx-get="/generate/search" hx-include="[name='query'],[name='kind']" hx-target="#generate-left" hx-swap="outerHTML">
@@ -34,20 +26,32 @@
         </label>
       </div>
 
-      {% if results %}
-        <div class="search-results">
-        {% for r in results %}
-          <button type="button" class="search-result-row"
-            hx-get="/generate/select?rating_key={{ r.rating_key }}&kind={{ kind }}&title={{ r.title | urlencode }}&year={{ r.year or '' }}&library_name={{ r.library_name | urlencode }}"
-            hx-target="#generate-left" hx-swap="outerHTML">
-            <span>{{ r.title }}{% if r.year %} <span class="year">({{ r.year }})</span>{% endif %}</span>
-            <span class="badge">{{ r.library_name }}</span>
-          </button>
-        {% endfor %}
+      <div class="search-field">
+        <div class="input-icon-wrap">
+          <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input type="text" id="query" name="query" autocomplete="off" value="{{ query or '' }}"
+            hx-get="/generate/search" hx-trigger="keyup changed delay:300ms"
+            hx-include="[name='kind']" hx-target="#generate-left" hx-swap="outerHTML"
+            placeholder="Search for a film or show…">
         </div>
-      {% elif query %}
-        <p class="footnote" style="margin:10px 0 0; text-align:left; max-width:none;">No results.</p>
-      {% endif %}
+
+        {% if results %}
+          <div class="search-results">
+          {% for r in results %}
+            <button type="button" class="search-result-row"
+              hx-get="/generate/select?rating_key={{ r.rating_key }}&kind={{ kind }}&title={{ r.title | urlencode }}&year={{ r.year or '' }}&library_name={{ r.library_name | urlencode }}"
+              hx-target="#generate-left" hx-swap="outerHTML">
+              <span>{{ r.title }}{% if r.year %} <span class="year">({{ r.year }})</span>{% endif %}</span>
+              <span class="badge">{{ r.library_name }}</span>
+            </button>
+          {% endfor %}
+          </div>
+        {% elif query %}
+          <div class="search-results">
+            <p class="footnote" style="margin:0; padding:10px 12px; text-align:left; max-width:none;">No results.</p>
+          </div>
+        {% endif %}
+      </div>
     {% endif %}
   </div>
 
