@@ -181,32 +181,20 @@ def _index_if_searchable(settings: Settings, movie: MovieResult, result: Subtitl
     # dashboard's coverage stats), a NONE result goes into
     # no_subtitle_titles instead (Section 5's documented gap: not
     # searchable, but still worth knowing "this was checked").
-    if result.source is not SubtitleSource.NONE and result.entries:
-        # get_subtitles() (app/worker/subtitles.py) already wrote this exact
-        # title into search_index moments earlier via the same guid, with
-        # the correct source-file fingerprint attached — this call is a
-        # redundant second write (kept because it's also the only place a
-        # caller who built its own SubtitleResult, e.g. no such caller today
-        # but matching the pre-existing shape, would land in search_index).
-        # Passing fingerprint=None here would clobber the freshness check
-        # get_subtitles() relies on (a null fingerprint never matches a live
-        # one, forcing a re-extraction on every subsequent request), so the
-        # already-stored fingerprint is read back and passed through
-        # unchanged rather than invented from scratch.
-        fingerprint = search_index.get_fingerprint(settings.quote_index_db_path, result.guid)
-        search_index.upsert_title(
-            settings.quote_index_db_path,
-            result.guid,
-            movie.rating_key,
-            movie.title,
-            movie.library_name,
-            result.source.value,
-            result.sidecar_path,
-            result.stream_index,
-            result.entries,
-            fingerprint,
-        )
-    elif result.source is SubtitleSource.NONE:
+    #
+    # The searchable branch deliberately does nothing to search_index:
+    # get_subtitles() (app/worker/subtitles.py) already unconditionally
+    # calls search_index.upsert_title(...) for all three outcomes (SIDECAR,
+    # EMBEDDED, NONE), with the correct source/sidecar_path/stream_index/
+    # entries/fingerprint — and every real caller here (render(),
+    # _load_subtitles(), _ensure_episode_cached()) calls get_subtitles()
+    # immediately before this function with the same movie/result. Writing
+    # here too would be a redundant second write on every /render,
+    # /resolve-quote, and episode-cache request — a full delete+reinsert of
+    # every subtitle line/FTS row for data that didn't change (same
+    # redundant-write pattern Task 5 already found and removed from
+    # library_sync.py's equivalent call).
+    if result.source is SubtitleSource.NONE:
         quote_index.upsert_no_subtitle_title(
             settings.quote_index_db_path,
             result.guid,
