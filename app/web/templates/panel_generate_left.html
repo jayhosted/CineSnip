@@ -32,6 +32,7 @@
           <input type="text" id="query" name="query" autocomplete="off" value="{{ query or '' }}"
             hx-get="/generate/search" hx-trigger="keyup changed delay:300ms"
             hx-include="[name='kind']" hx-target="#generate-left" hx-swap="outerHTML"
+            hx-sync="this:replace" autofocus
             placeholder="Search for a film or show…">
         </div>
 

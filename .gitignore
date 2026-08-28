@@ -20,3 +20,7 @@ venv/
 
 # Claude Code local settings/skills (installed tooling, personal hook config)
 .claude/
+
+# Local dev-only compose override (bind-mounts ./app for hot reload) —
+# Compose auto-merges it, so it must never reach another installer's clone.
+docker-compose.override.yml
