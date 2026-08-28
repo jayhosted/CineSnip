@@ -497,10 +497,8 @@ def create_app(settings: Settings) -> FastAPI:
         qm = settings.quote_match
         # Single-title, in-request computation — no O(corpus) cost and
         # nothing to pre-filter (it's already scoped to this one title's
-        # entries), so this builds candidates directly rather than going
-        # through quotes.py's disk-backed get_or_build_candidates(), which
-        # existed only to amortize this same work *across* requests for the
-        # same title.
+        # entries), so this builds candidates directly here rather than
+        # relying on any cross-request cache.
         displays = [strip_markup(e.text) for e in result.entries]
         normalized = [_normalize_stripped(d) for d in displays]
         candidates = _build_candidates(

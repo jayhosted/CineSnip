@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import json
 import re
 import unicodedata
-import uuid
 from dataclasses import dataclass
-from pathlib import Path
 
 from rapidfuzz import fuzz, process
 
-from app.worker.subtitles import SubtitleEntry, cache_path_for_guid
+from app.worker.subtitles import SubtitleEntry
 
 # --- Text normalization -------------------------------------------------
 
@@ -121,125 +118,6 @@ def _build_candidates(
 class PrecomputedCandidates:
     displays: list[str]
     candidates: list[_Candidate]
-
-
-# --- Candidate cache --------------------------------------------------------
-#
-# Normalizing every subtitle line and building the single-line/adjacent-window
-# candidate list is deterministic given a title's raw entries — it doesn't
-# depend on the search query at all, yet find_quote_matches() used to redo it
-# on every single search. Measured on the real library: this step was 53% of
-# total search time (3.57s of 6.77s across 216 cached titles), by far the
-# biggest piece — bigger than the disk read (7%) and even the actual
-# per-query fuzzy scoring (26%), which is the one part that genuinely can't
-# be cached. Persisting the built candidates to disk (not in memory) was a
-# deliberate choice over an in-process cache: it adds no RAM growth and no
-# new staleness class (an in-memory version would keep serving stale
-# candidates after a title's subtitles get re-extracted, until the worker
-# process restarts — this file-based version is invalidated by mtime,
-# exactly like the raw subtitle cache's own fingerprint check).
-
-
-def _candidates_cache_path(cache_dir: Path, guid: str) -> Path:
-    # Deliberately co-located with the raw subtitle cache file (same digest,
-    # different suffix) rather than a separate cache subdirectory — one
-    # fewer thing to keep in sync, and easy to spot the pair on disk.
-    subtitle_path = cache_path_for_guid(cache_dir, guid)
-    return subtitle_path.with_suffix(".candidates.json")
-
-
-def read_cached_candidates(
-    cache_dir: Path, guid: str, max_window_gap_seconds: float
-) -> PrecomputedCandidates | None:
-    candidates_path = _candidates_cache_path(cache_dir, guid)
-    if not candidates_path.exists():
-        return None
-
-    # The candidates cache is derived entirely from the raw subtitle cache —
-    # if that's been rewritten more recently (a re-sync, an alass fix, a
-    # fresh embedded extraction), this is stale by construction, regardless
-    # of its own age. No raw cache at all means nothing to trust it against.
-    subtitle_path = cache_path_for_guid(cache_dir, guid)
-    try:
-        if candidates_path.stat().st_mtime < subtitle_path.stat().st_mtime:
-            return None
-    except OSError:
-        return None
-
-    try:
-        payload = json.loads(candidates_path.read_text(encoding="utf-8"))
-        if payload.get("max_window_gap_seconds") != max_window_gap_seconds:
-            return None
-        return PrecomputedCandidates(
-            displays=payload["displays"],
-            candidates=[
-                _Candidate(
-                    indices=tuple(c["indices"]),
-                    start=c["start"],
-                    end=c["end"],
-                    display_text=c["display_text"],
-                    normalized_text=c["normalized_text"],
-                )
-                for c in payload["candidates"]
-            ],
-        )
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-        return None
-
-
-def write_cached_candidates(
-    cache_dir: Path,
-    guid: str,
-    precomputed: PrecomputedCandidates,
-    max_window_gap_seconds: float,
-) -> None:
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    final_path = _candidates_cache_path(cache_dir, guid)
-    payload = {
-        "max_window_gap_seconds": max_window_gap_seconds,
-        "displays": precomputed.displays,
-        "candidates": [
-            {
-                "indices": list(c.indices),
-                "start": c.start,
-                "end": c.end,
-                "display_text": c.display_text,
-                "normalized_text": c.normalized_text,
-            }
-            for c in precomputed.candidates
-        ],
-    }
-    tmp_path = final_path.with_suffix(f".json.tmp-{uuid.uuid4().hex}")
-    tmp_path.write_text(json.dumps(payload), encoding="utf-8")
-    tmp_path.replace(final_path)
-
-
-def delete_cached_candidates(cache_dir: Path, guid: str) -> bool:
-    """Used by library_sync.py when a title's been removed from Plex.
-    Returns whether a file actually existed to delete."""
-    path = _candidates_cache_path(cache_dir, guid)
-    if not path.exists():
-        return False
-    path.unlink()
-    return True
-
-
-def get_or_build_candidates(
-    cache_dir: Path,
-    guid: str,
-    entries: list[SubtitleEntry],
-    max_window_gap_seconds: float,
-) -> PrecomputedCandidates:
-    cached = read_cached_candidates(cache_dir, guid, max_window_gap_seconds)
-    if cached is not None:
-        return cached
-
-    displays = [strip_markup(e.text) for e in entries]
-    normalized = [_normalize_stripped(d) for d in displays]
-    candidates = _build_candidates(entries, displays, normalized, max_window_gap_seconds)
-    precomputed = PrecomputedCandidates(displays=displays, candidates=candidates)
-    write_cached_candidates(cache_dir, guid, precomputed, max_window_gap_seconds)
-    return precomputed
 
 
 def _context_for(

@@ -1,17 +1,11 @@
-import time
-
 import pytest
 
 from app.worker.quotes import (
-    delete_cached_candidates,
     find_quote_matches,
-    get_or_build_candidates,
     normalize_for_match,
-    read_cached_candidates,
     strip_markup,
-    write_cached_candidates,
 )
-from app.worker.subtitles import SubtitleEntry, SubtitleResult, SubtitleSource, write_cached_subtitles
+from app.worker.subtitles import SubtitleEntry
 
 
 def _entries(*specs):
@@ -329,126 +323,3 @@ def test_first_and_last_entries_have_empty_context_on_open_side():
 
     matches = find_quote_matches(entries, "Third line.")
     assert matches[0].context_after == ()
-
-
-# --- Candidate cache (get_or_build_candidates / disk persistence) ----------
-
-
-def _write_raw_subtitle_cache(cache_dir, guid, entries):
-    # get_or_build_candidates() is only ever called in production after the
-    # raw subtitle cache already exists (both real call sites read subtitles
-    # first) — the candidates cache's staleness check relies on that
-    # invariant, so tests need to set it up too rather than exercising an
-    # unrealistic "candidates cache with no raw cache at all" state.
-    write_cached_subtitles(
-        cache_dir,
-        SubtitleResult(guid=guid, source=SubtitleSource.SIDECAR, entries=entries),
-    )
-
-
-def test_precomputed_candidates_give_identical_results_to_rebuilding_from_scratch(
-    tmp_path,
-):
-    entries = _entries(
-        (0.0, 1.0, "Frankly, my dear, I don't give a damn."),
-        (2.0, 3.0, "Something else entirely."),
-        (4.0, 5.0, "I am"),
-        (5.5, 7.0, "your father."),
-    )
-    fresh = find_quote_matches(entries, "I am your father")
-
-    precomputed = get_or_build_candidates(tmp_path, "guid-1", entries, 3.0)
-    cached = find_quote_matches(entries, "I am your father", precomputed=precomputed)
-
-    assert cached == fresh
-
-
-def test_get_or_build_candidates_writes_a_reusable_disk_cache(tmp_path):
-    entries = _entries((0.0, 1.0, "Here's Johnny!"))
-    _write_raw_subtitle_cache(tmp_path, "guid-1", entries)
-
-    first = get_or_build_candidates(tmp_path, "guid-1", entries, 3.0)
-    # Second call must come back from disk, not silently recompute from
-    # different entries — pass an empty entries list to prove it's not
-    # rebuilding (a rebuild would crash/return nothing on empty entries).
-    second = read_cached_candidates(tmp_path, "guid-1", 3.0)
-
-    assert second is not None
-    assert second.displays == first.displays
-    assert [c.normalized_text for c in second.candidates] == [
-        c.normalized_text for c in first.candidates
-    ]
-
-
-def test_candidates_cache_miss_on_max_window_gap_seconds_change(tmp_path):
-    entries = _entries((0.0, 1.0, "Here's Johnny!"))
-    _write_raw_subtitle_cache(tmp_path, "guid-1", entries)
-    get_or_build_candidates(tmp_path, "guid-1", entries, 3.0)
-
-    # A config change to max_window_gap_seconds invalidates the old cache
-    # rather than silently reusing candidates built with a different window.
-    assert read_cached_candidates(tmp_path, "guid-1", 5.0) is None
-
-
-def test_candidates_cache_is_invalidated_when_the_subtitle_cache_is_rewritten(tmp_path):
-    entries = _entries((0.0, 1.0, "Here's Johnny!"))
-    _write_raw_subtitle_cache(tmp_path, "guid-1", entries)
-    get_or_build_candidates(tmp_path, "guid-1", entries, 3.0)
-    assert read_cached_candidates(tmp_path, "guid-1", 3.0) is not None
-
-    # A re-extraction (Bazarr re-sync, alass fix, etc.) rewrites the raw
-    # subtitle cache with a later mtime — the candidates cache, derived
-    # entirely from that raw cache, must be treated as stale even though its
-    # own content on disk hasn't changed.
-    time.sleep(0.01)
-    write_cached_subtitles(
-        tmp_path,
-        SubtitleResult(
-            guid="guid-1",
-            source=SubtitleSource.SIDECAR,
-            entries=[SubtitleEntry(index=1, start=0.0, end=1.0, text="Resynced!")],
-        ),
-    )
-
-    assert read_cached_candidates(tmp_path, "guid-1", 3.0) is None
-
-
-def test_candidates_cache_ignores_corrupt_file(tmp_path):
-    from app.worker.quotes import _candidates_cache_path
-    from app.worker.subtitles import cache_path_for_guid
-
-    # A real subtitle cache must exist and predate the candidates file, or
-    # the mtime staleness check alone would already reject it before the
-    # corrupt-JSON handling is even exercised.
-    cache_path_for_guid(tmp_path, "guid-1").write_text("{}")
-    path = _candidates_cache_path(tmp_path, "guid-1")
-    path.write_text("{not valid json")
-
-    assert read_cached_candidates(tmp_path, "guid-1", 3.0) is None
-
-
-def test_write_cached_candidates_round_trip(tmp_path):
-    entries = _entries((0.0, 1.0, "Here's Johnny!"))
-    _write_raw_subtitle_cache(tmp_path, "guid-1", entries)
-    precomputed = get_or_build_candidates(tmp_path, "guid-1", entries, 3.0)
-
-    _write_raw_subtitle_cache(tmp_path, "guid-2", entries)
-    write_cached_candidates(tmp_path, "guid-2", precomputed, 3.0)
-    loaded = read_cached_candidates(tmp_path, "guid-2", 3.0)
-
-    assert loaded == precomputed
-
-
-def test_delete_cached_candidates_removes_existing_file(tmp_path):
-    entries = _entries((0.0, 1.0, "Here's Johnny!"))
-    _write_raw_subtitle_cache(tmp_path, "guid-1", entries)
-    get_or_build_candidates(tmp_path, "guid-1", entries, 3.0)
-
-    deleted = delete_cached_candidates(tmp_path, "guid-1")
-
-    assert deleted is True
-    assert read_cached_candidates(tmp_path, "guid-1", 3.0) is None
-
-
-def test_delete_cached_candidates_returns_false_when_nothing_to_delete(tmp_path):
-    assert delete_cached_candidates(tmp_path, "guid-never-cached") is False
