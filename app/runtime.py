@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from app.bot.client import CineSnipBot
 from app.settings import Settings
+from app.worker.plex_client import PlexClient
 
 
 @dataclass
@@ -24,7 +25,13 @@ class SettingsHolder:
     this field live rather than holding its own copy, so it always sees the
     currently-connected bot, or None while one isn't up yet (startup, a
     reconfiguration mid-swap, or the gateway connection still handshaking).
+
+    `plex_client` mirrors the same pattern for the worker's live PlexClient:
+    main()'s loop sets it whenever the worker is (re)built, and the dashboard
+    (app/web/dashboard.py) reads this field live rather than holding its own
+    copy — same reasoning as `bot` above.
     """
 
     settings: Settings | None = None
     bot: CineSnipBot | None = None
+    plex_client: PlexClient | None = None
