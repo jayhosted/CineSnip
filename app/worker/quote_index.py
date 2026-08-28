@@ -28,6 +28,14 @@ def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     try:
+        # search_index.py's connections onto this SAME db file set
+        # journal_mode=WAL, which makes WAL mode sticky file-wide — but
+        # WAL's default busy_timeout is still 0, so a writer holding a
+        # transaction open (e.g. upsert_title's full-title insert) can make
+        # a concurrent read here raise "database is locked" instead of
+        # just waiting briefly. Match search_index.py's own busy_timeout
+        # value so every connection onto this file behaves consistently.
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.execute(
             "CREATE TABLE IF NOT EXISTS cached_titles ("
             "guid TEXT PRIMARY KEY, "

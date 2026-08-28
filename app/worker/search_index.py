@@ -266,34 +266,80 @@ def remove_title(db_path: Path, guid: str) -> None:
         conn.execute("DELETE FROM titles WHERE title_id = ?", (title_id,))
 
 
-def get_title_id(db_path: Path, guid: str) -> int | None:
-    """guid -> title_id lookup, needed by library_search.py's fast path to
-    filter a caller-supplied list[CachedTitle] (which carries no title_id of
-    its own — a CachedTitle built synthetically for a request, e.g. TV
-    whole-show search, has no such field) down to the survivors of
-    search_title_ids()."""
+def get_title_ids_by_guid(db_path: Path, guids: list[str]) -> dict[str, int]:
+    """Bulk guid -> title_id lookup, used by library_search.py to resolve a
+    caller-supplied list[CachedTitle] (which carries no title_id of its own
+    — a CachedTitle built synthetically for a request, e.g. TV whole-show
+    search, has no such field) down to a title_id scope for
+    search_entry_ids()/iter_all_entries(). Guids with no matching title row
+    (not yet cached) are simply absent from the result, not an error."""
+    if not guids:
+        return {}
     if not db_path.exists():
-        return None
+        return {}
+    placeholders = ",".join("?" for _ in guids)
     with _connect(db_path) as conn:
-        row = conn.execute("SELECT title_id FROM titles WHERE guid = ?", (guid,)).fetchone()
-    return row[0] if row is not None else None
+        rows = conn.execute(
+            f"SELECT guid, title_id FROM titles WHERE guid IN ({placeholders})",
+            guids,
+        ).fetchall()
+    return {guid: title_id for guid, title_id in rows}
 
 
-def search_title_ids(db_path: Path, tokens: list[str], limit: int = 4000) -> list[int]:
+def search_entry_ids(
+    db_path: Path,
+    tokens: list[str],
+    limit: int = 4000,
+    title_ids: list[int] | None = None,
+) -> list[tuple[int, int, int]]:
+    """FTS5 pre-filter returning up to `limit` individual surviving ENTRY
+    rows (not distinct titles) as (entry_id, title_id, idx) tuples, ranked
+    by FTS5's own relevance ordering. `idx` (the entry's own subtitle-cue
+    number within its title) is included so the caller can compute an
+    adjacent-cue window directly, without a second query to look it up.
+
+    This is deliberately entry-level, not title-level: capping to distinct
+    titles let a single query's fuzzy-scoring pass balloon to scoring every
+    entry of every title with any surviving hit — up to 46% of a real
+    ~7.5M-entry corpus, a ~700x amplification over the intended budget (see
+    docs/design/fts5-search-migration.md). Capping the entry rows
+    themselves, then having the caller (library_search.py) expand only
+    those specific survivors into small adjacent-cue windows, is what
+    actually keeps the fuzzy-scoring pass bounded.
+
+    `title_ids`, when given, scopes BOTH the FTS5 match and the ranking to
+    just those titles (e.g. one show's episodes for /snip-tv's whole-show
+    search) — without it, a global top-`limit` cap could starve out a
+    narrow-scoped caller's own titles entirely (confirmed on the real
+    library: a 12-episode show's search only had 5 episodes survive the
+    unscoped global cap).
+    """
     if not tokens:
         return []
     if not db_path.exists():
         return []
+    if title_ids is not None and not title_ids:
+        return []
     match_query = " OR ".join(tokens)
     with _connect(db_path) as conn:
-        rows = conn.execute(
-            "SELECT DISTINCT entries.title_id FROM entries "
-            "JOIN entries_fts ON entries.id = entries_fts.rowid "
-            "WHERE entries_fts MATCH ? "
-            "ORDER BY rank LIMIT ?",
-            (match_query, limit),
-        ).fetchall()
-    return [r[0] for r in rows]
+        if title_ids is None:
+            rows = conn.execute(
+                "SELECT entries.id, entries.title_id, entries.idx FROM entries "
+                "JOIN entries_fts ON entries.id = entries_fts.rowid "
+                "WHERE entries_fts MATCH ? "
+                "ORDER BY rank LIMIT ?",
+                (match_query, limit),
+            ).fetchall()
+        else:
+            placeholders = ",".join("?" for _ in title_ids)
+            rows = conn.execute(
+                f"SELECT entries.id, entries.title_id, entries.idx FROM entries "
+                f"JOIN entries_fts ON entries.id = entries_fts.rowid "
+                f"WHERE entries_fts MATCH ? AND entries.title_id IN ({placeholders}) "
+                f"ORDER BY rank LIMIT ?",
+                (match_query, *title_ids, limit),
+            ).fetchall()
+    return [(r[0], r[1], r[2]) for r in rows]
 
 
 def fetch_entries_for_titles(db_path: Path, title_ids: list[int]) -> dict[int, list[SubtitleEntry]]:
@@ -318,6 +364,48 @@ def fetch_entries_for_titles(db_path: Path, title_ids: list[int]) -> dict[int, l
     return result
 
 
+def fetch_entry_windows(
+    db_path: Path, windows: list[tuple[int, int, int]]
+) -> dict[int, list[tuple[int, SubtitleEntry]]]:
+    """Fetch just the entries inside a set of (title_id, idx_lo, idx_hi)
+    windows, grouped by title_id and idx-ordered within each title.
+
+    Deliberately NOT a "fetch this title's full entry list" call (unlike
+    fetch_entries_for_titles above): library_search.py's slice expansion
+    only ever needs the small adjacent-cue window around each FTS5 hit, and
+    a title's full subtitle track can be hundreds of entries — fetching all
+    of them for every title with any surviving hit was measured to
+    dominate real-library search time (~4s of a ~10s query) despite the
+    entry-level LIMIT already keeping the *scoring* pass small. Windows are
+    batched into chunks to stay well under SQLite's default bound-parameter
+    limit (999) while still sharing one connection/transaction.
+    """
+    from app.worker.subtitles import SubtitleEntry
+
+    if not windows:
+        return {}
+    if not db_path.exists():
+        return {}
+
+    result: dict[int, list[tuple[int, SubtitleEntry]]] = {}
+    chunk_size = 200  # 200 windows * 3 params/window = 600 params, under the 999 default limit
+    with _connect(db_path) as conn:
+        for i in range(0, len(windows), chunk_size):
+            chunk = windows[i : i + chunk_size]
+            clauses = " OR ".join(["(title_id = ? AND idx BETWEEN ? AND ?)"] * len(chunk))
+            params = [value for window in chunk for value in window]
+            rows = conn.execute(
+                f"SELECT title_id, id, idx, start, end, display_text FROM entries "
+                f"WHERE {clauses} ORDER BY title_id, idx",
+                params,
+            ).fetchall()
+            for title_id, entry_id, idx, start, end, display_text in rows:
+                result.setdefault(title_id, []).append(
+                    (entry_id, SubtitleEntry(index=idx, start=start, end=end, text=display_text))
+                )
+    return result
+
+
 def coverage_counts(db_path: Path, library_name: str) -> dict[str, int]:
     """sidecar/embedded row counts for a library, for the dashboard's
     coverage panel. get_subtitles() (subtitles.py) upserts a titles row for
@@ -338,13 +426,33 @@ def coverage_counts(db_path: Path, library_name: str) -> dict[str, int]:
     return {"sidecar": counts.get("sidecar", 0), "embedded": counts.get("embedded", 0)}
 
 
-def iter_all_entries(db_path: Path) -> Iterator[tuple[str, list[SubtitleEntry]]]:
+def iter_all_entries(
+    db_path: Path, title_ids: list[int] | None = None
+) -> Iterator[tuple[str, list[SubtitleEntry]]]:
+    """Full scan of every cached title's entries, used as the fallback when
+    the FTS5 pre-filter finds nothing (e.g. a typo'd query). `title_ids`,
+    when given, scopes the scan to just those titles — without it, a
+    narrow-scoped caller (e.g. /snip-tv's whole-show search) would fall
+    back to streaming the ENTIRE corpus (measured: ~9.6s over 7.5M entries)
+    instead of just its own handful of episodes."""
     from app.worker.subtitles import SubtitleEntry
 
     if not db_path.exists():
         return
+    if title_ids is not None and not title_ids:
+        return
     with _connect(db_path) as conn:
-        title_rows = conn.execute("SELECT title_id, guid FROM titles ORDER BY title_id").fetchall()
+        if title_ids is None:
+            title_rows = conn.execute(
+                "SELECT title_id, guid FROM titles ORDER BY title_id"
+            ).fetchall()
+        else:
+            placeholders = ",".join("?" for _ in title_ids)
+            title_rows = conn.execute(
+                f"SELECT title_id, guid FROM titles WHERE title_id IN ({placeholders}) "
+                f"ORDER BY title_id",
+                title_ids,
+            ).fetchall()
         for title_id, guid in title_rows:
             entry_rows = conn.execute(
                 "SELECT idx, start, end, display_text FROM entries "

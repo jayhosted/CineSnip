@@ -22,13 +22,7 @@ from app.worker.plex_client import (
     ShowNotFoundError,
 )
 from app.worker.quote_index import CachedTitle
-from app.worker.quotes import (
-    PrecomputedCandidates,
-    _build_candidates,
-    _normalize_stripped,
-    find_quote_matches,
-    strip_markup,
-)
+from app.worker.quotes import find_quote_matches
 from app.worker.subprocess_utils import SubprocessTimeoutError
 from app.worker.subtitle_render import STYLE_PRESETS
 from app.worker.subtitles import (
@@ -497,14 +491,9 @@ def create_app(settings: Settings) -> FastAPI:
         qm = settings.quote_match
         # Single-title, in-request computation — no O(corpus) cost and
         # nothing to pre-filter (it's already scoped to this one title's
-        # entries), so this builds candidates directly here rather than
-        # relying on any cross-request cache.
-        displays = [strip_markup(e.text) for e in result.entries]
-        normalized = [_normalize_stripped(d) for d in displays]
-        candidates = _build_candidates(
-            result.entries, displays, normalized, qm.max_window_gap_seconds
-        )
-        precomputed = PrecomputedCandidates(displays=displays, candidates=candidates)
+        # entries), so this just calls find_quote_matches() directly and
+        # lets it build its own candidates internally (its default
+        # `precomputed=None` path) rather than duplicating that logic here.
         matches = find_quote_matches(
             result.entries,
             quote,
@@ -512,7 +501,6 @@ def create_app(settings: Settings) -> FastAPI:
             min_score=qm.min_score,
             max_window_gap_seconds=qm.max_window_gap_seconds,
             context_lines=qm.context_lines,
-            precomputed=precomputed,
         )
 
         if not matches:
