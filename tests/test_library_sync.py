@@ -274,6 +274,31 @@ from app.worker.library_sync import run_library_sync_once
 from app.worker.quote_index import start_sync_run
 
 
+def test_run_library_sync_once_resyncs_library_with_no_persisted_count_even_if_unchanged(tmp_path):
+    # Simulates a library that was skipped forever under the old logic:
+    # updated_at already matches (would normally short-circuit) but no
+    # library_item_counts row exists yet (e.g. from before this stat was
+    # tracked, or a library that has simply never changed since sync was
+    # enabled). It must still get synced so the count gets populated.
+    settings = _settings(tmp_path)
+    quote_index.set_section_updated_at(settings.quote_index_db_path, "Movies", 999)
+    assert quote_index.get_library_item_count(settings.quote_index_db_path, "Movies") is None
+
+    class _PlexWithSections(_FakePlex):
+        def current_section_updated_ats(self):
+            return {"Movies": 999}  # unchanged from stored value
+
+        def library_sections(self):
+            return [("Movies", object())]
+
+    plex = _PlexWithSections(items=[_item("guid-1", 1), _item("guid-2", 2)])
+
+    results = asyncio.run(run_library_sync_once(settings, plex))
+
+    assert len(results) == 1
+    assert quote_index.get_library_item_count(settings.quote_index_db_path, "Movies") == 2
+
+
 def test_run_library_sync_once_skips_when_already_running(tmp_path):
     settings = _settings(tmp_path)
     plex = _FakePlex()
