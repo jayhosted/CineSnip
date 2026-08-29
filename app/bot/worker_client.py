@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from typing import AsyncIterator
 
 import httpx
 
@@ -27,6 +29,13 @@ RESOLVE_QUOTE_TIMEOUT_SECONDS = 480.0
 # worst case. Generous headroom above that (mostly theoretical in practice
 # — TV episode files are far smaller than a feature-length UHD remux).
 SEARCH_EPISODES_TIMEOUT_SECONDS = 900.0
+
+# Must exceed subtitle_defaults.extraction_timeout_seconds (300s default),
+# same reasoning as RESOLVE_QUOTE_TIMEOUT_SECONDS above — a single extend
+# batch does up to library_extend_cap cold extractions sequentially, but
+# httpx's read timeout applies per-chunk (time between NDJSON lines), not
+# to the whole request, so this only needs to cover one title's worst case.
+SEARCH_QUOTE_EXTEND_TIMEOUT_SECONDS = 480.0
 
 
 @dataclass
@@ -105,6 +114,18 @@ class LibrarySearchResult:
     min_score: float
 
 
+@dataclass
+class LibrarySearchExtendEvent:
+    type: str  # "cached" | "progress" | "final"
+    matches: list[LibraryQuoteMatchResult] | None = None
+    confident_score: float | None = None
+    min_score: float | None = None
+    index: int | None = None
+    total: int | None = None
+    title: str | None = None
+    remaining_uncached: int | None = None
+
+
 class WorkerClient:
     """Talks to the worker's FastAPI app over real loopback HTTP.
 
@@ -176,6 +197,22 @@ class WorkerClient:
         payload = response.json()
         payload["matches"] = [LibraryQuoteMatchResult(**m) for m in payload["matches"]]
         return LibrarySearchResult(**payload)
+
+    async def search_quote_extend(self, quote: str) -> AsyncIterator[LibrarySearchExtendEvent]:
+        async with self._client.stream(
+            "GET",
+            "/search-quote-extend",
+            params={"quote": quote},
+            timeout=SEARCH_QUOTE_EXTEND_TIMEOUT_SECONDS,
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line:
+                    continue
+                payload = json.loads(line)
+                if payload.get("matches") is not None:
+                    payload["matches"] = [LibraryQuoteMatchResult(**m) for m in payload["matches"]]
+                yield LibrarySearchExtendEvent(**payload)
 
     async def render(
         self,
