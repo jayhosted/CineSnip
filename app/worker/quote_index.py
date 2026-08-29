@@ -251,6 +251,18 @@ def is_no_subtitle_title(db_path: Path, guid: str) -> bool:
     return row is not None
 
 
+def list_no_subtitle_guids(db_path: Path) -> set[str]:
+    """One-query bulk fetch of every guid in no_subtitle_titles, for a
+    caller that needs to check membership across many items (e.g.
+    /search-quote-extend's per-item filtering loop) without opening a
+    fresh blocking SQLite connection per item."""
+    if not db_path.exists():
+        return set()
+    with _connect(db_path) as conn:
+        rows = conn.execute("SELECT guid FROM no_subtitle_titles").fetchall()
+    return {row[0] for row in rows}
+
+
 @dataclass(frozen=True)
 class LibraryCoverage:
     sidecar_count: int

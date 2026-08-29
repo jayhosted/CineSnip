@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 from typing import Literal
 
 import discord
@@ -10,6 +11,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from app.bot.worker_client import LibraryQuoteMatchResult, QuoteMatchResult
+
+logger = logging.getLogger("cinesnip.bot.gif")
 
 
 def _confidence_label(score: float, min_score: float, confident_score: float) -> str:
@@ -646,13 +649,35 @@ class GifCog(commands.Cog):
         last_progress_edit = 0.0
         cached_matches: list[LibraryQuoteMatchResult] = []
         final_event = None
+        interaction_dead = False
+
+        async def _safe_edit(**kwargs) -> bool:
+            # A capped batch of extend work can run well past Discord's
+            # ~15-minute interaction-token lifetime — once
+            # edit_original_response() starts raising discord.HTTPException
+            # (token expired), every further edit will too, so log once and
+            # signal the caller to stop trying rather than let it crash the
+            # coroutine. The worker-side extraction already persists to the
+            # cache regardless of whether the bot is still listening, so
+            # abandoning the loop here is correct, not lossy.
+            nonlocal interaction_dead
+            try:
+                await interaction.edit_original_response(**kwargs)
+                return True
+            except discord.HTTPException as exc:
+                logger.warning(
+                    "search-quote-extend: interaction token died mid-stream, "
+                    "abandoning further updates: %s", exc,
+                )
+                interaction_dead = True
+                return False
 
         try:
             async for event in self.bot.worker.search_quote_extend(quote):
                 if event.type == "cached":
                     cached_matches = event.matches or []
                     if cached_matches:
-                        await interaction.edit_original_response(
+                        ok = await _safe_edit(
                             content=None,
                             embed=_library_results_embed(
                                 quote, cached_matches,
@@ -661,29 +686,36 @@ class GifCog(commands.Cog):
                             view=None,
                         )
                     else:
-                        await interaction.edit_original_response(
+                        ok = await _safe_edit(
                             content="No cached matches yet — searching the rest of the library...",
                             embed=None,
                             view=None,
                         )
+                    if not ok:
+                        break
                 elif event.type == "progress":
                     now = asyncio.get_event_loop().time()
                     if now - last_progress_edit >= 2.0:
                         last_progress_edit = now
-                        await interaction.edit_original_response(
+                        ok = await _safe_edit(
                             content=f"🔍 Searching the rest of the library... ({event.index}/{event.total}) — {event.title}"
                         )
+                        if not ok:
+                            break
                 elif event.type == "final":
                     final_event = event
         except httpx.HTTPError as exc:
-            await interaction.edit_original_response(
+            await _safe_edit(
                 content=f"Couldn't search the library: {_error_detail(exc)}", embed=None, view=None
             )
             return
 
+        if interaction_dead:
+            return
+
         final_matches = final_event.matches if final_event else cached_matches
         if not final_matches:
-            await interaction.edit_original_response(
+            await _safe_edit(
                 content="No matches in what CineSnip has indexed so far. Try `/snip movie` on a "
                 "specific film first to add it, or rephrase your quote.",
                 embed=None,
@@ -693,7 +725,7 @@ class GifCog(commands.Cog):
 
         remaining_uncached = final_event.remaining_uncached if final_event else None
         view = LibrarySearchView(self, quote, final_matches, remaining_uncached=remaining_uncached)
-        await interaction.edit_original_response(
+        await _safe_edit(
             content=None,
             embed=_library_results_embed(quote, final_matches),
             view=view,

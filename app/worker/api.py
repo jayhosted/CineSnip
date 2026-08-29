@@ -7,14 +7,14 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.settings import Settings, SettingsError
 from app.worker import quote_index, search_index
 from app.worker.ffmpeg import ClipRenderer, RenderTimeoutError, parse_timecode
-from app.worker.library_search import search_cached_library
+from app.worker.library_search import LibraryQuoteMatch, search_cached_library
 from app.worker.library_sync import sync_one_title
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 from app.worker.plex_client import (
@@ -232,7 +232,7 @@ def _movie_library_matches(
     return cached_titles, matches
 
 
-def _library_search_payload(matches: list, qm) -> dict:
+def _library_search_payload(matches: list[LibraryQuoteMatch], qm) -> dict:
     return {
         "matches": [
             {
@@ -588,13 +588,14 @@ def create_app(settings: Settings) -> FastAPI:
         _, matches = _movie_library_matches(app, settings, quote)
         return LibrarySearchResponse(**_library_search_payload(matches, settings.quote_match))
 
-
     # Tier 2: extends /search-quote into not-yet-cached movie titles, gated
     # behind library_sync.enabled (CLAUDE.md Roadmap / issue #2 design spec) —
     # with sync disabled this behaves identically to /search-quote, just over
     # a streamed single-event body, so the bot never needs two code paths.
     @app.get("/search-quote-extend")
-    async def search_quote_extend(quote: str, cap: int | None = None) -> StreamingResponse:
+    async def search_quote_extend(
+        quote: str, cap: int | None = Query(default=None, ge=1)
+    ) -> StreamingResponse:
         extend_cap = cap if cap is not None else settings.quote_match.library_extend_cap
 
         async def event_stream():
@@ -612,6 +613,15 @@ def create_app(settings: Settings) -> FastAPI:
             movie_library_names = app.state.plex.movie_library_names
             already_known = {t.guid for t in cached_titles}
             db_path = settings.quote_index_db_path
+            # One bulk query up front instead of a per-item
+            # is_no_subtitle_title() call — see Fix 3: that call opened a
+            # fresh blocking SQLite connection per item on the shared
+            # event loop, which stalls the Discord gateway connection on a
+            # library with thousands of titles.
+            no_subtitle_guids = await asyncio.to_thread(
+                quote_index.list_no_subtitle_guids, db_path
+            )
+            seen: set[str] = set()
             uncached_items: list[MovieResult] = []
             for library_name, section in app.state.plex.library_sections():
                 if library_name not in movie_library_names:
@@ -622,8 +632,14 @@ def create_app(settings: Settings) -> FastAPI:
                     logger.warning("search-quote-extend: could not enumerate '%s': %s", library_name, exc)
                     continue
                 for item in items:
-                    if item.guid in already_known or quote_index.is_no_subtitle_title(db_path, item.guid):
+                    if item.guid in already_known or item.guid in no_subtitle_guids:
                         continue
+                    # A title can appear in more than one movie library
+                    # (CLAUDE.md Section 3's documented multi-library/3D
+                    # duplicate-title scenario) — only queue it once.
+                    if item.guid in seen:
+                        continue
+                    seen.add(item.guid)
                     uncached_items.append(item)
 
             if not uncached_items:
@@ -634,12 +650,34 @@ def create_app(settings: Settings) -> FastAPI:
                 }) + "\n"
                 return
 
-            batch = uncached_items[:extend_cap]
-            for index, item in enumerate(batch, start=1):
-                await sync_one_title(settings, item)
-                yield json.dumps({"type": "progress", "index": index, "total": len(batch), "title": item.title}) + "\n"
+            # SKIP outcomes (no path mapping, file missing) are cheap — just
+            # a path check, no extraction — and must not consume the cap
+            # budget, or a library with many perpetually-SKIP titles (e.g.
+            # no path mapping configured) makes "Search N more" loop
+            # forever re-attempting the same head of the list without ever
+            # making progress. Only a productive attempt (OK or ERROR — both
+            # represent real extraction work) counts toward extend_cap.
+            productive_count = 0
+            scanned_count = 0
+            for item in uncached_items:
+                scanned_count += 1
+                outcome = await sync_one_title(settings, item)
+                logger.info("search-quote-extend: %s", outcome)
+                if outcome.startswith("SKIP"):
+                    continue
+                productive_count += 1
+                yield json.dumps({
+                    "type": "progress",
+                    "index": productive_count,
+                    "total": extend_cap,
+                    "title": item.title,
+                }) + "\n"
+                if productive_count >= extend_cap:
+                    break
 
-            remaining = len(uncached_items) - len(batch)
+            # Items never even reached this call (not skipped — never
+            # looked at) are what's left to report as "remaining".
+            remaining = len(uncached_items) - scanned_count
             _, final_matches = _movie_library_matches(app, settings, quote)
             yield json.dumps({
                 "type": "final",

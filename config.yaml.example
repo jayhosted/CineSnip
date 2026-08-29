@@ -82,6 +82,13 @@ worker:
 # any deletion happens, specifically to avoid mistaking a Plex outage or a
 # dead drive for genuine content removal. See README.md for the full
 # explanation before enabling this.
+#
+# Also gates /snip search's ability to reach not-yet-cached movie titles:
+# with this enabled, a search that doesn't fully match against the cache
+# automatically extracts subtitles for more titles on the spot (capped by
+# quote_match.library_extend_cap above, with a "Search N more" follow-up
+# for the rest); with this disabled, /snip search stays cached-titles-only,
+# as before this feature existed.
 library_sync:
   enabled: false
   interval_hours: 24

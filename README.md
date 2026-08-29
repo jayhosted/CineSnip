@@ -154,13 +154,18 @@ clicking play.
 
 `/snip search quote:<text>` searches for a line across every film CineSnip
 has *already read subtitles for* — from any prior `/snip movie` or `/snip search`
-use — instead of requiring you to pick a film up front. It's fast (no
-re-parsing, no Plex calls), but its scope is exactly what's been touched so
-far: a title you've never generated a clip from won't show up yet. Pick a
-result from the list and it funnels straight into the same quote-confirm
-step as the normal flow. If nothing's indexed yet, run `/snip movie` on a specific
-film first (or just start using the bot normally — the searchable set grows
-automatically as you go).
+use — instead of requiring you to pick a film up front. Cached results come
+back instantly (no re-parsing, no Plex calls). If `library_sync` is enabled
+in `config.yaml`, a search that doesn't fully cover the library then keeps
+going in the background, extracting subtitles for more not-yet-cached
+titles on the spot (up to `quote_match.library_extend_cap` per search) and
+updating the results in place — with a "🔍 Search N more" button if there's
+still more left after that. With `library_sync` disabled, search stays
+scoped to what's already been touched: a title you've never generated a
+clip from won't show up. Pick a result from the list and it funnels
+straight into the same quote-confirm step as the normal flow. If nothing's
+indexed yet, run `/snip movie` on a specific film first (or just start
+using the bot normally — the searchable set grows automatically as you go).
 
 ### TV episodes
 

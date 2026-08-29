@@ -14,6 +14,7 @@ from app.worker.quote_index import (
     list_cached_titles,
     list_cached_titles_for_library,
     list_cached_titles_missing_source,
+    list_no_subtitle_guids,
     get_library_item_count,
     remove_cached_title,
     reset_stale_running_status,
@@ -165,6 +166,22 @@ def test_no_subtitle_title_upsert_overwrites(tmp_path):
     # No exception on the second call is the behavior under test here —
     # ON CONFLICT DO UPDATE, not a duplicate-key error.
     assert is_no_subtitle_title(db_path, "guid-1") is True
+
+
+def test_list_no_subtitle_guids_empty_db(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    assert list_no_subtitle_guids(db_path) == set()
+
+
+def test_list_no_subtitle_guids_returns_full_set(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    upsert_no_subtitle_title(db_path, "guid-1", 101, "Film One", "Movies")
+    upsert_no_subtitle_title(db_path, "guid-2", 102, "Film Two", "Movies")
+    # A cached (searchable) title must not show up here — this set is
+    # specifically the negative-case table.
+    upsert_cached_title(db_path, "guid-3", 103, "Film Three", "Movies", "sidecar")
+
+    assert list_no_subtitle_guids(db_path) == {"guid-1", "guid-2"}
 
 
 def test_library_coverage_counts_by_source_and_no_subtitle(tmp_path):

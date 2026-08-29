@@ -2,7 +2,6 @@ import asyncio
 import json
 
 import httpx
-import pytest
 
 from app.bot.worker_client import LibraryQuoteMatchResult, LibrarySearchExtendEvent, WorkerClient
 

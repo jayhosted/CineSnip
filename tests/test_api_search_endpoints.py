@@ -357,4 +357,70 @@ def test_search_quote_extend_treats_plex_enumeration_failure_as_empty_for_that_l
     events = _ndjson_lines(resp)
     assert [e["type"] for e in events] == ["cached", "final"]
     assert events[1]["remaining_uncached"] == 0
-    assert events[1]["matches"][0]["title"] == "Monty Python"
+
+
+def test_search_quote_extend_skip_does_not_consume_cap_budget(tmp_path, monkeypatch):
+    """A SKIP outcome (no path mapping, file missing) is just a cheap path
+    check, not an extraction — it must not eat into `cap`, or a library
+    with many perpetually-SKIP titles (e.g. no path mapping configured for
+    one section, CLAUDE.md Section 3's documented fallback shape) would
+    make "Search N more" loop forever on the same head of the list without
+    ever reaching a title that could actually be processed.
+    """
+    mount_root = tmp_path / "media"
+    mount_root.mkdir()
+    (mount_root / "film.mkv").write_bytes(b"x")
+    settings = _settings_with_sync(tmp_path, enabled=True, cap=1, mount_root=mount_root)
+
+    found_entries = [
+        SubtitleEntry(index=1, start=0.0, end=2.0, text="Nobody expects the Spanish Inquisition!")
+    ]
+
+    async def _fake_get_subtitles(movie, container_video_path, cache_dir, db_path, ffprobe_timeout=180.0, ffmpeg_timeout=180.0):
+        search_index.upsert_title(
+            db_path, movie.guid, movie.rating_key, movie.title, movie.library_name,
+            "sidecar", None, None, found_entries, None,
+        )
+        return SubtitleResult(guid=movie.guid, source=SubtitleSource.SIDECAR, entries=found_entries)
+
+    monkeypatch.setattr(library_sync_module, "get_subtitles", _fake_get_subtitles)
+
+    # First item in enumeration order has no path mapping covering its
+    # plex_path (mount_root's mapping only covers "D:\Movies") — a SKIP.
+    # Second item does have a matching mapping and an on-disk file — a real,
+    # extractable title. With cap=1, the SKIP must not use up the one slot:
+    # the extractable title should still be processed in this same call.
+    fake_plex = _FakePlexClient(
+        settings,
+        movie_items=[
+            _movie_item("guid-skip", 100, "Unmapped Film", plex_path="E:\\Other\\weird.mkv"),
+            _movie_item("guid-1", 101, "Monty Python", plex_path="D:\\Movies\\film.mkv"),
+        ],
+    )
+    client = _client(settings, monkeypatch, fake_plex)
+
+    resp = client.get("/search-quote-extend", params={"quote": "nobody expects"})
+
+    events = _ndjson_lines(resp)
+    types = [e["type"] for e in events]
+    assert types == ["cached", "progress", "final"]
+    # Only one progress event — for the productive title, not the SKIP'd one.
+    assert events[1]["title"] == "Monty Python"
+    assert events[1]["index"] == 1
+    assert events[1]["total"] == 1
+    final = events[2]
+    # Both items were scanned this call (one SKIP'd, one processed), so
+    # nothing was left un-looked-at.
+    assert final["remaining_uncached"] == 0
+    assert final["matches"][0]["title"] == "Monty Python"
+    assert search_index.has_title(settings.quote_index_db_path, "guid-1")
+    assert not search_index.has_title(settings.quote_index_db_path, "guid-skip")
+
+
+def test_search_quote_extend_rejects_non_positive_cap(tmp_path, monkeypatch):
+    settings = _settings_with_sync(tmp_path, enabled=True)
+    client = _client(settings, monkeypatch)
+
+    resp = client.get("/search-quote-extend", params={"quote": "anything", "cap": 0})
+
+    assert resp.status_code == 422
