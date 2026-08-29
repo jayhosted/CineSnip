@@ -65,6 +65,14 @@ class SubtitleStatusResult:
 
 
 @dataclass
+class SubtitleEntryResult:
+    index: int
+    start: float
+    end: float
+    text: str
+
+
+@dataclass
 class QuoteMatchResult:
     start: float
     end: float
@@ -169,6 +177,11 @@ class WorkerClient:
         response.raise_for_status()
         return SubtitleStatusResult(**response.json())
 
+    async def subtitles(self, rating_key: int) -> list[SubtitleEntryResult]:
+        response = await self._client.get(f"/subtitles/{rating_key}")
+        response.raise_for_status()
+        return [SubtitleEntryResult(**e) for e in response.json()["entries"]]
+
     async def search_shows(self, query: str) -> list[MovieResult]:
         response = await self._client.get("/search-shows", params={"query": query})
         response.raise_for_status()
@@ -238,11 +251,14 @@ class WorkerClient:
     async def render(
         self,
         rating_key: int,
-        timecode: str,
+        timecode: str | None = None,
         duration: float | None = None,
         end_timecode: str | None = None,
         format: str | None = None,
         style: str | None = None,
+        start: float | None = None,
+        end: float | None = None,
+        subtitle_overrides: dict[int, str | None] | None = None,
     ) -> RenderResult:
         response = await self._client.post(
             "/render",
@@ -253,6 +269,9 @@ class WorkerClient:
                 "end_timecode": end_timecode,
                 "format": format,
                 "style": style,
+                "start": start,
+                "end": end,
+                "subtitle_overrides": subtitle_overrides,
             },
             timeout=RENDER_TIMEOUT_SECONDS,
         )

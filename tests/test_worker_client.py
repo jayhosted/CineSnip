@@ -7,6 +7,8 @@ from app.bot.worker_client import (
     LibraryQuoteMatchResult,
     LibrarySearchExtendEvent,
     RandomQuoteResult,
+    RenderResult,
+    SubtitleEntryResult,
     WorkerClient,
 )
 
@@ -119,3 +121,56 @@ def test_random_quote_omits_quote_param_when_none():
     result = asyncio.run(client.random_quote(None, "all"))
 
     assert result.rating_key == 202
+
+
+def test_subtitles_parses_entries():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "rating_key": 1, "guid": "g", "source": "sidecar",
+                "sidecar_path": "x.srt", "stream_index": None, "entry_count": 2,
+                "entries": [
+                    {"index": 1, "start": 0.0, "end": 2.0, "text": "hi"},
+                    {"index": 2, "start": 2.0, "end": 4.0, "text": "there"},
+                ],
+            },
+        )
+
+    client = _client_with_mock(handler)
+    result = asyncio.run(client.subtitles(1))
+
+    assert result == [
+        SubtitleEntryResult(index=1, start=0.0, end=2.0, text="hi"),
+        SubtitleEntryResult(index=2, start=2.0, end=4.0, text="there"),
+    ]
+
+
+def test_render_sends_start_end_and_subtitle_overrides_when_given():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            content=b"clip-bytes",
+            headers={
+                "X-Clip-Format": "gif", "X-Clip-Style": "classic",
+                "X-Clip-Start": "10.0", "X-Clip-Duration": "5.0",
+            },
+        )
+
+    client = _client_with_mock(handler)
+    result = asyncio.run(
+        client.render(
+            rating_key=1, start=10.0, end=15.0, style="classic",
+            subtitle_overrides={3: None, 4: "edited text"},
+        )
+    )
+
+    assert captured["body"]["start"] == 10.0
+    assert captured["body"]["end"] == 15.0
+    assert captured["body"]["subtitle_overrides"] == {"3": None, "4": "edited text"}
+    assert result == RenderResult(
+        content=b"clip-bytes", format="gif", style="classic", start=10.0, duration=5.0
+    )
