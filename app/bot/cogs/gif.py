@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 from typing import Literal
 
@@ -362,7 +363,11 @@ class LibrarySearchView(discord.ui.View):
     """
 
     def __init__(
-        self, cog: "GifCog", quote: str, matches: list[LibraryQuoteMatchResult]
+        self,
+        cog: "GifCog",
+        quote: str,
+        matches: list[LibraryQuoteMatchResult],
+        remaining_uncached: int | None = None,
     ) -> None:
         super().__init__(timeout=120)
         self._cog = cog
@@ -381,6 +386,22 @@ class LibrarySearchView(discord.ui.View):
         select = discord.ui.Select(placeholder="Choose a quote", options=options)
         select.callback = self._on_select
         self.add_item(select)
+
+        # remaining_uncached is only ever a real int when Tier 2 (extend)
+        # actually ran and hit its cap — None (extend didn't run, e.g.
+        # library_sync disabled) or 0 (fully covered) both mean no button.
+        if remaining_uncached:
+            more_button = discord.ui.Button(
+                label=f"🔍 Search {remaining_uncached} more",
+                style=discord.ButtonStyle.secondary,
+            )
+            more_button.callback = self._on_search_more
+            self.add_item(more_button)
+
+    async def _on_search_more(self, interaction: discord.Interaction) -> None:
+        self.stop()
+        await interaction.response.defer()
+        await self._cog._run_library_search(interaction, self._quote)
 
     async def _on_select(self, interaction: discord.Interaction) -> None:
         for item in list(self.children):
@@ -617,35 +638,78 @@ class GifCog(commands.Cog):
     ) -> None:
         await self._generate(interaction, film, quote, timecode, end_timecode, format)
 
+    async def _run_library_search(self, interaction: discord.Interaction, quote: str) -> None:
+        # Shared by /snip search itself and LibrarySearchView's "Search N
+        # more" button — both stream the same worker endpoint into the same
+        # message, just from different entry points (slash command vs.
+        # component interaction), both already deferred by their caller.
+        last_progress_edit = 0.0
+        cached_matches: list[LibraryQuoteMatchResult] = []
+        final_event = None
+
+        try:
+            async for event in self.bot.worker.search_quote_extend(quote):
+                if event.type == "cached":
+                    cached_matches = event.matches or []
+                    if cached_matches:
+                        await interaction.edit_original_response(
+                            content=None,
+                            embed=_library_results_embed(
+                                quote, cached_matches,
+                                description="Still searching the rest of the library — results below will update.",
+                            ),
+                            view=None,
+                        )
+                    else:
+                        await interaction.edit_original_response(
+                            content="No cached matches yet — searching the rest of the library...",
+                            embed=None,
+                            view=None,
+                        )
+                elif event.type == "progress":
+                    now = asyncio.get_event_loop().time()
+                    if now - last_progress_edit >= 2.0:
+                        last_progress_edit = now
+                        await interaction.edit_original_response(
+                            content=f"🔍 Searching the rest of the library... ({event.index}/{event.total}) — {event.title}"
+                        )
+                elif event.type == "final":
+                    final_event = event
+        except httpx.HTTPError as exc:
+            await interaction.edit_original_response(
+                content=f"Couldn't search the library: {_error_detail(exc)}", embed=None, view=None
+            )
+            return
+
+        final_matches = final_event.matches if final_event else cached_matches
+        if not final_matches:
+            await interaction.edit_original_response(
+                content="No matches in what CineSnip has indexed so far. Try `/snip movie` on a "
+                "specific film first to add it, or rephrase your quote.",
+                embed=None,
+                view=None,
+            )
+            return
+
+        remaining_uncached = final_event.remaining_uncached if final_event else None
+        view = LibrarySearchView(self, quote, final_matches, remaining_uncached=remaining_uncached)
+        await interaction.edit_original_response(
+            content=None,
+            embed=_library_results_embed(quote, final_matches),
+            view=view,
+        )
+
     @snip_group.command(
         name="search",
         description="Search your whole library for a quote, no film needed.",
     )
     @app_commands.describe(
-        quote="A line of dialogue to find across every film CineSnip has already read"
+        quote="A line of dialogue to find — searches cached films first, then the rest of "
+        "the library automatically if library sync is enabled"
     )
     async def snip_search(self, interaction: discord.Interaction, quote: str) -> None:
         await interaction.response.defer(ephemeral=True)
-
-        try:
-            result = await self.bot.worker.search_quote(quote)
-        except httpx.HTTPError as exc:
-            await interaction.edit_original_response(
-                content=f"Couldn't search the library: {_error_detail(exc)}"
-            )
-            return
-
-        if not result.matches:
-            await interaction.edit_original_response(
-                content="No matches in what CineSnip has indexed so far. Try `/snip movie` on a "
-                "specific film first to add it, or rephrase your quote."
-            )
-            return
-
-        view = LibrarySearchView(self, quote, result.matches)
-        await interaction.edit_original_response(
-            embed=_library_results_embed(quote, result.matches), view=view
-        )
+        await self._run_library_search(interaction, quote)
 
     @snip_group.command(
         name="tv",
