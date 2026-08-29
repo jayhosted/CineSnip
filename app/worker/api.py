@@ -216,7 +216,7 @@ def _to_out(movie: MovieResult) -> MovieResultOut:
     )
 
 
-def _movie_library_matches(
+async def _movie_library_matches(
     app: FastAPI, settings: Settings, quote: str
 ) -> tuple[list[CachedTitle], list]:
     # Shared by /search-quote and /search-quote-extend: both search exactly
@@ -229,7 +229,15 @@ def _movie_library_matches(
         if t.library_name in movie_library_names
     ]
     qm = settings.quote_match
-    matches = search_cached_library(
+    # Runs sqlite FTS5 queries + rapidfuzz scoring, which can take several
+    # seconds (up to ~9.6s in a full-scan fallback per search_cached_library's
+    # docstring). Must go through to_thread: bot and worker share one process
+    # and one event loop (CLAUDE.md Section 8), so a synchronous call here
+    # freezes Discord's own interaction dispatch for the same duration —
+    # confirmed as the root cause of "The application did not respond"
+    # errors on /snip tv.
+    matches = await asyncio.to_thread(
+        search_cached_library,
         settings.quote_index_db_path,
         cached_titles,
         quote,
@@ -604,7 +612,7 @@ def create_app(settings: Settings) -> FastAPI:
     # empty index/no matches is a normal outcome, not an error.
     @app.get("/search-quote", response_model=LibrarySearchResponse)
     async def search_quote(quote: str) -> LibrarySearchResponse:
-        _, matches = _movie_library_matches(app, settings, quote)
+        _, matches = await _movie_library_matches(app, settings, quote)
         return LibrarySearchResponse(**_library_search_payload(matches, settings.quote_match))
 
     @app.get("/random-quote", response_model=RandomQuoteResponse)
@@ -653,7 +661,7 @@ def create_app(settings: Settings) -> FastAPI:
         extend_cap = cap if cap is not None else settings.quote_match.library_extend_cap
 
         async def event_stream():
-            cached_titles, matches = _movie_library_matches(app, settings, quote)
+            cached_titles, matches = await _movie_library_matches(app, settings, quote)
             yield json.dumps({"type": "cached", **_library_search_payload(matches, settings.quote_match)}) + "\n"
 
             if not settings.library_sync.enabled:
@@ -765,7 +773,7 @@ def create_app(settings: Settings) -> FastAPI:
             # Items never even reached this call (not skipped — never
             # looked at) are what's left to report as "remaining".
             remaining = len(uncached_items) - scanned_count
-            _, final_matches = _movie_library_matches(app, settings, quote)
+            _, final_matches = await _movie_library_matches(app, settings, quote)
             yield json.dumps({
                 "type": "final",
                 "remaining_uncached": remaining,
@@ -842,7 +850,8 @@ def create_app(settings: Settings) -> FastAPI:
         ]
 
         qm = settings.quote_match
-        matches = search_cached_library(
+        matches = await asyncio.to_thread(
+            search_cached_library,
             settings.quote_index_db_path,
             cached_titles,
             quote,
