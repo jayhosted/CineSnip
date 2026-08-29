@@ -250,8 +250,8 @@ def test_search_quote_extend_short_circuits_when_nothing_uncached(tmp_path, monk
     resp = client.get("/search-quote-extend", params={"quote": "nobody expects"})
 
     events = _ndjson_lines(resp)
-    assert [e["type"] for e in events] == ["cached", "final"]
-    assert events[1]["remaining_uncached"] == 0
+    assert [e["type"] for e in events] == ["cached", "scanning", "final"]
+    assert events[2]["remaining_uncached"] == 0
 
 
 def test_search_quote_extend_skips_titles_already_marked_no_subtitle(tmp_path, monkeypatch):
@@ -263,8 +263,8 @@ def test_search_quote_extend_skips_titles_already_marked_no_subtitle(tmp_path, m
     resp = client.get("/search-quote-extend", params={"quote": "anything"})
 
     events = _ndjson_lines(resp)
-    assert [e["type"] for e in events] == ["cached", "final"]
-    assert events[1]["remaining_uncached"] == 0
+    assert [e["type"] for e in events] == ["cached", "scanning", "final"]
+    assert events[2]["remaining_uncached"] == 0
 
 
 def test_search_quote_extend_extracts_uncached_titles_up_to_cap(tmp_path, monkeypatch):
@@ -299,12 +299,12 @@ def test_search_quote_extend_extracts_uncached_titles_up_to_cap(tmp_path, monkey
 
     events = _ndjson_lines(resp)
     types = [e["type"] for e in events]
-    assert types == ["cached", "progress", "final"]
+    assert types == ["cached", "scanning", "progress", "final"]
     assert events[0]["matches"] == []
-    assert events[1]["title"] == "Monty Python"
-    assert events[1]["index"] == 1
-    assert events[1]["total"] == 1
-    final = events[2]
+    assert events[2]["title"] == "Monty Python"
+    assert events[2]["index"] == 1
+    assert events[2]["total"] == 1
+    final = events[3]
     assert final["remaining_uncached"] == 1
     assert final["matches"][0]["title"] == "Monty Python"
     assert search_index.has_title(settings.quote_index_db_path, "guid-1")
@@ -329,7 +329,7 @@ def test_search_quote_extend_does_not_permanently_mark_a_failed_extraction(tmp_p
     resp = client.get("/search-quote-extend", params={"quote": "anything"})
 
     events = _ndjson_lines(resp)
-    assert [e["type"] for e in events] == ["cached", "progress", "final"]
+    assert [e["type"] for e in events] == ["cached", "scanning", "progress", "final"]
     # A transient extraction failure must not become a permanent negative
     # cache entry — it needs to be retried on a future extend call.
     assert not search_index.has_title(settings.quote_index_db_path, "guid-1")
@@ -355,8 +355,8 @@ def test_search_quote_extend_treats_plex_enumeration_failure_as_empty_for_that_l
     resp = client.get("/search-quote-extend", params={"quote": "nobody expects"})
 
     events = _ndjson_lines(resp)
-    assert [e["type"] for e in events] == ["cached", "final"]
-    assert events[1]["remaining_uncached"] == 0
+    assert [e["type"] for e in events] == ["cached", "scanning", "final"]
+    assert events[2]["remaining_uncached"] == 0
 
 
 def test_search_quote_extend_skip_does_not_consume_cap_budget(tmp_path, monkeypatch):
@@ -403,12 +403,12 @@ def test_search_quote_extend_skip_does_not_consume_cap_budget(tmp_path, monkeypa
 
     events = _ndjson_lines(resp)
     types = [e["type"] for e in events]
-    assert types == ["cached", "progress", "final"]
+    assert types == ["cached", "scanning", "progress", "final"]
     # Only one progress event — for the productive title, not the SKIP'd one.
-    assert events[1]["title"] == "Monty Python"
-    assert events[1]["index"] == 1
-    assert events[1]["total"] == 1
-    final = events[2]
+    assert events[2]["title"] == "Monty Python"
+    assert events[2]["index"] == 1
+    assert events[2]["total"] == 1
+    final = events[3]
     # Both items were scanned this call (one SKIP'd, one processed), so
     # nothing was left un-looked-at.
     assert final["remaining_uncached"] == 0
@@ -424,3 +424,86 @@ def test_search_quote_extend_rejects_non_positive_cap(tmp_path, monkeypatch):
     resp = client.get("/search-quote-extend", params={"quote": "anything", "cap": 0})
 
     assert resp.status_code == 422
+
+
+def test_search_quote_extend_skips_enumeration_when_library_unchanged(tmp_path, monkeypatch):
+    """Mirrors library_sync's own section.updatedAt change-detection: if a
+    movie library's live updatedAt still matches what library_sync's last
+    full pass stored, nothing in it could be uncached beyond what's already
+    known, so the (often several-second, real-Plex-network) enumeration is
+    skipped entirely — verified here by making enumerate_section raise if
+    it's ever called.
+    """
+    from app.worker.quote_index import set_section_updated_at
+
+    settings = _settings_with_sync(tmp_path, enabled=True)
+    _write_title(
+        settings.quote_index_db_path,
+        "guid-1", 101, "Monty Python", "Movies",
+        ["Nobody expects the Spanish Inquisition!"],
+    )
+    set_section_updated_at(settings.quote_index_db_path, "Movies", 12345)
+
+    class _UnchangedPlex(_FakePlexClient):
+        def current_section_updated_ats(self):
+            return {"Movies": 12345}
+
+        def enumerate_section(self, section):
+            raise AssertionError("enumerate_section must not be called when updatedAt is unchanged")
+
+    fake_plex = _UnchangedPlex(settings)
+    client = _client(settings, monkeypatch, fake_plex)
+
+    resp = client.get("/search-quote-extend", params={"quote": "nobody expects"})
+
+    events = _ndjson_lines(resp)
+    assert [e["type"] for e in events] == ["cached", "scanning", "final"]
+    assert events[2]["remaining_uncached"] == 0
+
+
+def test_search_quote_extend_still_enumerates_when_library_changed(tmp_path, monkeypatch):
+    """The companion case to the skip test above: a live updatedAt that
+    differs from the stored value must still trigger a full enumeration —
+    confirms the skip is conditional, not accidentally unconditional. Uses
+    an item with no path mapping (a cheap SKIP, not a real extraction) so
+    this test only exercises the enumeration-was-called path, not the
+    extraction machinery other tests already cover.
+    """
+    from app.worker.quote_index import set_section_updated_at
+
+    mount_root = tmp_path / "media"
+    mount_root.mkdir()
+    settings = _settings_with_sync(tmp_path, enabled=True, mount_root=mount_root)
+    _write_title(
+        settings.quote_index_db_path,
+        "guid-1", 101, "Monty Python", "Movies",
+        ["Nobody expects the Spanish Inquisition!"],
+    )
+    set_section_updated_at(settings.quote_index_db_path, "Movies", 111)
+
+    class _ChangedPlex(_FakePlexClient):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.enumerate_called = False
+
+        def current_section_updated_ats(self):
+            return {"Movies": 222}  # differs from the stored 111
+
+        def enumerate_section(self, section):
+            self.enumerate_called = True
+            return super().enumerate_section(section)
+
+    # File doesn't exist under mount_root -> a cheap "SKIP (file not found)",
+    # not a real extraction — this test only cares that enumeration ran.
+    fake_plex = _ChangedPlex(
+        settings,
+        movie_items=[_movie_item("guid-2", 102, "Another Film", plex_path="D:\\Movies\\missing.mkv")],
+    )
+    client = _client(settings, monkeypatch, fake_plex)
+
+    resp = client.get("/search-quote-extend", params={"quote": "nobody expects"})
+
+    events = _ndjson_lines(resp)
+    assert fake_plex.enumerate_called
+    assert [e["type"] for e in events] == ["cached", "scanning", "final"]
+    assert events[2]["remaining_uncached"] == 0

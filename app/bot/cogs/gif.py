@@ -677,20 +677,38 @@ class GifCog(commands.Cog):
                 if event.type == "cached":
                     cached_matches = event.matches or []
                     if cached_matches:
+                        # The "still searching" status lives in `content`
+                        # (above the embed), not buried in the embed's own
+                        # description below its title — a fast extend (e.g.
+                        # a sidecar-subtitle title needing no ffmpeg) can
+                        # replace this within a second or two, and content
+                        # is what a user's eye actually lands on first.
                         ok = await _safe_edit(
-                            content=None,
+                            content="🔍 **Still searching the rest of the library...** 🔍 Results below will update.",
                             embed=_library_results_embed(
                                 quote, cached_matches,
-                                description="Still searching the rest of the library — results below will update.",
+                                description="Results so far — the picker below appears once the search finishes.",
                             ),
                             view=None,
                         )
                     else:
                         ok = await _safe_edit(
-                            content="No cached matches yet — searching the rest of the library...",
+                            content="🔍 **Searching the rest of the library...** 🔍 No cached matches yet.",
                             embed=None,
                             view=None,
                         )
+                    if not ok:
+                        break
+                elif event.type == "scanning":
+                    # Enumerating the whole movie library against live Plex
+                    # is the one real gap in this stream with no other
+                    # signal — on a library of a thousand-plus titles it can
+                    # take several seconds on its own, before any title is
+                    # even looked at yet. Only touches `content` (same as
+                    # "progress"), leaving whatever embed "cached" set alone.
+                    ok = await _safe_edit(
+                        content="🔍 **Checking the library for new titles...** 🔍"
+                    )
                     if not ok:
                         break
                 elif event.type == "progress":
@@ -698,7 +716,7 @@ class GifCog(commands.Cog):
                     if now - last_progress_edit >= 2.0:
                         last_progress_edit = now
                         ok = await _safe_edit(
-                            content=f"🔍 Searching the rest of the library... ({event.index}/{event.total}) — {event.title}"
+                            content=f"🔍 **Searching the rest of the library...** 🔍 ({event.index}/{event.total}) — {event.title}"
                         )
                         if not ok:
                             break

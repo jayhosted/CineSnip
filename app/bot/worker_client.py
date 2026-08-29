@@ -116,7 +116,7 @@ class LibrarySearchResult:
 
 @dataclass
 class LibrarySearchExtendEvent:
-    type: str  # "cached" | "progress" | "final"
+    type: str  # "cached" | "scanning" | "progress" | "final"
     matches: list[LibraryQuoteMatchResult] | None = None
     confident_score: float | None = None
     min_score: float | None = None

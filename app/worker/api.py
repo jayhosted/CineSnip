@@ -621,10 +621,43 @@ def create_app(settings: Settings) -> FastAPI:
             no_subtitle_guids = await asyncio.to_thread(
                 quote_index.list_no_subtitle_guids, db_path
             )
+            # Enumerating every configured movie library is a live Plex
+            # network call per section (not file I/O, but not free either —
+            # on a library of a thousand-plus titles this can take several
+            # seconds), and it's the one gap in this stream with no visible
+            # signal: nothing else is emitted between the "cached" event and
+            # whatever comes next. One cheap upfront event closes that gap.
+            yield json.dumps({"type": "scanning"}) + "\n"
+
+            # Cheap change-detection before paying for a full enumeration —
+            # mirrors library_sync's own use of section.updatedAt
+            # (run_library_sync_once). If a movie library's live updatedAt
+            # still matches what library_sync's last full pass over it
+            # stored, nothing in that library could be uncached beyond what
+            # already_known/no_subtitle_guids already cover, so the
+            # (often several-second) live item listing is skipped entirely.
+            # A failed check (Plex hiccup) degrades to "always enumerate",
+            # same as before this optimization existed — never to "assume
+            # nothing changed".
+            try:
+                current_updated_ats = await asyncio.to_thread(
+                    app.state.plex.current_section_updated_ats
+                )
+            except Exception as exc:  # noqa: BLE001 - a failed cheap check must fall back to the full enumeration, not skip it
+                logger.warning(
+                    "search-quote-extend: could not check library change state, "
+                    "falling back to full enumeration: %s", exc,
+                )
+                current_updated_ats = {}
+
             seen: set[str] = set()
             uncached_items: list[MovieResult] = []
             for library_name, section in app.state.plex.library_sections():
                 if library_name not in movie_library_names:
+                    continue
+                stored_updated_at = quote_index.get_section_updated_at(db_path, library_name)
+                live_updated_at = current_updated_ats.get(library_name)
+                if stored_updated_at is not None and live_updated_at == stored_updated_at:
                     continue
                 try:
                     items = await asyncio.to_thread(app.state.plex.enumerate_section, section)
