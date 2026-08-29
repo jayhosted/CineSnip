@@ -529,6 +529,16 @@ class ClipEditView(ClipResultView):
             return
 
         await interaction.response.defer()
+        # A style change on a title that was rendered without one (e.g. a
+        # bare-timecode clip) can be the first request that actually needs
+        # this title's subtitles — same cold-extraction risk as a fresh
+        # quote search, just reached via a different route (CLAUDE.md
+        # Section 2's upfront slow-extraction warning).
+        slow_warning = await _slow_subtitle_warning(self._worker, self._rating_key)
+        if slow_warning:
+            await interaction.edit_original_response(
+                content=f"Regenerating with a new style…{slow_warning}"
+            )
         self.style = new_style
         self._add_select()
         await self._re_render(interaction, self._clip_start, self._clip_end)
