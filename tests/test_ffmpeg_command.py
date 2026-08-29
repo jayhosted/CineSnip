@@ -1,6 +1,10 @@
+import asyncio
+
 import pytest
 
 from app.worker.ffmpeg import ClipRenderer, _three_d_plan, build_seek_args, parse_timecode
+from app.worker.subtitle_render import STYLE_PRESETS
+from app.worker.subtitles import SubtitleEntry
 
 
 def test_build_seek_args_formats_start_and_duration_as_timecodes():
@@ -146,3 +150,31 @@ def test_three_d_plan_squeezed_over_under_also_unsqueezes():
     prefix, eye_w, eye_h = _three_d_plan("over_under", 1920, 1080)
     assert prefix == "crop=iw:ih/2:0:0,scale=iw:ih*2,setsar=1"
     assert (eye_w, eye_h) == (1920, 1080)
+
+
+def test_write_ass_file_applies_subtitle_overrides(tmp_path):
+    renderer = ClipRenderer(fps=15, width=480)
+    entries = [
+        SubtitleEntry(index=1, start=1.0, end=3.0, text="original one"),
+        SubtitleEntry(index=2, start=3.0, end=5.0, text="original two"),
+    ]
+
+    ass_path = asyncio.run(
+        renderer._write_ass_file(
+            "unused-input-path.mkv",
+            start=0.0,
+            duration=6.0,
+            entries=entries,
+            style=STYLE_PRESETS["classic"],
+            scratch_dir=tmp_path,
+            eye_width=480,
+            eye_height=270,
+            subtitle_overrides={1: "edited one", 2: None},
+        )
+    )
+
+    doc = ass_path.read_text(encoding="utf-8")
+    assert "edited one" in doc
+    assert "original one" not in doc
+    assert "original two" not in doc
+    assert "two" not in doc

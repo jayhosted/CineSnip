@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 
 from app.worker.subprocess_utils import SubprocessTimeoutError, run_and_capture
-from app.worker.subtitle_render import StylePreset, build_ass_document, entries_in_window
+from app.worker.subtitle_render import StylePreset, apply_overrides, build_ass_document, entries_in_window
 from app.worker.subtitles import SubtitleEntry
 
 
@@ -242,6 +242,7 @@ class ClipRenderer:
         subtitle_entries: list[SubtitleEntry] | None = None,
         style: StylePreset | None = None,
         three_d_format: str = "none",
+        subtitle_overrides: dict[int, str | None] | None = None,
     ) -> bytes:
         # Only probe files in a library that's configured as 3D at all —
         # avoids an extra ffprobe call on every render for the (much more
@@ -265,7 +266,7 @@ class ClipRenderer:
         if subtitle_entries and style is not None:
             ass_path = await self._write_ass_file(
                 input_path, start, duration, subtitle_entries, style, scratch_dir,
-                eye_width, eye_height,
+                eye_width, eye_height, subtitle_overrides,
             )
 
         try:
@@ -290,6 +291,7 @@ class ClipRenderer:
         scratch_dir: Path,
         eye_width: int | None = None,
         eye_height: int | None = None,
+        subtitle_overrides: dict[int, str | None] | None = None,
     ) -> Path:
         # A 3D source's *encoded* frame packs both eyes together — the
         # single-eye frame the crop (and, for a squeezed pack, unsqueeze)
@@ -305,6 +307,8 @@ class ClipRenderer:
         out_height -= out_height % 2  # matches the -2 (even-height) scale filter below
 
         window = entries_in_window(entries, start, start + duration)
+        if subtitle_overrides:
+            window = apply_overrides(window, subtitle_overrides)
         doc = build_ass_document(window, style, out_width, out_height)
 
         scratch_dir.mkdir(parents=True, exist_ok=True)
