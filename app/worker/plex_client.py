@@ -68,6 +68,10 @@ class PlexClient:
         # shared index back down to just movie libraries at read time,
         # rather than needing a schema change to tag rows by media type.
         self.movie_library_names = frozenset(s.title for s in self._movie_sections)
+        # Same purpose as movie_library_names above, but for TV — needed by
+        # /snip random's media:tv/media:all filtering, which (unlike
+        # /search-quote) isn't movie-only by design.
+        self.show_library_names = frozenset(s.title for s in self._show_sections)
         self._movie_cache: dict[int, tuple[float, MovieResult]] = {}
 
     def library_sections(self) -> list[tuple[str, object]]:

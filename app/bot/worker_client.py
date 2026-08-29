@@ -115,6 +115,17 @@ class LibrarySearchResult:
 
 
 @dataclass
+class RandomQuoteResult:
+    rating_key: int
+    title: str
+    library_name: str
+    start: float
+    end: float
+    timecode: str
+    text: str
+
+
+@dataclass
 class LibrarySearchExtendEvent:
     type: str  # "cached" | "scanning" | "progress" | "final"
     matches: list[LibraryQuoteMatchResult] | None = None
@@ -197,6 +208,14 @@ class WorkerClient:
         payload = response.json()
         payload["matches"] = [LibraryQuoteMatchResult(**m) for m in payload["matches"]]
         return LibrarySearchResult(**payload)
+
+    async def random_quote(self, quote: str | None, media: str) -> RandomQuoteResult:
+        params: dict[str, str] = {"media": media}
+        if quote is not None:
+            params["quote"] = quote
+        response = await self._client.get("/random-quote", params=params)
+        response.raise_for_status()
+        return RandomQuoteResult(**response.json())
 
     async def search_quote_extend(self, quote: str) -> AsyncIterator[LibrarySearchExtendEvent]:
         async with self._client.stream(
