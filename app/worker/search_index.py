@@ -308,7 +308,7 @@ def search_entry_ids(
     actually keeps the fuzzy-scoring pass bounded.
 
     `title_ids`, when given, scopes BOTH the FTS5 match and the ranking to
-    just those titles (e.g. one show's episodes for /snip-tv's whole-show
+    just those titles (e.g. one show's episodes for /snip tv's whole-show
     search) — without it, a global top-`limit` cap could starve out a
     narrow-scoped caller's own titles entirely (confirmed on the real
     library: a 12-episode show's search only had 5 episodes survive the
@@ -432,7 +432,7 @@ def iter_all_entries(
     """Full scan of every cached title's entries, used as the fallback when
     the FTS5 pre-filter finds nothing (e.g. a typo'd query). `title_ids`,
     when given, scopes the scan to just those titles — without it, a
-    narrow-scoped caller (e.g. /snip-tv's whole-show search) would fall
+    narrow-scoped caller (e.g. /snip tv's whole-show search) would fall
     back to streaming the ENTIRE corpus (measured: ~9.6s over 7.5M entries)
     instead of just its own handful of episodes."""
     from app.worker.subtitles import SubtitleEntry

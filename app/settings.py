@@ -96,7 +96,7 @@ class QuoteMatchDefaults(BaseModel):
     # Number of subtitle cues of surrounding context to include before/after
     # a match in the Discord embed.
     context_lines: int = 1
-    # /snip-search only (library_search.search_cached_library): how many
+    # /snip search only (library_search.search_cached_library): how many
     # of a single title's best-scoring lines are even eligible to compete
     # for a results slot. Diversity-first ranking already means a title's
     # 2nd/3rd-best line only ever displaces a *worse* match from another

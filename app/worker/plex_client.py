@@ -45,7 +45,7 @@ class MovieResult:
 
 
 class PlexClient:
-    # A single /snip invocation calls get_movie() up to three times for
+    # A single /snip movie invocation calls get_movie() up to three times for
     # the same rating_key (/resolve, /resolve-quote, /render), each a real
     # network round-trip to Plex. This TTL only needs to cover the handful
     # of seconds between those calls within one command — long enough to

@@ -341,7 +341,7 @@ def test_search_cached_library_merges_multiple_hits_in_one_title_before_ranking(
 
 
 def test_search_cached_library_scopes_fts_prefilter_to_cached_titles(tmp_path, monkeypatch):
-    # Simulates /snip-tv's whole-show search: cached_titles is deliberately
+    # Simulates /snip tv's whole-show search: cached_titles is deliberately
     # narrow (one "show's episodes"), while the DB also holds an unrelated
     # title outside that scope with a much better match for the same
     # query. The scoped search must never surface the out-of-scope title,

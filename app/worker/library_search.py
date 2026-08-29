@@ -137,7 +137,7 @@ def search_cached_library(
 
     Both the FTS5 pre-filter and the fallback full scan are scoped to just
     `cached_titles` (resolved to title_ids up front) — never the whole
-    corpus. This matters for two reasons: it's what makes /snip-tv's
+    corpus. This matters for two reasons: it's what makes /snip tv's
     whole-show search correct (a global top-N cap could otherwise silently
     exclude some of a show's own episodes — confirmed on the real library:
     only 5 of a 12-episode show's episodes survived an unscoped cap) and
