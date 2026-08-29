@@ -505,6 +505,34 @@ class ClipEditView(ClipResultView):
         self.add_item(duration_button)
         self.add_item(subtitles_button)
 
+    async def _on_style_change(self, interaction: discord.Interaction) -> None:
+        # Overrides ClipResultView._on_style_change: the parent re-renders
+        # against the *original* construction-time timecode/duration/
+        # end_timecode and never passes subtitle_overrides, which would
+        # silently revert any nudge/merge/custom span and drop any Edit
+        # Subs text overrides made since the clip was first generated.
+        # Every edit action on this view goes through the shared
+        # _re_render(interaction, start, end) coroutine instead — this
+        # override only extracts the newly-selected style from the Select
+        # widget (UI bookkeeping _re_render doesn't do) and then delegates
+        # to it with the *current* span, so the render call itself is
+        # never duplicated.
+        new_style = None
+        for item in list(self.children):
+            if isinstance(item, discord.ui.Select):
+                new_style = item.values[0]
+                self.remove_item(item)
+                break
+        if new_style is None or new_style == self.style:
+            self._add_select()
+            await interaction.response.edit_message(view=self)
+            return
+
+        await interaction.response.defer()
+        self.style = new_style
+        self._add_select()
+        await self._re_render(interaction, self._clip_start, self._clip_end)
+
     async def _ensure_entries(self) -> list[SubtitleEntryResult]:
         if self._all_entries is None:
             try:
@@ -626,13 +654,14 @@ class ClipEditView(ClipResultView):
         return self._clip_start + self._clip_duration
 
     async def _re_render(self, interaction: discord.Interaction, start: float, end: float) -> None:
+        requested_style = self.style
         try:
             render_result = await self._worker.render(
                 self._rating_key,
                 start=start,
                 end=end,
                 format=self._format,
-                style=self.style,
+                style=requested_style,
                 subtitle_overrides=self.overrides or None,
             )
         except httpx.HTTPError as exc:
@@ -650,7 +679,7 @@ class ClipEditView(ClipResultView):
 
         file = discord.File(io.BytesIO(self._content), filename=self._filename)
         await interaction.edit_original_response(
-            content=_no_subtitles_note(self.style, render_result.style) or None,
+            content=_no_subtitles_note(requested_style, render_result.style) or None,
             attachments=[file],
             view=self,
         )
