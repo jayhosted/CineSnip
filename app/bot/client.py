@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 import discord
 from discord.ext import commands
 
 from app.bot.cogs.gif import GifCog
 from app.bot.worker_client import WorkerClient
+
+logger = logging.getLogger(__name__)
 
 
 class CineSnipBot(commands.Bot):
@@ -17,6 +21,13 @@ class CineSnipBot(commands.Bot):
     async def setup_hook(self) -> None:
         await self.add_cog(GifCog(self))
         if self._dev_guild_id is not None:
+            logger.warning(
+                "DEV_GUILD_ID=%s is set — commands will sync ONLY to that "
+                "guild, not globally. This is a local-dev-only setting; "
+                "unset it in production or commands will never reach any "
+                "other server the bot is invited to.",
+                self._dev_guild_id,
+            )
             # Sync ONLY to the dev guild while iterating — guild-scoped
             # syncs apply near-instantly. Syncing globally as well (even
             # once) leaves two registrations of the same command visible
