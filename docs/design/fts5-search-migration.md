@@ -21,9 +21,9 @@ cache to keep in sync.
 | Candidates JSON read (deserialising 14M objects) | 49.1s | 42% |
 | Fuzzy scoring (14M `WRatio` calls) | 50.9s | 44% |
 
-(That 115.8s is scanning *everything*; the observed ~40s for `/snip-search`
+(That 115.8s is scanning *everything*; the observed ~40s for `/snip search`
 is because it filters to movie-type libraries only, ~35% of the corpus. TV
-is unaffected in practice — `/snip-tv`'s whole-show search only ever scans
+is unaffected in practice — `/snip tv`'s whole-show search only ever scans
 one show, measured at 0.68s.)
 
 **The non-obvious finding: the disk-based candidates cache inverts at
@@ -220,7 +220,7 @@ applied.
 A related gap, also only visible at real scale with more than one caller:
 `search_cached_library()` is shared by both `/search-quote` (library-wide,
 deliberately unscoped — every cached movie-library title) and
-`/search-episodes-quote` (`/snip-tv`'s whole-show search, deliberately
+`/search-episodes-quote` (`/snip tv`'s whole-show search, deliberately
 scoped to one show's handful of episodes). The FTS5 pre-filter and the
 zero-hit fallback's full scan both originally ran over the *entire* corpus
 regardless of which caller was asking, including all TV episodes indexed

@@ -34,16 +34,16 @@ now resolves via `/resolve-episode` and its subtitles extract correctly.
 
 ## Cross-media `quote_index.db` leak (fixed)
 
-`/snip-search` (movie-only per its own docs) started leaking TV episodes
+`/snip search` (movie-only per its own docs) started leaking TV episodes
 into its results once TV support shipped. Root cause: `/render` and
 `/resolve-quote` write into the same shared `cache/quote_index.db`
 regardless of media type (by design — those endpoints are 100% generic
-over a Plex `rating_key`, see CLAUDE.md Section 4), so once `/snip-tv` was
+over a Plex `rating_key`, see CLAUDE.md Section 4), so once `/snip tv` was
 exercised against a real episode, that episode's
 `guid → rating_key/title/library_name` row landed in the exact same table
-`/snip-search`'s Tier 1 reads from. Confirmed on the real library:
+`/snip search`'s Tier 1 reads from. Confirmed on the real library:
 searching a phrase from a cached *Office* episode came back listed as a
-`/snip-search` movie result, library-tagged `TV Shows`. Fixed by exposing
+`/snip search` movie result, library-tagged `TV Shows`. Fixed by exposing
 `PlexClient.movie_library_names` (the set of section titles whose type is
 `"movie"`) and filtering `/search-quote`'s handler to just those library
 names at read time — no schema change/migration needed, since the index
@@ -53,7 +53,7 @@ filters itself back down.
 **Lesson**: reusing a generic pipeline across two media types means any
 *shared, implicit* state that pipeline touches needs an explicit audit —
 this one wasn't in the original design plan, only surfaced by actually
-running `/snip-search` against real TV+movie data together, not by code
+running `/snip search` against real TV+movie data together, not by code
 review alone.
 
 Verified end-to-end against the real library: `/resolve-episode` on a real
@@ -63,5 +63,5 @@ rendered") to actually be that episode; whole-show quote search correctly
 extracted subtitles inline for several not-yet-cached episodes of a real
 show in ~1s (sidecar `.srt` files, no ffmpeg needed) and ranked matches
 across episodes; invalid season/episode and invalid show rating_keys
-return clean 404s, not stack traces; the post-fix `/snip-search` no longer
+return clean 404s, not stack traces; the post-fix `/snip search` no longer
 returns TV episodes.

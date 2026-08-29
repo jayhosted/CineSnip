@@ -123,7 +123,7 @@ relevant section before touching any of those files.
   real words below `min_score` and out of results entirely. Two existing
   tests had unknowingly encoded this exact bug as "expected" and needed
   updating once the bug was understood, not just made to pass.
-- **Confirmed, not just theorized: `/snip-search`'s "instant regardless
+- **Confirmed, not just theorized: `/snip search`'s "instant regardless
   of library size" promise genuinely breaks down at real full-library
   scale.** A single search against the fully-built 11,463-title cache
   took ~40 seconds — dominated by fuzzy-scoring, inherently proportional

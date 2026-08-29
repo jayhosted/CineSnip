@@ -295,7 +295,7 @@ class ClipResultView(discord.ui.View):
 def _validate_quote_or_timecode(
     quote: str | None, timecode: str | None, end_timecode: str | None
 ) -> str | None:
-    """Shared by /snip and /snip-tv so these checks can't drift between the
+    """Shared by /snip movie and /snip tv so these checks can't drift between the
     two commands — the exact class of bug CLAUDE.md's library-search
     preferred_start fix (Section 2) already hit once from duplicated logic.
     Returns an error message, or None if valid.
@@ -354,7 +354,7 @@ def _library_results_embed(
 
 
 class LibrarySearchView(discord.ui.View):
-    """Shown by /snip-search (films) and /snip-tv's show-wide search
+    """Shown by /snip search (films) and /snip tv's show-wide search
     (episodes): pick a result from cross-title matches, then funnel into the
     normal quote-confirm -> render pipeline (CLAUDE.md Section 2: "just a
     different on-ramp into the same two steps, not a separate confirmation
@@ -405,6 +405,10 @@ class LibrarySearchView(discord.ui.View):
 
 
 class GifCog(commands.Cog):
+    snip_group = app_commands.Group(
+        name="snip", description="Generate a clip from your Plex library."
+    )
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
@@ -592,8 +596,8 @@ class GifCog(commands.Cog):
             view=result_view,
         )
 
-    @app_commands.command(
-        name="snip",
+    @snip_group.command(
+        name="movie",
         description="Generate a clip from a film at a quote or timecode.",
     )
     @app_commands.describe(
@@ -604,7 +608,7 @@ class GifCog(commands.Cog):
         format="Output format (default: gif — mp4/webm are smaller but do not autoplay in Discord)",
     )
     @app_commands.autocomplete(film=film_autocomplete)
-    async def snip(
+    async def snip_movie(
         self,
         interaction: discord.Interaction,
         film: str,
@@ -615,8 +619,8 @@ class GifCog(commands.Cog):
     ) -> None:
         await self._generate(interaction, film, quote, timecode, end_timecode, format)
 
-    @app_commands.command(
-        name="snip-search",
+    @snip_group.command(
+        name="search",
         description="Search your whole library for a quote, no film needed.",
     )
     @app_commands.describe(
@@ -635,7 +639,7 @@ class GifCog(commands.Cog):
 
         if not result.matches:
             await interaction.edit_original_response(
-                content="No matches in what CineSnip has indexed so far. Try `/snip` on a "
+                content="No matches in what CineSnip has indexed so far. Try `/snip movie` on a "
                 "specific film first to add it, or rephrase your quote."
             )
             return
@@ -645,8 +649,8 @@ class GifCog(commands.Cog):
             embed=_library_results_embed(quote, result.matches), view=view
         )
 
-    @app_commands.command(
-        name="snip-tv",
+    @snip_group.command(
+        name="tv",
         description="Generate a clip from a TV episode at a quote or timecode.",
     )
     @app_commands.describe(

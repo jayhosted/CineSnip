@@ -62,3 +62,13 @@ redundancy. `/cinesnip-search` → `/snip-search` for the same reason.
 (`/cinesnip-diagnose` was never actually built, so there was nothing to
 rename — a future diagnostic command should launch directly as
 `/snip-diagnose`.)
+
+`/snip`, `/snip-tv`, `/snip-search` → `/snip movie`, `/snip tv`, `/snip
+search` (V3 Phase 3): three flat top-level commands folded into one
+`app_commands.Group` so they show up together under a single `/snip` in
+Discord's command picker instead of as unrelated entries. Purely
+organizational — no shared parameters were introduced between the
+subcommands, keeping the movie/TV/search parameter shapes exactly as
+distinct as they were before (see CLAUDE.md Section 2's rationale for why
+`/snip search` stays a separate signature rather than a "no film given"
+fallback on `/snip movie`).

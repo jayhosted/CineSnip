@@ -533,7 +533,7 @@ def create_app(settings: Settings) -> FastAPI:
             ],
         )
 
-    # Library-wide search (CLAUDE.md Section 5's /snip-search, Tier 1
+    # Library-wide search (CLAUDE.md Section 5's /snip search, Tier 1
     # only): searches the subtitle cache via the quote_index, never the live
     # filesystem/Plex — so it's fast regardless of library size, but its
     # scope is exactly "titles CineSnip has already read via any flow". An
@@ -541,7 +541,7 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/search-quote", response_model=LibrarySearchResponse)
     async def search_quote(quote: str) -> LibrarySearchResponse:
         # The index also holds TV episodes (indexed via the same generic
-        # /render and /resolve-quote endpoints /snip-tv uses) — filter back
+        # /render and /resolve-quote endpoints /snip tv uses) — filter back
         # down to movie libraries, since /search-quote is documented and
         # surfaced to users as "every film", not the whole index verbatim.
         movie_library_names = app.state.plex.movie_library_names
