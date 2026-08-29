@@ -20,29 +20,25 @@ class CineSnipBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.add_cog(GifCog(self))
+        # Global sync is required for commands to eventually appear in every
+        # server the bot is invited to (Discord can take up to an hour to
+        # propagate a global change) — always do this regardless of dev mode,
+        # so other servers are never disrupted by local iteration.
+        await self.tree.sync()
         if self._dev_guild_id is not None:
             logger.warning(
-                "DEV_GUILD_ID=%s is set — commands will sync ONLY to that "
-                "guild, not globally. This is a local-dev-only setting; "
-                "unset it in production or commands will never reach any "
-                "other server the bot is invited to.",
+                "DEV_GUILD_ID=%s is set — commands will ALSO sync instantly "
+                "to that guild for local iteration. This is a local-dev-only "
+                "setting; unset it once you're done to remove the extra "
+                "guild-scoped copy.",
                 self._dev_guild_id,
             )
-            # Sync ONLY to the dev guild while iterating — guild-scoped
-            # syncs apply near-instantly, but also syncing globally leaves
-            # two registrations of the same command visible once the
-            # global one eventually propagates. Explicitly clear any
-            # global registration a prior run left behind first.
+            # Guild-scoped syncs apply near-instantly, unlike the global sync
+            # above. This is additive, not a replacement for it, so toggling
+            # DEV_GUILD_ID on/off never wipes or delays commands anywhere else.
             guild = discord.Object(id=self._dev_guild_id)
             self.tree.copy_global_to(guild=guild)
-            self.tree.clear_commands(guild=None)
-            await self.tree.sync()
             await self.tree.sync(guild=guild)
-        else:
-            # Global sync is required for the command to eventually appear
-            # in every server the bot is invited to, but Discord can take
-            # up to an hour to propagate a global change.
-            await self.tree.sync()
 
     async def close(self) -> None:
         await self.worker.close()
