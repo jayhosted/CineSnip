@@ -25,12 +25,19 @@ class _FakePlexClient:
     server in __init__) — both endpoints under test only ever reach the
     handful of attributes/methods defined here."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, movie_items: list[MovieResult] | None = None) -> None:
         self.movie_library_names = frozenset({"Movies"})
         self._episodes_by_show: dict[int, list[MovieResult]] = {}
+        self._movie_items = movie_items or []
 
     def list_episodes(self, show_rating_key: int) -> list[MovieResult]:
         return self._episodes_by_show.get(show_rating_key, [])
+
+    def library_sections(self) -> list[tuple[str, object]]:
+        return [("Movies", "movies-section")]
+
+    def enumerate_section(self, section: object) -> list[MovieResult]:
+        return self._movie_items
 
 
 def _settings(tmp_path) -> Settings:
@@ -157,3 +164,197 @@ def test_search_episodes_quote_endpoint_no_matches_is_empty_not_error(tmp_path, 
 
     assert resp.status_code == 200
     assert resp.json()["matches"] == []
+
+
+import json
+
+from app.settings import LibraryConfig, PathMapping, QuoteMatchDefaults
+from app.worker import library_sync as library_sync_module
+from app.worker.quote_index import upsert_no_subtitle_title
+from app.worker.subtitles import SubtitleResult, SubtitleSource
+# SubtitleEntry is already imported at the top of this file (see the
+# existing `from app.worker.subtitles import SubtitleEntry` import used by
+# `_write_title`) — reuse it, don't re-import under a different name.
+
+
+def _movie_item(guid, rating_key, title="Film", library_name="Movies", plex_path="D:\\Movies\\film.mkv"):
+    return MovieResult(
+        rating_key=rating_key,
+        title=title,
+        year=2000,
+        duration_ms=1000,
+        thumb_url=None,
+        plex_path=plex_path,
+        guid=guid,
+        library_name=library_name,
+    )
+
+
+def _settings_with_sync(tmp_path, enabled: bool, cap: int | None = None, mount_root=None) -> Settings:
+    kwargs = {}
+    if cap is not None:
+        kwargs["quote_match"] = QuoteMatchDefaults(library_extend_cap=cap)
+    libraries = []
+    if mount_root is not None:
+        libraries = [
+            LibraryConfig(
+                name="Movies",
+                path_mappings=[PathMapping(plex_prefix="D:\\Movies", container_path=str(mount_root))],
+            )
+        ]
+    return Settings(
+        discord_token="x",
+        plex_url="http://localhost",
+        plex_token="x",
+        cache_dir=tmp_path / "cache",
+        libraries=libraries,
+        library_sync={"enabled": enabled},
+        **kwargs,
+    )
+
+
+def _ndjson_lines(resp) -> list[dict]:
+    return [json.loads(line) for line in resp.text.strip().split("\n") if line]
+
+
+def test_search_quote_extend_stays_cached_only_when_sync_disabled(tmp_path, monkeypatch):
+    settings = _settings_with_sync(tmp_path, enabled=False)
+    _write_title(
+        settings.quote_index_db_path,
+        "guid-1", 101, "Monty Python", "Movies",
+        ["Nobody expects the Spanish Inquisition!"],
+    )
+    fake_plex = _FakePlexClient(settings, movie_items=[_movie_item("guid-2", 102, "Uncached Film")])
+    client = _client(settings, monkeypatch, fake_plex)
+
+    resp = client.get("/search-quote-extend", params={"quote": "nobody expects"})
+
+    assert resp.status_code == 200
+    events = _ndjson_lines(resp)
+    assert [e["type"] for e in events] == ["cached", "final"]
+    assert events[0]["matches"][0]["title"] == "Monty Python"
+    assert events[1]["remaining_uncached"] is None
+    assert events[1]["matches"] == events[0]["matches"]
+
+
+def test_search_quote_extend_short_circuits_when_nothing_uncached(tmp_path, monkeypatch):
+    settings = _settings_with_sync(tmp_path, enabled=True)
+    _write_title(
+        settings.quote_index_db_path,
+        "guid-1", 101, "Monty Python", "Movies",
+        ["Nobody expects the Spanish Inquisition!"],
+    )
+    fake_plex = _FakePlexClient(settings, movie_items=[_movie_item("guid-1", 101, "Monty Python")])
+    client = _client(settings, monkeypatch, fake_plex)
+
+    resp = client.get("/search-quote-extend", params={"quote": "nobody expects"})
+
+    events = _ndjson_lines(resp)
+    assert [e["type"] for e in events] == ["cached", "final"]
+    assert events[1]["remaining_uncached"] == 0
+
+
+def test_search_quote_extend_skips_titles_already_marked_no_subtitle(tmp_path, monkeypatch):
+    settings = _settings_with_sync(tmp_path, enabled=True)
+    upsert_no_subtitle_title(settings.quote_index_db_path, "guid-2", 102, "Silent Film", "Movies")
+    fake_plex = _FakePlexClient(settings, movie_items=[_movie_item("guid-2", 102, "Silent Film")])
+    client = _client(settings, monkeypatch, fake_plex)
+
+    resp = client.get("/search-quote-extend", params={"quote": "anything"})
+
+    events = _ndjson_lines(resp)
+    assert [e["type"] for e in events] == ["cached", "final"]
+    assert events[1]["remaining_uncached"] == 0
+
+
+def test_search_quote_extend_extracts_uncached_titles_up_to_cap(tmp_path, monkeypatch):
+    mount_root = tmp_path / "media"
+    mount_root.mkdir()
+    (mount_root / "film.mkv").write_bytes(b"x")
+    settings = _settings_with_sync(tmp_path, enabled=True, cap=1, mount_root=mount_root)
+
+    found_entries = [
+        SubtitleEntry(index=1, start=0.0, end=2.0, text="Nobody expects the Spanish Inquisition!")
+    ]
+
+    async def _fake_get_subtitles(movie, container_video_path, cache_dir, db_path, ffprobe_timeout=180.0, ffmpeg_timeout=180.0):
+        search_index.upsert_title(
+            db_path, movie.guid, movie.rating_key, movie.title, movie.library_name,
+            "sidecar", None, None, found_entries, None,
+        )
+        return SubtitleResult(guid=movie.guid, source=SubtitleSource.SIDECAR, entries=found_entries)
+
+    monkeypatch.setattr(library_sync_module, "get_subtitles", _fake_get_subtitles)
+
+    fake_plex = _FakePlexClient(
+        settings,
+        movie_items=[
+            _movie_item("guid-1", 101, "Monty Python", plex_path="D:\\Movies\\film.mkv"),
+            _movie_item("guid-2", 102, "Uncached Film Two", plex_path="D:\\Movies\\missing.mkv"),
+        ],
+    )
+    client = _client(settings, monkeypatch, fake_plex)
+
+    resp = client.get("/search-quote-extend", params={"quote": "nobody expects"})
+
+    events = _ndjson_lines(resp)
+    types = [e["type"] for e in events]
+    assert types == ["cached", "progress", "final"]
+    assert events[0]["matches"] == []
+    assert events[1]["title"] == "Monty Python"
+    assert events[1]["index"] == 1
+    assert events[1]["total"] == 1
+    final = events[2]
+    assert final["remaining_uncached"] == 1
+    assert final["matches"][0]["title"] == "Monty Python"
+    assert search_index.has_title(settings.quote_index_db_path, "guid-1")
+
+
+def test_search_quote_extend_does_not_permanently_mark_a_failed_extraction(tmp_path, monkeypatch):
+    mount_root = tmp_path / "media"
+    mount_root.mkdir()
+    (mount_root / "film.mkv").write_bytes(b"x")
+    settings = _settings_with_sync(tmp_path, enabled=True, mount_root=mount_root)
+
+    async def _boom(movie, container_video_path, cache_dir, db_path, ffprobe_timeout=180.0, ffmpeg_timeout=180.0):
+        raise RuntimeError("ffmpeg exploded")
+
+    monkeypatch.setattr(library_sync_module, "get_subtitles", _boom)
+
+    fake_plex = _FakePlexClient(
+        settings, movie_items=[_movie_item("guid-1", 101, "Broken Film", plex_path="D:\\Movies\\film.mkv")]
+    )
+    client = _client(settings, monkeypatch, fake_plex)
+
+    resp = client.get("/search-quote-extend", params={"quote": "anything"})
+
+    events = _ndjson_lines(resp)
+    assert [e["type"] for e in events] == ["cached", "progress", "final"]
+    # A transient extraction failure must not become a permanent negative
+    # cache entry — it needs to be retried on a future extend call.
+    assert not search_index.has_title(settings.quote_index_db_path, "guid-1")
+    from app.worker.quote_index import is_no_subtitle_title
+    assert not is_no_subtitle_title(settings.quote_index_db_path, "guid-1")
+
+
+def test_search_quote_extend_treats_plex_enumeration_failure_as_empty_for_that_library(tmp_path, monkeypatch):
+    settings = _settings_with_sync(tmp_path, enabled=True)
+    _write_title(
+        settings.quote_index_db_path,
+        "guid-1", 101, "Monty Python", "Movies",
+        ["Nobody expects the Spanish Inquisition!"],
+    )
+
+    class _RaisingPlex(_FakePlexClient):
+        def enumerate_section(self, section):
+            raise RuntimeError("Plex unreachable")
+
+    fake_plex = _RaisingPlex(settings)
+    client = _client(settings, monkeypatch, fake_plex)
+
+    resp = client.get("/search-quote-extend", params={"quote": "nobody expects"})
+
+    events = _ndjson_lines(resp)
+    assert [e["type"] for e in events] == ["cached", "final"]
+    assert events[1]["remaining_uncached"] == 0
+    assert events[1]["matches"][0]["title"] == "Monty Python"

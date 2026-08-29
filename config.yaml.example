@@ -64,6 +64,10 @@ quote_match:
   confident_score: 85
   max_window_gap_seconds: 3
   context_lines: 1
+  # /snip search only: when library_sync is enabled, an extending search
+  # extracts up to this many not-yet-cached movie titles per request before
+  # stopping (a "search N more" follow-up covers the rest).
+  library_extend_cap: 25
 
 worker:
   port: 8000

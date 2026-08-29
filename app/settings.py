@@ -92,6 +92,11 @@ class QuoteMatchDefaults(BaseModel):
     # can reach into one title (and how much matching work happens per
     # title) rather than controlling diversity itself.
     library_per_title_limit: int = 3
+    # /search-quote-extend only: max not-yet-cached movie titles a single
+    # extending search will extract+cache before stopping and reporting
+    # remaining_uncached for a possible follow-up "search N more" call —
+    # keeps one request bounded in time regardless of library size.
+    library_extend_cap: int = 25
 
 
 class LibrarySyncDefaults(BaseModel):

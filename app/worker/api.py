@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.settings import Settings, SettingsError
 from app.worker import quote_index, search_index
 from app.worker.ffmpeg import ClipRenderer, RenderTimeoutError, parse_timecode
 from app.worker.library_search import search_cached_library
+from app.worker.library_sync import sync_one_title
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 from app.worker.plex_client import (
     EpisodeNotFoundError,
@@ -527,24 +530,18 @@ def create_app(settings: Settings) -> FastAPI:
             ],
         )
 
-    # Library-wide search (CLAUDE.md Section 5's /snip search, Tier 1
-    # only): searches the subtitle cache via the quote_index, never the live
-    # filesystem/Plex — so it's fast regardless of library size, but its
-    # scope is exactly "titles CineSnip has already read via any flow". An
-    # empty index/no matches is a normal outcome, not an error.
-    @app.get("/search-quote", response_model=LibrarySearchResponse)
-    async def search_quote(quote: str) -> LibrarySearchResponse:
-        # The index also holds TV episodes (indexed via the same generic
-        # /render and /resolve-quote endpoints /snip tv uses) — filter back
-        # down to movie libraries, since /search-quote is documented and
-        # surfaced to users as "every film", not the whole index verbatim.
+    def _movie_library_matches(
+        app: FastAPI, settings: Settings, quote: str
+    ) -> tuple[list[CachedTitle], list]:
+        # Shared by /search-quote and /search-quote-extend: both search exactly
+        # "every cached movie-library title" — the TV episodes sharing this same
+        # search_index (CLAUDE.md Section 4) are filtered out here, once.
         movie_library_names = app.state.plex.movie_library_names
         cached_titles = [
             t
             for t in search_index.list_titles(settings.quote_index_db_path)
             if t.library_name in movie_library_names
         ]
-
         qm = settings.quote_match
         matches = search_cached_library(
             settings.quote_index_db_path,
@@ -556,26 +553,101 @@ def create_app(settings: Settings) -> FastAPI:
             context_lines=qm.context_lines,
             per_title_limit=qm.library_per_title_limit,
         )
+        return cached_titles, matches
 
-        return LibrarySearchResponse(
-            matches=[
-                LibraryQuoteMatchOut(
-                    rating_key=m.rating_key,
-                    title=m.title,
-                    library_name=m.library_name,
-                    start=m.match.start,
-                    end=m.match.end,
-                    timecode=_format_display_timecode(m.match.start),
-                    text=m.match.text,
-                    score=m.match.score,
-                    context_before=list(m.match.context_before),
-                    context_after=list(m.match.context_after),
-                )
+
+    def _library_search_payload(matches: list, qm) -> dict:
+        return {
+            "matches": [
+                {
+                    "rating_key": m.rating_key,
+                    "title": m.title,
+                    "library_name": m.library_name,
+                    "start": m.match.start,
+                    "end": m.match.end,
+                    "timecode": _format_display_timecode(m.match.start),
+                    "text": m.match.text,
+                    "score": m.match.score,
+                    "context_before": list(m.match.context_before),
+                    "context_after": list(m.match.context_after),
+                }
                 for m in matches
             ],
-            confident_score=qm.confident_score,
-            min_score=qm.min_score,
-        )
+            "confident_score": qm.confident_score,
+            "min_score": qm.min_score,
+        }
+
+
+    # Library-wide search (CLAUDE.md Section 5's /snip search, Tier 1
+    # only): searches the subtitle cache via the quote_index, never the live
+    # filesystem/Plex — so it's fast regardless of library size, but its
+    # scope is exactly "titles CineSnip has already read via any flow". An
+    # empty index/no matches is a normal outcome, not an error.
+    @app.get("/search-quote", response_model=LibrarySearchResponse)
+    async def search_quote(quote: str) -> LibrarySearchResponse:
+        _, matches = _movie_library_matches(app, settings, quote)
+        return LibrarySearchResponse(**_library_search_payload(matches, settings.quote_match))
+
+
+    # Tier 2: extends /search-quote into not-yet-cached movie titles, gated
+    # behind library_sync.enabled (CLAUDE.md Roadmap / issue #2 design spec) —
+    # with sync disabled this behaves identically to /search-quote, just over
+    # a streamed single-event body, so the bot never needs two code paths.
+    @app.get("/search-quote-extend")
+    async def search_quote_extend(quote: str, cap: int | None = None) -> StreamingResponse:
+        extend_cap = cap if cap is not None else settings.quote_match.library_extend_cap
+
+        async def event_stream():
+            cached_titles, matches = _movie_library_matches(app, settings, quote)
+            yield json.dumps({"type": "cached", **_library_search_payload(matches, settings.quote_match)}) + "\n"
+
+            if not settings.library_sync.enabled:
+                yield json.dumps({
+                    "type": "final",
+                    "remaining_uncached": None,
+                    **_library_search_payload(matches, settings.quote_match),
+                }) + "\n"
+                return
+
+            movie_library_names = app.state.plex.movie_library_names
+            already_known = {t.guid for t in cached_titles}
+            db_path = settings.quote_index_db_path
+            uncached_items: list[MovieResult] = []
+            for library_name, section in app.state.plex.library_sections():
+                if library_name not in movie_library_names:
+                    continue
+                try:
+                    items = await asyncio.to_thread(app.state.plex.enumerate_section, section)
+                except Exception as exc:  # noqa: BLE001 - Plex being briefly unreachable must not fail an otherwise-successful cached search
+                    logger.warning("search-quote-extend: could not enumerate '%s': %s", library_name, exc)
+                    continue
+                for item in items:
+                    if item.guid in already_known or quote_index.is_no_subtitle_title(db_path, item.guid):
+                        continue
+                    uncached_items.append(item)
+
+            if not uncached_items:
+                yield json.dumps({
+                    "type": "final",
+                    "remaining_uncached": 0,
+                    **_library_search_payload(matches, settings.quote_match),
+                }) + "\n"
+                return
+
+            batch = uncached_items[:extend_cap]
+            for index, item in enumerate(batch, start=1):
+                await sync_one_title(settings, item)
+                yield json.dumps({"type": "progress", "index": index, "total": len(batch), "title": item.title}) + "\n"
+
+            remaining = len(uncached_items) - len(batch)
+            _, final_matches = _movie_library_matches(app, settings, quote)
+            yield json.dumps({
+                "type": "final",
+                "remaining_uncached": remaining,
+                **_library_search_payload(final_matches, settings.quote_match),
+            }) + "\n"
+
+        return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
     async def _ensure_episode_cached(episode: MovieResult) -> None:
         # Best-effort: one broken/unmapped episode file must not fail the
