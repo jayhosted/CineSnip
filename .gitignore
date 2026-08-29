@@ -21,6 +21,15 @@ venv/
 # Claude Code local settings/skills (installed tooling, personal hook config)
 .claude/
 
+# Skill/plugin-generated local state — the tooling itself belongs at the
+# global Claude Code config level, not duplicated per-project.
+.impeccable/
+docs/superpowers/
+
 # Local dev-only compose override (bind-mounts ./app for hot reload) —
 # Compose auto-merges it, so it must never reach another installer's clone.
 docker-compose.override.yml
+
+# OS / editor cruft
+.DS_Store
+*.log
