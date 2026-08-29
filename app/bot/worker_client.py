@@ -91,6 +91,8 @@ class RenderResult:
     content: bytes
     format: str
     style: str
+    start: float
+    duration: float
 
 
 @dataclass
@@ -259,4 +261,6 @@ class WorkerClient:
             content=response.content,
             format=response.headers["X-Clip-Format"],
             style=response.headers["X-Clip-Style"],
+            start=float(response.headers["X-Clip-Start"]),
+            duration=float(response.headers["X-Clip-Duration"]),
         )

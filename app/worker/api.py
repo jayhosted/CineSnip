@@ -476,7 +476,16 @@ def create_app(settings: Settings) -> FastAPI:
         return Response(
             content=clip_bytes,
             media_type=media_type,
-            headers={"X-Clip-Format": clip_format, "X-Clip-Style": resolved_style},
+            headers={
+                "X-Clip-Format": clip_format,
+                "X-Clip-Style": resolved_style,
+                # Bot doesn't know render_defaults.duration_seconds or its
+                # min/max clamp either — echo the actual start/duration used
+                # so a "Posted by" message (CLAUDE.md issue #9) can show the
+                # real span instead of guessing at config it can't see.
+                "X-Clip-Start": str(start),
+                "X-Clip-Duration": str(clip_duration),
+            },
         )
 
     async def _load_subtitles(rating_key: int) -> tuple[MovieResult, SubtitleResult]:

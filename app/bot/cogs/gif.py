@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import re
 from typing import Literal
 
 import discord
@@ -188,6 +189,44 @@ def _no_subtitles_note(requested_style: str, resolved_style: str) -> str:
     return ""
 
 
+# Matches PlexClient._to_result()'s episode title format ("Show — S02E01 —
+# Episode Title", app/worker/plex_client.py) so the compact posted-message
+# slug can pull the show name and S##E## back out without a new API field.
+_TV_TITLE_PATTERN = re.compile(r"^(?P<show>.+) — S(?P<season>\d{2})E(?P<episode>\d{2}) — .+$")
+
+
+def _slugify(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+
+
+def _format_unit_timecode(seconds: float) -> str:
+    total = round(seconds)
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{secs:02d}s"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+def _post_metadata_line(title: str, start: float, end: float, posted_by: str) -> str:
+    """Metadata line appended to a "Post to channel" message's content
+    (CLAUDE.md issue #9 design): `<slug>[-S##E##]@<start>-<end> posted by
+    <display name>`. The leading `-# ` is Discord's subtext markdown — kept
+    as plain message content (not an embed, per the design), just
+    de-emphasized so it doesn't compete with the clip itself."""
+    match = _TV_TITLE_PATTERN.match(title)
+    if match:
+        slug = _slugify(match.group("show"))
+        suffix = f"-s{match.group('season')}e{match.group('episode')}"
+    else:
+        slug = _slugify(title)
+        suffix = ""
+    span = f"{_format_unit_timecode(start)}-{_format_unit_timecode(end)}"
+    return f"-# {slug}{suffix}@{span} posted by {posted_by}"
+
+
 class ClipResultView(discord.ui.View):
     """Shown once a clip has rendered: Post to channel, plus a style
     dropdown that re-renders in place if you want a different look —
@@ -199,6 +238,7 @@ class ClipResultView(discord.ui.View):
         self,
         worker,
         rating_key: int,
+        title: str,
         timecode: str,
         duration: float | None,
         end_timecode: str | None,
@@ -206,10 +246,13 @@ class ClipResultView(discord.ui.View):
         style: str,
         content: bytes,
         filename: str,
+        clip_start: float,
+        clip_duration: float,
     ) -> None:
         super().__init__(timeout=300)
         self._worker = worker
         self._rating_key = rating_key
+        self._title = title
         self._timecode = timecode
         self._duration = duration
         self._end_timecode = end_timecode
@@ -217,6 +260,12 @@ class ClipResultView(discord.ui.View):
         self.style = style
         self._content = content
         self._filename = filename
+        # Actual start/duration used (worker-echoed via X-Clip-Start/
+        # X-Clip-Duration, since a bare timecode's true duration depends on
+        # render_defaults, config the bot can't see) — needed for the
+        # "posted by" metadata line's exact span.
+        self._clip_start = clip_start
+        self._clip_duration = clip_duration
         self._add_select()
 
     def _add_select(self) -> None:
@@ -275,6 +324,8 @@ class ClipResultView(discord.ui.View):
         self.style = render_result.style
         self._content = render_result.content
         self._filename = f"clip.{render_result.format}"
+        self._clip_start = render_result.start
+        self._clip_duration = render_result.duration
         self._add_select()
 
         file = discord.File(io.BytesIO(self._content), filename=self._filename)
@@ -289,7 +340,13 @@ class ClipResultView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         file = discord.File(io.BytesIO(self._content), filename=self._filename)
-        await interaction.channel.send(file=file)
+        content = _post_metadata_line(
+            self._title,
+            self._clip_start,
+            self._clip_start + self._clip_duration,
+            interaction.user.display_name,
+        )
+        await interaction.channel.send(content=content, file=file)
         button.disabled = True
         await interaction.response.edit_message(view=self)
 
@@ -679,6 +736,7 @@ class GifCog(commands.Cog):
         result_view = ClipResultView(
             self.bot.worker,
             rating_key,
+            resolved.title,
             render_timecode,
             render_duration,
             render_end_timecode,
@@ -686,6 +744,8 @@ class GifCog(commands.Cog):
             render_result.style,
             render_result.content,
             filename,
+            render_result.start,
+            render_result.duration,
         )
         await interaction.edit_original_response(
             content=_no_subtitles_note(default_style, render_result.style) or None,
