@@ -30,7 +30,7 @@
             {% set j = loop.index0 %}
             <div class="mapping-row">
               <input type="text" class="mapping-prefix" name="lib_{{ i }}_mapping_{{ j }}_plex_prefix"
-                     placeholder="Plex path, e.g. D:\Plex Additional\Movies" value="{{ row.plex_prefix }}">
+                     placeholder="Plex path, e.g. D:\Movies" value="{{ row.plex_prefix }}">
               <span class="mapping-arrow">&rarr;</span>
               <select name="lib_{{ i }}_mapping_{{ j }}_container_path" class="mapping-container">
                 <option value="" {% if not row.container_path %}selected{% endif %}>&mdash; no mapping &mdash;</option>

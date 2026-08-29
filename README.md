@@ -44,11 +44,18 @@ Fill in:
   - **Plex running in its own Docker container**: use Plex's container name/IP on a shared Docker network, e.g. `http://plex:32400`
 - `PLEX_TOKEN` — from step 3
 
-## 5. Configure `config.yaml`
+## 5. Configure `config.yaml` and `docker-compose.yml`
 
 ```bash
 cp config.yaml.example config.yaml
+cp docker-compose.yml.example docker-compose.yml
 ```
+
+In `docker-compose.yml`, replace the example `volumes` entries under
+`cinesnip` with one **read-only** bind mount per media folder your
+libraries span — e.g. `"/path/on/your/host/Movies:/media/movies:ro"`. Each
+`container_path` you choose here (the part after the `:`) is what you'll
+reference as `container_path` in `config.yaml`'s `path_mappings` below.
 
 `libraries` lists every Plex library CineSnip should search, each with its
 own `path_mappings` telling CineSnip how to translate the file path Plex

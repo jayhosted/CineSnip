@@ -7,13 +7,13 @@ from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 def test_resolves_windows_style_path_on_first_drive():
     mappings = [
         PathMapping(
-            plex_prefix="D:\\Plex Additional\\Movies", container_path="/media/movies-d"
+            plex_prefix="D:\\Movies", container_path="/media/movies-d"
         ),
         PathMapping(
             plex_prefix="E:\\Media\\Video\\Movies", container_path="/media/movies-e"
         ),
     ]
-    plex_path = "D:\\Plex Additional\\Movies\\1917 (2019)\\1917.mkv"
+    plex_path = "D:\\Movies\\1917 (2019)\\1917.mkv"
 
     result = resolve_container_path(plex_path, mappings)
 
@@ -23,7 +23,7 @@ def test_resolves_windows_style_path_on_first_drive():
 def test_resolves_windows_style_path_on_second_drive():
     mappings = [
         PathMapping(
-            plex_prefix="D:\\Plex Additional\\Movies", container_path="/media/movies-d"
+            plex_prefix="D:\\Movies", container_path="/media/movies-d"
         ),
         PathMapping(
             plex_prefix="E:\\Media\\Video\\Movies", container_path="/media/movies-e"
@@ -58,11 +58,11 @@ def test_strips_windows_extended_length_path_prefix():
     # with "No path mapping configured" despite an otherwise-correct entry.
     mappings = [
         PathMapping(
-            plex_prefix="D:\\Plex Additional\\Movies", container_path="/media/movies-d"
+            plex_prefix="D:\\Movies", container_path="/media/movies-d"
         ),
     ]
     plex_path = (
-        "\\\\?\\D:\\Plex Additional\\Movies\\Borat - Cultural Learnings of America "
+        "\\\\?\\D:\\Movies\\Borat - Cultural Learnings of America "
         "for Make Benefit Glorious Nation of Kazakhstan (2006)\\Borat Cultural "
         "Learnings of America for Make Benefit Glorious Nation of Kazakhstan "
         "(2006) {imdb-tt0443453} [Bluray-1080p Proper][DTS 5.1][x264]-NERDHD.mkv"
@@ -92,7 +92,7 @@ def test_strips_windows_extended_length_unc_prefix():
 def test_raises_when_no_mapping_matches():
     mappings = [
         PathMapping(
-            plex_prefix="D:\\Plex Additional\\Movies", container_path="/media/movies-d"
+            plex_prefix="D:\\Movies", container_path="/media/movies-d"
         ),
     ]
 

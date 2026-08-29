@@ -1,6 +1,7 @@
 # Secrets / local config
 .env
 config.yaml
+docker-compose.yml
 
 # Python
 __pycache__/

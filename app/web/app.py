@@ -136,9 +136,9 @@ def _suggest_mapping(
     # It's derived by stripping the matched file's own relative path (under
     # the container mount) off the end of the Plex-reported path, leaving
     # the shared library ROOT both sides agree on — e.g. Plex path
-    # "D:\Plex Additional\Movies\Foo (2020)\Foo.mkv" matched under
+    # "D:\Movies\Foo (2020)\Foo.mkv" matched under
     # "/media/movies-d/Foo (2020)/Foo.mkv" strips "Foo (2020)/Foo.mkv" off
-    # both, leaving "D:\Plex Additional\Movies" <-> "/media/movies-d".
+    # both, leaving "D:\Movies" <-> "/media/movies-d".
     #
     # Returns (container_path, plex_prefix) — either may be None if no
     # match was found, in which case the user picks/confirms manually.

@@ -21,16 +21,12 @@
 libraries:
   - name: "Movies"
     path_mappings:
-      - plex_prefix: "D:\\Plex Additional\\Movies"
-        container_path: "/media/movies-d"
-      - plex_prefix: "E:\\Media\\Video\\Movies"
-        container_path: "/media/movies-e"
+      - plex_prefix: "D:\\Movies"
+        container_path: "/media/movies"
   - name: "TV Shows"
     path_mappings:
-      - plex_prefix: "D:\\Plex Additional\\TV Shows"
-        container_path: "/media/tv-d"
-      - plex_prefix: "E:\\Media\\Video\\TV Shows"
-        container_path: "/media/tv-e"
+      - plex_prefix: "D:\\TV Shows"
+        container_path: "/media/tv"
 
 # duration_seconds is used for timecode-driven clips. A quote-driven clip
 # instead uses the matched subtitle line's own start/end, clamped to
