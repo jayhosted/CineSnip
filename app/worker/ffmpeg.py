@@ -266,7 +266,7 @@ class ClipRenderer:
         if subtitle_entries and style is not None:
             ass_path = await self._write_ass_file(
                 input_path, start, duration, subtitle_entries, style, scratch_dir,
-                eye_width, eye_height, subtitle_overrides,
+                eye_width, eye_height, subtitle_overrides=subtitle_overrides,
             )
 
         try:

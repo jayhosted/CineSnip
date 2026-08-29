@@ -12,7 +12,6 @@ from discord import app_commands
 from discord.ext import commands
 
 from app.bot.worker_client import LibraryQuoteMatchResult, QuoteMatchResult, SubtitleEntryResult
-from app.worker.ffmpeg import parse_timecode
 
 logger = logging.getLogger("cinesnip.bot.gif")
 
@@ -443,19 +442,22 @@ class _CustomDurationModal(discord.ui.Modal, title="Custom duration"):
         self.end_input.default = str(round(view._clip_end, 2))
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        try:
-            start = parse_timecode(str(self.start_input.value))
-            end = parse_timecode(str(self.end_input.value))
-        except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
+        # Send the raw timecode strings straight to /render's existing
+        # timecode/end_timecode fields rather than parsing them here —
+        # timecode format support lives server-side only (RenderRequest's
+        # field comments in app/worker/api.py), so the bot never imports
+        # app.worker.ffmpeg.parse_timecode. A malformed value comes back as
+        # a 422, surfaced the same way any other render failure is.
         await interaction.response.defer()
-        await self._view._re_render(interaction, start, end)
+        await self._view._re_render_timecode(
+            interaction, str(self.start_input.value), str(self.end_input.value)
+        )
 
 
 class _EditSubsModal(discord.ui.Modal, title="Edit subtitles"):
     text_input = discord.ui.TextInput(
-        label="Lines (separate entries with a line of just ---)",
+        label="Subtitle lines",
+        placeholder="Separate entries with a line of just ---; blank a block to hide that line",
         style=discord.TextStyle.paragraph,
         required=False,
     )
@@ -546,9 +548,16 @@ class ClipEditView(ClipResultView):
     async def _ensure_entries(self) -> list[SubtitleEntryResult]:
         if self._all_entries is None:
             try:
-                self._all_entries = await self._worker.subtitles(self._rating_key)
+                entries = await self._worker.subtitles(self._rating_key)
             except httpx.HTTPError:
-                self._all_entries = []
+                # Don't cache the failure as a successful empty result — a
+                # transient error (e.g. a slow cold extraction that timed
+                # out) would otherwise permanently disable Merge
+                # Previous/Next and Edit Subs for the rest of this edit
+                # session. Leave self._all_entries as None so the next
+                # click retries.
+                return []
+            self._all_entries = entries
         return self._all_entries
 
     def _clear_category_rows(self) -> None:
@@ -561,21 +570,36 @@ class ClipEditView(ClipResultView):
         self._open_category = "duration"
         entries = await self._ensure_entries()
 
-        # 6 nudges + Custom + 2 merge buttons = 9 items, but a Discord
-        # button row holds at most 5 — split across rows 2 and 3 (row 3
-        # also holds Custom/Merge Previous/Merge Next below) rather than
-        # putting all 6 nudges on row 2, which overflows it.
+        # Full two-sided control (spec requirement): each boundary (start,
+        # end) must be nudgeable in BOTH directions, not just one — the
+        # tvgif-style one-directional-extend limitation this feature is
+        # explicitly meant to fix. That's 2 boundaries x 2 directions = 4
+        # nudge buttons per magnitude. The spec lists three magnitudes
+        # (0.5s/1s/5s), but a Discord view caps out at 5 buttons/row and
+        # this category has a fixed 2-row (10-slot) budget shared with
+        # Custom + Merge Previous + Merge Next (3 more mandatory buttons):
+        # 3 magnitudes x 4 = 12, +3 = 15 — nowhere close. Even 2 magnitudes
+        # (8 nudges + 3 = 11) is one over the 10-slot budget. Per the
+        # review ruling, both-directions-per-boundary outranks magnitude
+        # count, and partial/asymmetric magnitudes aren't an option (that
+        # would silently reintroduce the one-directional bug for whichever
+        # combo got dropped) — so this keeps a single magnitude (1s, the
+        # spec's middle value) with full symmetry, dropping 0.5s and 5s
+        # entirely rather than compromising symmetry. Custom (free-text
+        # modal) remains available for any other span.
         nudges = [
-            ("-5s", -5.0, "start", 2), ("-1s", -1.0, "start", 2), ("-0.5s", -0.5, "start", 2),
-            ("+0.5s", 0.5, "end", 2), ("+1s", 1.0, "end", 2), ("+5s", 5.0, "end", 3),
+            ("Start -1s", -1.0, "start"),
+            ("Start +1s", 1.0, "start"),
+            ("End -1s", -1.0, "end"),
+            ("End +1s", 1.0, "end"),
         ]
-        for label, delta, side, row in nudges:
-            button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, row=row)
+        for label, delta, side in nudges:
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, row=2)
             button.callback = self._make_nudge_callback(delta, side)
             self._category_buttons.append(button)
             self.add_item(button)
 
-        custom_button = discord.ui.Button(label="Custom", style=discord.ButtonStyle.secondary, row=3)
+        custom_button = discord.ui.Button(label="Custom", style=discord.ButtonStyle.secondary, row=2)
         custom_button.callback = self._on_custom_duration
         self._category_buttons.append(custom_button)
         self.add_item(custom_button)
@@ -612,20 +636,43 @@ class ClipEditView(ClipResultView):
         self.add_item(edit_button)
 
     async def _on_toggle_duration(self, interaction: discord.Interaction) -> None:
+        # Collapsing needs no worker call, so it can go straight through —
+        # but opening can hit _ensure_entries()'s cold-extraction path
+        # (CLAUDE.md Section 2's upfront slow-extraction warning), which can
+        # take tens of seconds to minutes and would blow Discord's 3-second
+        # ack window if awaited before response.defer()/edit_message().
+        await interaction.response.defer()
         if self._open_category == "duration":
             self._clear_category_rows()
             self._open_category = None
-        else:
-            await self._open_duration()
-        await interaction.response.edit_message(view=self)
+            await interaction.edit_original_response(view=self)
+            return
+
+        slow_warning = await _slow_subtitle_warning(self._worker, self._rating_key)
+        if slow_warning:
+            await interaction.edit_original_response(
+                content=f"Loading duration controls…{slow_warning}"
+            )
+        await self._open_duration()
+        await interaction.edit_original_response(content=None, view=self)
 
     async def _on_toggle_subtitles(self, interaction: discord.Interaction) -> None:
+        # See _on_toggle_duration — same defer-before-possibly-slow-fetch
+        # shape, mirroring _on_style_change's existing warning pattern.
+        await interaction.response.defer()
         if self._open_category == "subtitles":
             self._clear_category_rows()
             self._open_category = None
-        else:
-            await self._open_subtitles()
-        await interaction.response.edit_message(view=self)
+            await interaction.edit_original_response(view=self)
+            return
+
+        slow_warning = await _slow_subtitle_warning(self._worker, self._rating_key)
+        if slow_warning:
+            await interaction.edit_original_response(
+                content=f"Loading subtitle controls…{slow_warning}"
+            )
+        await self._open_subtitles()
+        await interaction.edit_original_response(content=None, view=self)
 
     def _make_nudge_callback(self, delta: float, side: str):
         async def _callback(interaction: discord.Interaction) -> None:
@@ -675,11 +722,45 @@ class ClipEditView(ClipResultView):
                 subtitle_overrides=self.overrides or None,
             )
         except httpx.HTTPError as exc:
-            await interaction.edit_original_response(
-                content=f"Couldn't update the clip: {_error_detail(exc)}", view=self
-            )
+            await self._handle_render_error(interaction, exc)
             return
+        await self._apply_render_result(interaction, requested_style, render_result)
 
+    async def _re_render_timecode(
+        self, interaction: discord.Interaction, timecode: str, end_timecode: str
+    ) -> None:
+        # Same as _re_render, but for _CustomDurationModal's raw timecode
+        # strings — sent via /render's timecode/end_timecode fields (parsed
+        # server-side) instead of numeric start/end, per the layering
+        # invariant in WorkerClient's docstring and RenderRequest's field
+        # comments (app/worker/api.py). Shares all post-render handling
+        # with _re_render via _handle_render_error/_apply_render_result so
+        # there's exactly one place doing that work.
+        requested_style = self.style
+        try:
+            render_result = await self._worker.render(
+                self._rating_key,
+                timecode=timecode,
+                end_timecode=end_timecode,
+                format=self._format,
+                style=requested_style,
+                subtitle_overrides=self.overrides or None,
+            )
+        except httpx.HTTPError as exc:
+            await self._handle_render_error(interaction, exc)
+            return
+        await self._apply_render_result(interaction, requested_style, render_result)
+
+    async def _handle_render_error(
+        self, interaction: discord.Interaction, exc: httpx.HTTPError
+    ) -> None:
+        await interaction.edit_original_response(
+            content=f"Couldn't update the clip: {_error_detail(exc)}", view=self
+        )
+
+    async def _apply_render_result(
+        self, interaction: discord.Interaction, requested_style: str, render_result
+    ) -> None:
         self._content = render_result.content
         self._filename = f"clip.{render_result.format}"
         self.style = render_result.style

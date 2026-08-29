@@ -1,4 +1,6 @@
 from app.bot.cogs.gif import (
+    _CustomDurationModal,
+    _EditSubsModal,
     _entries_in_window,
     _find_merge_next,
     _find_merge_previous,
@@ -97,3 +99,30 @@ def test_find_merge_next_returns_the_closest_entry_after_clip_end():
 def test_find_merge_next_returns_none_when_nothing_follows():
     entries = [_entry(1, 0.0, 2.0, "before")]
     assert _find_merge_next(entries, clip_end=10.0) is None
+
+
+# --- Discord modal component limits -------------------------------------------
+#
+# discord.py does no client-side validation of Discord's own API limits, so
+# an over-length label/title silently 400s at runtime the first time the
+# modal is opened ("This interaction failed", no useful error) rather than
+# failing at import/construction time. _EditSubsModal's label once exceeded
+# this and broke every Edit Subs click — guard both modals here so a future
+# label/title edit can't silently reintroduce that.
+
+_MODAL_LABEL_MAX = 45
+_MODAL_TITLE_MAX = 45
+
+
+def test_custom_duration_modal_labels_and_title_fit_discord_limits():
+    assert len(_CustomDurationModal.title) <= _MODAL_TITLE_MAX
+    for name, item in _CustomDurationModal.__modal_children_items__.items():
+        assert item.label is not None
+        assert len(item.label) <= _MODAL_LABEL_MAX, (name, item.label)
+
+
+def test_edit_subs_modal_labels_and_title_fit_discord_limits():
+    assert len(_EditSubsModal.title) <= _MODAL_TITLE_MAX
+    for name, item in _EditSubsModal.__modal_children_items__.items():
+        assert item.label is not None
+        assert len(item.label) <= _MODAL_LABEL_MAX, (name, item.label)

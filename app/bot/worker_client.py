@@ -24,6 +24,13 @@ RENDER_TIMEOUT_SECONDS = 480.0
 # the configured value.
 RESOLVE_QUOTE_TIMEOUT_SECONDS = 480.0
 
+# Must exceed subtitle_defaults.extraction_timeout_seconds (300s default),
+# same reasoning as RESOLVE_QUOTE_TIMEOUT_SECONDS above — GET /subtitles can
+# trigger a full cold subtitle extraction (e.g. the first time ClipEditView's
+# Duration/Subtitles category is opened for a title that was rendered from a
+# bare timecode, which never fetched subtitles up front).
+SUBTITLES_TIMEOUT_SECONDS = 480.0
+
 # /search-episodes-quote may serially cold-extract several never-touched
 # episodes in one request, each up to extraction_timeout_seconds in the
 # worst case. Generous headroom above that (mostly theoretical in practice
@@ -178,7 +185,9 @@ class WorkerClient:
         return SubtitleStatusResult(**response.json())
 
     async def subtitles(self, rating_key: int) -> list[SubtitleEntryResult]:
-        response = await self._client.get(f"/subtitles/{rating_key}")
+        response = await self._client.get(
+            f"/subtitles/{rating_key}", timeout=SUBTITLES_TIMEOUT_SECONDS
+        )
         response.raise_for_status()
         return [SubtitleEntryResult(**e) for e in response.json()["entries"]]
 
