@@ -29,10 +29,10 @@ venv/
 /PRODUCT.md
 /docs/
 
-# Skill/plugin-generated local state — the tooling itself belongs at the
-# global Claude Code config level, not duplicated per-project.
+# AI-tooling working output for this project (design critiques, hook
+# cache) — internal scratch artifacts, not user-facing docs and not
+# needed to run CineSnip.
 .impeccable/
-docs/superpowers/
 
 # Local dev-only compose override (bind-mounts ./app for hot reload) —
 # Compose auto-merges it, so it must never reach another installer's clone.
