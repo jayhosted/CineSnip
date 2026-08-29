@@ -2,6 +2,7 @@ import pytest
 
 from app.worker.subtitle_render import (
     STYLE_PRESETS,
+    apply_overrides,
     build_ass_document,
     entries_in_window,
 )
@@ -115,3 +116,35 @@ def test_all_presets_produce_a_parseable_style_line(preset_name):
     style_line = next(line for line in doc.splitlines() if line.startswith("Style: Default,"))
     fields = style_line.removeprefix("Style: ").split(",")
     assert len(fields) == 23  # matches the declared Format: field count
+
+
+# --- apply_overrides --------------------------------------------------------
+
+
+def test_apply_overrides_passes_through_entries_with_no_override():
+    entries = [_entry(1, 0.0, 2.0, "hello")]
+    assert apply_overrides(entries, {}) == entries
+
+
+def test_apply_overrides_replaces_text_for_a_matched_index():
+    entries = [_entry(1, 0.0, 2.0, "hello")]
+    result = apply_overrides(entries, {1: "goodbye"})
+    assert result == [_entry(1, 0.0, 2.0, "goodbye")]
+
+
+def test_apply_overrides_suppresses_an_entry_mapped_to_none():
+    entries = [_entry(1, 0.0, 2.0, "hello"), _entry(2, 2.0, 4.0, "world")]
+    result = apply_overrides(entries, {1: None})
+    assert result == [_entry(2, 2.0, 4.0, "world")]
+
+
+def test_apply_overrides_ignores_indices_not_present_in_the_window():
+    entries = [_entry(1, 0.0, 2.0, "hello")]
+    result = apply_overrides(entries, {99: "unused"})
+    assert result == entries
+
+
+def test_apply_overrides_preserves_entry_order():
+    entries = [_entry(1, 0.0, 2.0, "a"), _entry(2, 2.0, 4.0, "b"), _entry(3, 4.0, 6.0, "c")]
+    result = apply_overrides(entries, {2: "B"})
+    assert [e.text for e in result] == ["a", "B", "c"]

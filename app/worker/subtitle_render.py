@@ -141,6 +141,26 @@ def entries_in_window(
     return window
 
 
+def apply_overrides(
+    entries: list[SubtitleEntry], overrides: dict[int, str | None]
+) -> list[SubtitleEntry]:
+    """Apply per-entry text overrides/suppressions (keyed by SubtitleEntry.index,
+    from a Discord clip-edit session) to an already-windowed entry list, just
+    before it's burned into an ASS document. An index with no key in
+    `overrides` passes its entry through unchanged; a value of None
+    suppresses the line entirely; any other string replaces its text."""
+    result: list[SubtitleEntry] = []
+    for entry in entries:
+        if entry.index not in overrides:
+            result.append(entry)
+            continue
+        override = overrides[entry.index]
+        if override is None:
+            continue
+        result.append(SubtitleEntry(index=entry.index, start=entry.start, end=entry.end, text=override))
+    return result
+
+
 def _ass_timestamp(seconds: float) -> str:
     seconds = max(0.0, seconds)
     hours = int(seconds // 3600)
