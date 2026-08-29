@@ -12,6 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from app.bot.worker_client import LibraryQuoteMatchResult, QuoteMatchResult, SubtitleEntryResult
+from app.worker.ffmpeg import parse_timecode
 
 logger = logging.getLogger("cinesnip.bot.gif")
 
@@ -431,6 +432,249 @@ class ClipResultView(discord.ui.View):
         await interaction.response.edit_message(view=self)
 
 
+class _CustomDurationModal(discord.ui.Modal, title="Custom duration"):
+    start_input = discord.ui.TextInput(label="Start (e.g. 1:23:45 or 1h23m45s)", required=True)
+    end_input = discord.ui.TextInput(label="End (same format)", required=True)
+
+    def __init__(self, view: "ClipEditView") -> None:
+        super().__init__()
+        self._view = view
+        self.start_input.default = str(round(view._clip_start, 2))
+        self.end_input.default = str(round(view._clip_end, 2))
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            start = parse_timecode(str(self.start_input.value))
+            end = parse_timecode(str(self.end_input.value))
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        await interaction.response.defer()
+        await self._view._re_render(interaction, start, end)
+
+
+class _EditSubsModal(discord.ui.Modal, title="Edit subtitles"):
+    text_input = discord.ui.TextInput(
+        label="Lines (separate entries with a line of just ---)",
+        style=discord.TextStyle.paragraph,
+        required=False,
+    )
+
+    def __init__(self, view: "ClipEditView", window: list[SubtitleEntryResult]) -> None:
+        super().__init__()
+        self._view = view
+        self._window = window
+        self.text_input.default = _format_edit_blocks(window, view.overrides)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        self._view.overrides = _parse_edit_blocks(
+            str(self.text_input.value), self._window, self._view.overrides
+        )
+        await interaction.response.defer()
+        await self._view._re_render(interaction, self._view._clip_start, self._view._clip_end)
+
+
+class ClipEditView(ClipResultView):
+    """ClipResultView plus in-place duration/merge/subtitle editing controls
+    (issue #5): two collapsible category rows (⏱ Duration, 💬 Subtitles)
+    between the existing Style select and Post button. Edit state (current
+    span, per-line text overrides) lives only on this view instance, the
+    same approach QuoteMatchView already uses. Row layout is fixed
+    regardless of which category (if any) is open, so Post never moves:
+    row 0 Style select, row 1 category toggles, rows 2-3 the open
+    category's controls, row 4 Post — always last.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.overrides: dict[int, str | None] = {}
+        self._all_entries: list[SubtitleEntryResult] | None = None
+        self._open_category: str | None = None
+        self._category_buttons: list[discord.ui.Button] = []
+        self._add_category_toggles()
+
+    def _add_category_toggles(self) -> None:
+        duration_button = discord.ui.Button(
+            label="⏱ Duration", style=discord.ButtonStyle.secondary, row=1
+        )
+        duration_button.callback = self._on_toggle_duration
+        subtitles_button = discord.ui.Button(
+            label="💬 Subtitles", style=discord.ButtonStyle.secondary, row=1
+        )
+        subtitles_button.callback = self._on_toggle_subtitles
+        self.add_item(duration_button)
+        self.add_item(subtitles_button)
+
+    async def _ensure_entries(self) -> list[SubtitleEntryResult]:
+        if self._all_entries is None:
+            try:
+                self._all_entries = await self._worker.subtitles(self._rating_key)
+            except httpx.HTTPError:
+                self._all_entries = []
+        return self._all_entries
+
+    def _clear_category_rows(self) -> None:
+        for button in self._category_buttons:
+            self.remove_item(button)
+        self._category_buttons = []
+
+    async def _open_duration(self) -> None:
+        self._clear_category_rows()
+        self._open_category = "duration"
+        entries = await self._ensure_entries()
+
+        # 6 nudges + Custom + 2 merge buttons = 9 items, but a Discord
+        # button row holds at most 5 — split across rows 2 and 3 (row 3
+        # also holds Custom/Merge Previous/Merge Next below) rather than
+        # putting all 6 nudges on row 2, which overflows it.
+        nudges = [
+            ("-5s", -5.0, "start", 2), ("-1s", -1.0, "start", 2), ("-0.5s", -0.5, "start", 2),
+            ("+0.5s", 0.5, "end", 2), ("+1s", 1.0, "end", 2), ("+5s", 5.0, "end", 3),
+        ]
+        for label, delta, side, row in nudges:
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, row=row)
+            button.callback = self._make_nudge_callback(delta, side)
+            self._category_buttons.append(button)
+            self.add_item(button)
+
+        custom_button = discord.ui.Button(label="Custom", style=discord.ButtonStyle.secondary, row=3)
+        custom_button.callback = self._on_custom_duration
+        self._category_buttons.append(custom_button)
+        self.add_item(custom_button)
+
+        prev_entry = _find_merge_previous(entries, self._clip_start)
+        prev_button = discord.ui.Button(
+            label="Merge Previous", style=discord.ButtonStyle.secondary, row=3,
+            disabled=prev_entry is None,
+        )
+        prev_button.callback = self._on_merge_previous
+        self._category_buttons.append(prev_button)
+        self.add_item(prev_button)
+
+        next_entry = _find_merge_next(entries, self._clip_end)
+        next_button = discord.ui.Button(
+            label="Merge Next", style=discord.ButtonStyle.secondary, row=3,
+            disabled=next_entry is None,
+        )
+        next_button.callback = self._on_merge_next
+        self._category_buttons.append(next_button)
+        self.add_item(next_button)
+
+    async def _open_subtitles(self) -> None:
+        self._clear_category_rows()
+        self._open_category = "subtitles"
+        entries = await self._ensure_entries()
+        window = _entries_in_window(entries, self._clip_start, self._clip_end)
+        edit_button = discord.ui.Button(
+            label="Edit Subs", style=discord.ButtonStyle.secondary, row=2,
+            disabled=not window,
+        )
+        edit_button.callback = self._on_edit_subs
+        self._category_buttons.append(edit_button)
+        self.add_item(edit_button)
+
+    async def _on_toggle_duration(self, interaction: discord.Interaction) -> None:
+        if self._open_category == "duration":
+            self._clear_category_rows()
+            self._open_category = None
+        else:
+            await self._open_duration()
+        await interaction.response.edit_message(view=self)
+
+    async def _on_toggle_subtitles(self, interaction: discord.Interaction) -> None:
+        if self._open_category == "subtitles":
+            self._clear_category_rows()
+            self._open_category = None
+        else:
+            await self._open_subtitles()
+        await interaction.response.edit_message(view=self)
+
+    def _make_nudge_callback(self, delta: float, side: str):
+        async def _callback(interaction: discord.Interaction) -> None:
+            await interaction.response.defer()
+            new_start = self._clip_start + delta if side == "start" else self._clip_start
+            new_end = self._clip_end + delta if side == "end" else self._clip_end
+            await self._re_render(interaction, new_start, new_end)
+        return _callback
+
+    async def _on_merge_previous(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        entries = await self._ensure_entries()
+        entry = _find_merge_previous(entries, self._clip_start)
+        if entry is None:
+            return
+        await self._re_render(interaction, entry.end, self._clip_end)
+
+    async def _on_merge_next(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        entries = await self._ensure_entries()
+        entry = _find_merge_next(entries, self._clip_end)
+        if entry is None:
+            return
+        await self._re_render(interaction, self._clip_start, entry.start)
+
+    async def _on_custom_duration(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(_CustomDurationModal(self))
+
+    async def _on_edit_subs(self, interaction: discord.Interaction) -> None:
+        entries = await self._ensure_entries()
+        window = _entries_in_window(entries, self._clip_start, self._clip_end)
+        await interaction.response.send_modal(_EditSubsModal(self, window))
+
+    @property
+    def _clip_end(self) -> float:
+        return self._clip_start + self._clip_duration
+
+    async def _re_render(self, interaction: discord.Interaction, start: float, end: float) -> None:
+        try:
+            render_result = await self._worker.render(
+                self._rating_key,
+                start=start,
+                end=end,
+                format=self._format,
+                style=self.style,
+                subtitle_overrides=self.overrides or None,
+            )
+        except httpx.HTTPError as exc:
+            await interaction.edit_original_response(
+                content=f"Couldn't update the clip: {_error_detail(exc)}", view=self
+            )
+            return
+
+        self._content = render_result.content
+        self._filename = f"clip.{render_result.format}"
+        self.style = render_result.style
+        self._clip_start = render_result.start
+        self._clip_duration = render_result.duration
+        await self._refresh_open_category()
+
+        file = discord.File(io.BytesIO(self._content), filename=self._filename)
+        await interaction.edit_original_response(
+            content=_no_subtitles_note(self.style, render_result.style) or None,
+            attachments=[file],
+            view=self,
+        )
+
+    async def _refresh_open_category(self) -> None:
+        # Merge-button enabled state and the Edit Subs window depend on the
+        # just-updated clip span — rebuild whichever category is currently
+        # open using the already-cached entry list (no new worker fetch).
+        if self._open_category == "duration":
+            await self._open_duration()
+        elif self._open_category == "subtitles":
+            await self._open_subtitles()
+
+    @discord.ui.button(label="Post to channel", style=discord.ButtonStyle.primary, row=4)
+    async def post(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        file = discord.File(io.BytesIO(self._content), filename=self._filename)
+        content = _post_metadata_line(
+            self._title, self._clip_start, self._clip_end, interaction.user.display_name,
+        )
+        await interaction.channel.send(content=content, file=file)
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+
+
 class RandomResultView(discord.ui.View):
     """Shown by /snip random: just Shuffle (re-roll + re-render in place,
     same message-edit pattern as ClipResultView's style swap) and Post to
@@ -813,7 +1057,7 @@ class GifCog(commands.Cog):
 
         filename = f"clip.{render_result.format}"
         file = discord.File(io.BytesIO(render_result.content), filename=filename)
-        result_view = ClipResultView(
+        result_view = ClipEditView(
             self.bot.worker,
             rating_key,
             resolved.title,
