@@ -21,6 +21,13 @@ venv/
 # Claude Code local settings/skills (installed tooling, personal hook config)
 .claude/
 
+# Internal dev docs — personal setup details / forensic build notes, not
+# needed to install or run CineSnip. Kept locally for Claude Code context.
+/CLAUDE.md
+/DESIGN.md
+/PRODUCT.md
+/docs/
+
 # Skill/plugin-generated local state — the tooling itself belongs at the
 # global Claude Code config level, not duplicated per-project.
 .impeccable/

@@ -5,8 +5,6 @@ Generate short clips from your own Plex library, straight into Discord.
 `/snip movie` for films, `/snip tv` for TV episodes: give it a title and either a
 `quote` (fuzzy-matched against subtitles) or a `timecode` (e.g. `1:23:45`),
 one Docker container. Searches across every Plex library you configure.
-See [CLAUDE.md](CLAUDE.md) for the full project plan and later-stage
-features.
 
 ## 1. Prerequisites
 
@@ -120,8 +118,8 @@ range gives a clear error rather than a silently different-length clip.
 
 Pick a film from the autocomplete suggestions. With a
 quote, CineSnip fuzzy-matches it against the film's subtitles (sidecar
-`.srt` or an embedded subtitle stream — see [CLAUDE.md](CLAUDE.md) Section 5
-for what happens when neither exists), uses the matched line's own length
+`.srt` or an embedded subtitle stream — if neither exists, the title isn't
+quote-searchable and only `timecode:` input will work), uses the matched line's own length
 for the clip, and shows the best match with surrounding context and a
 confidence score; if it's not confident, or you want a different line, use
 "Show other matches" to pick from the next-best candidates.
@@ -244,6 +242,6 @@ empty on upgrade.
 - **"Couldn't generate the GIF: ... timed out"** — the source file is unusually slow for ffmpeg to seek/decode near that timestamp (raise `render_defaults.timeout_seconds` in `config.yaml` if this happens on files that should be fine), or something is stuck — check `docker compose logs`.
 - **Permission denied writing to `/app/scratch` or `/app/cache`** — the host `scratch/`/`cache/` directory got created by Docker (as `root`) instead of by you before first run. Stop the container, `rm -rf scratch cache && mkdir scratch cache`, then start it again. (Unlike `scratch/`, it's safe to leave `cache/` in place across restarts — only delete it if you actually want to force re-extraction of all subtitles.)
 - **Command doesn't show up (or a renamed command still shows its old name) in Discord** — without `DEV_GUILD_ID` set, commands sync globally on every startup, and Discord can take up to an **hour** to propagate a global slash command change to clients, not just a minute. To skip the wait while developing, set `DEV_GUILD_ID` in `.env` to your test server's ID — the bot then syncs only to that one server instead, which applies near-instantly (deliberately *not* global sync too, since both together left two copies of the same command visible side by side once the global one also propagated). **`DEV_GUILD_ID` is a local-dev-only setting — leave it unset once you're done iterating.** Left populated, it silently blocks commands from ever syncing to *any* other server the bot is invited to, including production servers; the bot logs a warning on startup whenever it's set as a reminder.
-- **"No usable subtitles for ..."** — the film has neither a sidecar `.srt` next to the video file nor a text-based embedded subtitle stream (bitmap formats like PGS aren't extractable). Use `timecode:` for this title instead — there's no transcription fallback for this by design (see CLAUDE.md decision #7).
+- **"No usable subtitles for ..."** — the film has neither a sidecar `.srt` next to the video file nor a text-based embedded subtitle stream (bitmap formats like PGS aren't extractable). Use `timecode:` for this title instead — there's no transcription fallback for this by design.
 - **"No subtitle line ... resembled that quote"** — nothing scored well enough against the film's subtitles. Try a shorter, more distinctive phrase, or double-check the line isn't paraphrased/from a different cut.
 - **"That's a Ns clip; clips must be between Xs and Ys"** — your `timecode`/`end_timecode` span is outside `render_defaults.min_duration_seconds`/`max_duration_seconds` in `config.yaml` (1s–15s by default). Pick a closer `end_timecode`, or raise the limit in `config.yaml` if you actually want longer clips.
