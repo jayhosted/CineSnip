@@ -64,12 +64,10 @@ class QuoteMatchView(discord.ui.View):
         self.min_score = min_score
         self.confident_score = confident_score
         self.value: bool | None = None
-        # Defaults to the top-scored candidate (0), but a caller that already
-        # knows which specific line the user wants (e.g. LibrarySearchView,
-        # which re-runs this per-film search purely to get a fresh
-        # start/end/context for a line the user already picked by its exact
-        # text) can pre-select it instead of silently defaulting back to
-        # whichever line this fresh search happens to rank first.
+        # Defaults to the top-scored candidate (0), but a caller that
+        # already knows which specific line the user wants (e.g.
+        # LibrarySearchView, re-running this search for a line already
+        # picked by its exact text) can pre-select it instead.
         self.index = initial_index
 
         self._show_others_button: discord.ui.Button | None = None

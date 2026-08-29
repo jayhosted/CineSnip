@@ -63,12 +63,10 @@ async def main() -> None:
     reconfigured = asyncio.Event()
 
     async def on_setup_complete() -> None:
-        # Fired by the wizard's "Finish setup" step (first run) or by a
-        # later reconfiguration through the same /wizard/... routes
-        # (Section 14 / decision #6 — reopened via /wizard/restart once
-        # /generate is live). Either way this must not restart the
-        # container: swap in the newly-written config and let main()'s loop
-        # below react to it.
+        # Fired by the wizard's "Finish setup" step or a later
+        # reconfiguration via /wizard/restart (decision #6) — either way
+        # this must not restart the container, just swap in the newly
+        # written config and let main()'s loop below react to it.
         try:
             new_settings = load_settings(override_env=True)
         except SettingsError as exc2:
@@ -82,12 +80,11 @@ async def main() -> None:
         settings_holder.settings = new_settings
         reconfigured.set()
 
-    # The web app (Section 14) now runs for the container's ENTIRE
-    # lifetime, not just a one-shot first-run phase: while
-    # settings_holder.settings is None it serves only the setup wizard;
-    # once configured it also serves /generate (V3 Phase 3) and stays
-    # reachable at /wizard/... afterward as the reconfiguration entry
-    # point, instead of tearing itself down the moment setup completes.
+    # The web app runs for the container's entire lifetime, not just a
+    # one-shot first-run phase: while settings_holder.settings is None it
+    # serves only the setup wizard; once configured it also serves
+    # /generate and stays reachable at /wizard/... as the reconfiguration
+    # entry point.
     web_app = create_web_app(settings_holder, on_setup_complete)
     web_port = int(os.environ.get("WIZARD_PORT", "1919"))
     web_server = uvicorn.Server(uvicorn.Config(web_app, host="0.0.0.0", port=web_port, log_level="info"))
@@ -195,16 +192,11 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    # uvicorn.Server.serve() is awaited directly here rather than run via
-    # uvicorn.run()/Server.run() — needed so the bot and worker share one
-    # event loop (asyncio.gather()/asyncio.wait() above) instead of uvicorn
-    # owning its own. That means uvicorn's own automatic uvloop activation
-    # (which only kicks in when it manages the top-level loop itself) never
-    # fires here — confirmed via a real run: plain asyncio.run() left the
-    # standard asyncio loop active, not uvloop, even with uvloop installed.
-    # Found while trimming uvicorn's [standard] extra down to just its two
-    # actually-used pieces (uvloop, httptools) — uvloop was already being
-    # paid for in image size without the app ever actually getting its
-    # benefit. uvloop.run() (a drop-in asyncio.run() replacement) is what
-    # actually activates it.
+    # uvicorn.Server.serve() is awaited directly here (not via
+    # uvicorn.run()) so the bot and worker share one event loop. That means
+    # uvicorn's automatic uvloop activation never fires (it only kicks in
+    # when uvicorn owns the top-level loop) — uvloop was being paid for in
+    # image size with no benefit until this was caught. uvloop.run(), a
+    # drop-in asyncio.run() replacement, is what actually activates it.
+    # See docs/build-notes/docker-image.md.
     uvloop.run(main())

@@ -41,13 +41,10 @@ def _size_label(num_bytes: int) -> str:
 
 
 async def _subtitle_slow_warning(worker: WorkerClient, rating_key: int) -> str:
-    # Mirrors app/bot/cogs/gif.py's _slow_subtitle_warning — a cheap
-    # (no ffmpeg) best-effort hint that a quote search is about to fall
-    # through to a cold embedded-subtitle extraction, which can take
-    # several minutes on a large file. Kept as this module's own copy
-    # rather than importing the bot-package helper directly, same reasoning
-    # as _STYLE_OPTIONS above: the web app is a thin second client of the
-    # worker API, not a place to reach into the bot package's internals.
+    # Mirrors app/bot/cogs/gif.py's _slow_subtitle_warning — kept as this
+    # module's own copy rather than importing the bot package directly,
+    # since the web app is a thin client of the worker API, not a place to
+    # reach into the bot package's internals.
     try:
         status = await worker.subtitle_status(rating_key)
     except httpx.HTTPError:
@@ -160,12 +157,9 @@ def register_generate_routes(
         except httpx.HTTPError as exc:
             return _error_html(exc)
         # Stored server-side and referenced by URL rather than embedded as a
-        # base64 data URI — a multi-MB clip turning into ~4MB of inline text
-        # in the page, re-sent on every format switch, is exactly the kind
-        # of thing the clip store exists to avoid. It's also what makes
-        # "Post to Discord" possible below without re-rendering: the bytes
-        # are already sitting here under an id the result panel can hand
-        # back.
+        # base64 data URI (avoids re-sending a multi-MB clip as inline text
+        # on every format switch) — also what makes "Post to Discord" below
+        # possible without re-rendering, since the bytes are already here.
         filename = f"clip.{result.format}"
         clip_id = clip_store.put(result.content, result.format, filename)
         return fragment(
@@ -180,12 +174,10 @@ def register_generate_routes(
             caption=caption,
             style_label=_style_label(result.style),
             no_subtitles_note=_no_subtitles_note(style, result.style),
-            # Carried through as hidden fields so the result panel's own
-            # format selector can re-POST straight to /generate/render (the
-            # already-resolved-timecode endpoint) instead of re-running
-            # quote resolution — changing format shouldn't force the user
-            # back through the "pick a line" confirm step for an ambiguous
-            # quote match they already resolved once.
+            # Carried through as hidden fields so the format selector can
+            # re-POST straight to /generate/render (already-resolved
+            # timecode) instead of re-running quote resolution — changing
+            # format shouldn't re-trigger the "pick a line" confirm step.
             rating_key=rating_key,
             timecode=timecode,
             duration=duration,
@@ -241,9 +233,8 @@ def register_generate_routes(
         # Reuses the title/year/library the search results already carried
         # rather than re-resolving via the worker — a show has no media
         # file of its own to resolve (only its episodes do), and
-        # re-fetching what's already in hand is exactly the redundant-
-        # Plex-fetch class of bug CLAUDE.md's Section 3 fix already covers
-        # for the bot side.
+        # re-fetching what's already in hand is the same redundant-fetch
+        # class of bug CLAUDE.md Section 3 already fixed on the bot side.
         selected = {"rating_key": rating_key, "title": title, "year": int(year) if year else None, "library_name": library_name}
         return fragment(
             "panel_generate_left.html",
@@ -280,13 +271,12 @@ def register_generate_routes(
 
     @app.post("/generate/render-start", response_class=HTMLResponse)
     async def generate_render_start(request: Request):
-        # Mirrors GifCog._generate's call order in app/bot/cogs/gif.py (film
-        # branch) plus GifCog.snip_tv's episode-resolve/whole-show-search
-        # branches — same worker endpoints, same order, just rendered as
-        # htmx fragments instead of Discord views. Unlike the bot, the
-        # style is whatever the user picked in the pill grid (default
-        # "classic") rather than a zero-click default forced per branch —
-        # this UI puts the choice in front of the user up front, so honor it.
+        # Mirrors GifCog._generate's call order (film branch) plus
+        # GifCog.snip_tv's episode-resolve/whole-show-search branches —
+        # same worker endpoints/order, rendered as htmx fragments instead
+        # of Discord views. Unlike the bot's zero-click default-per-branch
+        # style, this UI puts the style choice in front of the user
+        # upfront (pill grid, default "classic"), so honor it.
         worker = client_cache.get(settings_holder)
         if worker is None:
             return HTMLResponse("")
@@ -393,35 +383,27 @@ def register_generate_routes(
 
     @app.get("/generate/clip/{clip_id}")
     async def generate_clip(clip_id: str):
-        # Backs the result panel's <img>/<video><source>/Download — a plain
-        # same-origin URL instead of the base64 data URI this used to be,
-        # per the do_render comment above. clip_id is an unguessable
-        # uuid4.hex (ClipStore), and this whole app only ever binds to
-        # localhost/LAN for a single trusted operator (Section 9/11 —
-        # there's no multi-tenant boundary here to enforce), so a bare
-        # lookup with no additional auth matches every other route in this
-        # module.
+        # clip_id is an unguessable uuid4.hex (ClipStore), and this app only
+        # ever binds to localhost/LAN for a single trusted operator
+        # (Section 9/11 — no multi-tenant boundary to enforce), so a bare
+        # lookup with no additional auth matches every other route here.
         entry = clip_store.get(clip_id)
         if entry is None:
             # Expired (30min TTL) or evicted (LRU cap) — the result panel's
-            # own actions (format switch, post-to-Discord) already handle
-            # this by surfacing a "generate again" error rather than a
-            # broken image, so a bare 404 here is fine.
+            # own actions already handle this via a "generate again" error,
+            # so a bare 404 here is fine.
             return Response(status_code=404)
         return Response(content=entry.content, media_type=_MEDIA_TYPES[entry.format])
 
     @app.post("/generate/post-discord", response_class=HTMLResponse)
     async def generate_post_discord(request: Request):
         # Second thin client of the same live bot instance the Discord
-        # commands themselves use (decision #3's reasoning, extended past
-        # the worker API to the bot connection itself — see runtime.py's
-        # SettingsHolder.bot docstring). Mirrors GifCog's own
-        # ClipResultView.post (app/bot/cogs/gif.py) almost exactly: same
-        # discord.File-from-bytes call, same "disable after posting" idea
-        # (here: swap the form for a static confirmation pill via the
-        # panel_generate_discord_post.html partial) — just reached from a
-        # channel picker instead of always the invoking channel, since a
-        # browser session has no implicit "channel this came from".
+        # commands use (decision #3, extended past the worker API to the
+        # bot connection — see runtime.py's SettingsHolder.bot docstring).
+        # Mirrors ClipResultView.post (gif.py) — same discord.File-from-
+        # bytes call and "disable after posting" idea — but reached from a
+        # channel picker instead of the invoking channel, since a browser
+        # session has no implicit "channel this came from".
         form = await request.form()
         clip_id = str(form.get("clip_id", ""))
         channel_id_raw = str(form.get("channel_id", ""))

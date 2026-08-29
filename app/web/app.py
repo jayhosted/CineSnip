@@ -38,16 +38,12 @@ _STATIC_DIR = Path(__file__).parent / "static"
 
 # Bounds how long the wizard will wait on a Plex call before giving up.
 # plexapi's own `timeout=10` on PlexServer only bounds a single HTTP
-# request — it doesn't stop a genuinely hung/black-holed connection from
-# blocking forever, and every Plex call here runs in a worker thread that
-# can't be forcibly killed once it's actually stuck (confirmed the hard
-# way: repeated real attempts against a truly unresponsive path left a
-# long-running wizard process with orphaned threads that never returned,
-# eventually starving the thread pool so *every* later Plex-touching
-# request queued forever too — the whole wizard became unusable until the
-# process was restarted). asyncio.wait_for at least bounds the wait from
-# the caller's side so one bad attempt surfaces a clear error instead of a
-# silently dead button, even though the underlying thread may still linger.
+# request, not a genuinely hung connection — and every Plex call here runs
+# in a worker thread that can't be forcibly killed once stuck (a truly
+# unresponsive attempt can orphan threads and starve the pool, wedging
+# every later Plex-touching request too). asyncio.wait_for at least bounds
+# the wait from the caller's side so one bad attempt surfaces a clear error
+# instead of a silently dead button, even though the thread may still linger.
 _PLEX_CALL_TIMEOUT_SECONDS = 45.0
 
 # View Channels (1024) + Send Messages (2048) + Embed Links (16384) +
@@ -161,13 +157,11 @@ def _suggest_mapping(
 
 
 def _discover_library_choices_sync(section, filename_index: dict[str, list[tuple[str, str]]]) -> LibraryChoice:
-    # A library can span more than one physical folder/drive (Section 3 —
-    # this developer's own Movies and TV Shows each really do span two
-    # drives), so a single sampled item can only ever suggest one of them.
-    # Sampling a broader slice (~40 items — confirmed fast against this
-    # developer's real library: media parts already ride along with the
-    # search results, no extra per-item round trip) reliably surfaces every
-    # distinct mounted folder the library actually touches.
+    # A library can span more than one physical folder/drive (Section 3),
+    # so a single sampled item can only ever suggest one of them. Sampling
+    # a broader slice (~40 items — cheap since media parts ride along with
+    # the search results, no extra per-item round trip) reliably surfaces
+    # every distinct mounted folder the library actually touches.
     try:
         items = section.searchEpisodes(maxresults=40) if section.type == "show" else section.all(maxresults=40)
     except Exception:
@@ -196,15 +190,11 @@ def _discover_library_choices_sync(section, filename_index: dict[str, list[tuple
 
 def _connect_and_discover_sync(plex_url: str, account_token: str | None) -> tuple[str, list[LibraryChoice]]:
     # Every call in here is real, blocking network I/O to Plex (plexapi has
-    # no async API) — this whole function is meant to be run off the event
-    # loop via run_in_threadpool. Doing this inline inside an `async def`
-    # route instead was a real bug, not just slow: it blocked Uvicorn's
-    # single event loop entirely for the duration of the call, freezing the
-    # *whole* wizard server (every other request, every other user) for
-    # however long Plex took to answer — confirmed by hitting it for real
-    # against this developer's library, where 3 libraries' worth of
-    # sampling took long enough to make the server briefly unresponsive to
-    # everything, not just show a slow button.
+    # no async API) — this whole function must be run off the event loop
+    # via run_in_threadpool. Calling it inline inside an `async def` route
+    # is a real bug, not just slow: it blocks Uvicorn's single event loop
+    # for the whole call, freezing the *entire* wizard server for every
+    # other request/user until Plex answers.
     server = PlexServer(plex_url, account_token, timeout=10)
     server_name = server.friendlyName
     filename_index = _build_filename_index(media_mount_candidates())
@@ -217,15 +207,12 @@ def _connect_and_discover_sync(plex_url: str, account_token: str | None) -> tupl
 
 
 async def _seed_wizard_state_from_settings(state: WizardState, settings: Settings) -> None:
-    # Reconfiguration entry point (Section 14's Settings "Edit ___" links):
-    # the wizard is reused as-is for editing an already-working install, so
-    # a GET into any step needs to start from what's actually live instead
-    # of blank. Without this, entering the wizard on a freshly-started
-    # process (app.state.wizard is always a brand new WizardState()) forced
-    # a whole new Discord/Plex re-auth AND showed an empty library
-    # checklist even though config.yaml already lists real libraries — the
-    # guards below (`if state.X is None`) mean this only ever fills in gaps
-    # left by a fresh process, never clobbers real in-progress wizard input.
+    # Reconfiguration entry point (Settings "Edit ___" links): the wizard
+    # is reused as-is for editing an already-working install, so a GET into
+    # any step must start from what's actually live, not a blank
+    # WizardState(). The guards below (`if state.X is None`) mean this only
+    # fills in gaps left by a fresh process, never clobbers in-progress
+    # wizard input.
     if state.discord_username is None and settings.discord_token:
         ok, _detail, payload = await _verify_discord_token(settings.discord_token)
         if ok and payload:
@@ -325,13 +312,10 @@ def _run_validation_sync(state: WizardState) -> list[tuple[str, bool, str]]:
 def create_web_app(
     settings_holder: SettingsHolder, on_setup_complete: Callable[[], Awaitable[None]]
 ) -> FastAPI:
-    # One persistent app for the whole container lifetime (Section 14 /
-    # decision #6), not the throwaway instance this used to be: while
-    # settings_holder.settings is None only the wizard routes below do
-    # anything useful (there's no worker to talk to yet); once it's set,
-    # /generate (app/web/generate.py) also comes alive and /wizard/... stays
-    # reachable afterward as the reconfiguration entry point rather than
-    # disappearing once setup completes.
+    # One persistent app for the whole container lifetime (decision #6):
+    # while settings_holder.settings is None only the wizard routes below
+    # do anything useful; once it's set, /generate also comes alive and
+    # /wizard/... stays reachable as the reconfiguration entry point.
     app = FastAPI(title="CineSnip")
     app.state.wizard = WizardState()
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
@@ -695,19 +679,12 @@ def _write_config_files(
     env_path.write_text("\n".join(kept) + "\n")
 
     # Everything below "libraries" is preserved from the currently-running
-    # Settings when there is one (a reconfiguration — Section 14/decision
-    # #6) rather than rebuilt from Pydantic defaults every time: this
-    # function is the wizard's own write path, and the wizard only ever
-    # collects discord_token/plex_url/plex_token/libraries. Wiping
-    # render_defaults/subtitle_defaults/quote_match/worker/library_sync
-    # back to defaults on every re-run would silently discard anything
-    # edited through the Settings area (app/web/settings.py) — this is
-    # what makes "re-running setup only rewrites Discord/Plex/libraries"
-    # actually true instead of just a claim in the UI copy. Falls back to
-    # fresh Pydantic defaults only on a genuine first run, when there's
-    # nothing yet to preserve. lib.model_dump() still means any future
-    # LibraryConfig field (e.g. three_d_format) flows into the written
-    # file automatically instead of needing to be added here by hand.
+    # Settings when there is one (a reconfiguration, decision #6), not
+    # rebuilt from Pydantic defaults — the wizard only ever collects
+    # discord_token/plex_url/plex_token/libraries, so wiping the rest back
+    # to defaults on every re-run would silently discard anything edited
+    # via app/web/settings.py. Falls back to fresh defaults only on a
+    # genuine first run.
     config = {
         "libraries": [lib.model_dump() for lib in state.selected_libraries()],
         "render_defaults": (current_settings.render_defaults if current_settings else RenderDefaults()).model_dump(),

@@ -6,13 +6,10 @@ from pathlib import Path
 from app.settings import LibraryConfig, PathMapping
 
 # A library can span more than one physical drive/folder (Section 3: "add
-# one entry per folder that library spans" — this developer's own Movies
-# and TV Shows libraries each really do span two drives). The wizard can
-# only ever *suggest* however many distinct mappings it found in its
-# sample, so the UI shows exactly those rows (never an arbitrary fixed
-# count) plus a per-library "+ Add another location" (htmx, appends one row
-# server-side and returns just that row's fragment) for anything the
-# sampler missed or a library with more locations than were auto-detected.
+# one entry per folder that library spans"). The wizard can only ever
+# *suggest* however many distinct mappings it found in its sample, so the
+# UI shows exactly those rows plus a per-library "+ Add another location"
+# (htmx, appends one row server-side) for anything the sampler missed.
 
 
 @dataclass
@@ -24,13 +21,11 @@ class MappingRow:
 @dataclass
 class LibraryChoice:
     # One block in the step-3 checklist: a Plex library section the user
-    # can opt into, plus the path-mapping guesses we're offering a chance
-    # to confirm/correct/extend before they're written to config.yaml.
-    # suggested_rows is a frozen snapshot of what auto-discovery actually
-    # found — mapping_rows is the live, user-editable copy. Kept separate so
-    # an accidentally-deleted suggested row can be brought back with a
-    # "Restore suggested" action rather than being gone for good (no other
-    # way to reconstruct it short of reconnecting to Plex again).
+    # can opt into, plus path-mapping guesses to confirm/correct before
+    # they're written to config.yaml. suggested_rows is a frozen snapshot
+    # of what auto-discovery found; mapping_rows is the live, editable
+    # copy — kept separate so a "Restore suggested" action can undo an
+    # accidental delete without reconnecting to Plex again.
     name: str
     section_type: str  # "movie" | "show"
     selected: bool = False

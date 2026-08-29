@@ -84,11 +84,9 @@ STYLE_PRESETS: dict[str, StylePreset] = {
         name="meme",
         # True Impact isn't installed (proprietary, not in Debian's repos)
         # and libass's fallback for an unresolvable family name isn't
-        # necessarily a sans-serif face — confirmed on this project's own
-        # container image, "Impact" fell back to a *monospace* font.
-        # Liberation Sans (installed via fonts-liberation, see Dockerfile)
-        # + bold + all-caps gets a reasonable meme look without depending
-        # on a font that isn't actually there.
+        # necessarily even a sans-serif face (confirmed: "Impact" fell back
+        # to a monospace font). Liberation Sans (fonts-liberation, see
+        # Dockerfile) + bold + all-caps gets a reasonable meme look instead.
         font="Liberation Sans",
         font_size=32,
         primary_color="&H00FFFFFF",

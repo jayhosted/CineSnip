@@ -50,14 +50,12 @@ class SearchResponse(BaseModel):
 
 class SubtitleStatusResponse(BaseModel):
     rating_key: int
-    # True when neither a sidecar file nor a cached result exists for this
-    # title, meaning a subtitle-needing request (quote search, or a styled
-    # render) is about to fall through to a cold embedded-stream extraction
-    # — which has no fast-seek and can take minutes on a large file (Section
-    # 5/6 in CLAUDE.md). A cheap, ffmpeg-free hint so the bot can warn the
-    # user *before* committing to that wait, not a guarantee: the real
-    # request still does its own proper freshness-checked cache read and can
-    # legitimately reach a different outcome (e.g. the file changed).
+    # True when neither a sidecar file nor a cached result exists, meaning
+    # a subtitle-needing request is about to fall through to a cold
+    # embedded-stream extraction (no fast-seek, can take minutes on a large
+    # file — CLAUDE.md Section 5/6). A cheap, ffmpeg-free hint so the bot
+    # can warn the user before committing to that wait, not a guarantee —
+    # the real request still does its own freshness-checked cache read.
     likely_slow: bool
 
 
@@ -176,18 +174,14 @@ def _index_if_searchable(settings: Settings, movie: MovieResult, result: Subtitl
     # no_subtitle_titles instead (Section 5's documented gap: not
     # searchable, but still worth knowing "this was checked").
     #
-    # The searchable branch deliberately does nothing to search_index:
-    # get_subtitles() (app/worker/subtitles.py) already unconditionally
-    # calls search_index.upsert_title(...) for all three outcomes (SIDECAR,
-    # EMBEDDED, NONE), with the correct source/sidecar_path/stream_index/
-    # entries/fingerprint — and every real caller here (render(),
-    # _load_subtitles(), _ensure_episode_cached()) calls get_subtitles()
-    # immediately before this function with the same movie/result. Writing
-    # here too would be a redundant second write on every /render,
-    # /resolve-quote, and episode-cache request — a full delete+reinsert of
-    # every subtitle line/FTS row for data that didn't change (same
-    # redundant-write pattern Task 5 already found and removed from
-    # library_sync.py's equivalent call).
+    # Deliberately does nothing to search_index here: get_subtitles()
+    # (app/worker/subtitles.py) already unconditionally calls
+    # search_index.upsert_title(...) for all three outcomes, and every
+    # real caller here calls get_subtitles() immediately before this
+    # function with the same movie/result. Writing here too would be a
+    # redundant full delete+reinsert of every subtitle line/FTS row on
+    # every /render, /resolve-quote, and episode-cache request for data
+    # that didn't change.
     if result.source is SubtitleSource.NONE:
         quote_index.upsert_no_subtitle_title(
             settings.quote_index_db_path,
@@ -620,14 +614,11 @@ def create_app(settings: Settings) -> FastAPI:
         _index_if_searchable(settings, episode, result)
 
     # Show-wide search (CLAUDE.md Section 4): mirrors /search-quote's
-    # diversity-first ranking but scoped to one show's episodes instead of
-    # the whole library. Unlike /search-quote, this DOES touch the live
-    # filesystem/Plex for episodes not yet cached — deliberately on-demand
-    # per Section 4 ("never pre-indexing an entire show's library
-    # proactively"), but acceptable to do inline within one request since a
-    # show's episode count is small compared to a whole library (no
-    # progress/ETA UI needed here, unlike /search-quote's still-unbuilt
-    # Tier 2).
+    # diversity-first ranking but scoped to one show's episodes. Unlike
+    # /search-quote, this DOES touch the live filesystem/Plex for episodes
+    # not yet cached — acceptable inline within one request since a show's
+    # episode count is small (no progress/ETA UI needed here, unlike
+    # /search-quote's still-unbuilt Tier 2).
     @app.get("/search-episodes-quote/{show_rating_key}", response_model=LibrarySearchResponse)
     async def search_episodes_quote(show_rating_key: int, quote: str) -> LibrarySearchResponse:
         try:

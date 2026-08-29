@@ -29,13 +29,10 @@ class CineSnipBot(commands.Bot):
                 self._dev_guild_id,
             )
             # Sync ONLY to the dev guild while iterating — guild-scoped
-            # syncs apply near-instantly. Syncing globally as well (even
-            # once) leaves two registrations of the same command visible
-            # side by side once the global one propagates to this guild,
-            # which it eventually does even during dev — that's what
-            # caused "/cinesnip" to show twice in the command picker.
-            # Explicitly clear any global registration a prior run left
-            # behind before the guild-scoped copy below.
+            # syncs apply near-instantly, but also syncing globally leaves
+            # two registrations of the same command visible once the
+            # global one eventually propagates. Explicitly clear any
+            # global registration a prior run left behind first.
             guild = discord.Object(id=self._dev_guild_id)
             self.tree.copy_global_to(guild=guild)
             self.tree.clear_commands(guild=None)

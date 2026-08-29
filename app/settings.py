@@ -20,12 +20,9 @@ class LibraryConfig(BaseModel):
     # item's librarySectionTitle is compared against.
     name: str
     path_mappings: list[PathMapping] = Field(default_factory=list)
-    # 3D encodes pack both eyes into a single frame. This is a property of
-    # how a *library* was encoded/organized (CLAUDE.md Section 3), not
-    # something to detect per-file — real files in this project's own 3D
-    # library use both packings, so a single hardcoded crop doesn't work
-    # across a whole library. "none" (default) applies no crop, for any
-    # normal flat-video library.
+    # 3D encodes pack both eyes into a single frame; this tags how a
+    # *library* is encoded (CLAUDE.md Section 3) as a default — per-file
+    # packing is auto-detected and can override it. "none" applies no crop.
     three_d_format: Literal["none", "side_by_side", "over_under"] = "none"
 
 
@@ -34,13 +31,9 @@ class RenderDefaults(BaseModel):
     fps: int = 15
     width: int = 480
     timeout_seconds: float = 60.0
-    # CLAUDE.md decision #1 (revised): GIF by default. mp4/webm were tried
-    # as the default for their much smaller file size, but real Discord
-    # testing showed they don't actually behave like a GIF there — no
-    # autoplay/loop, a real video player with a play button and volume
-    # slider instead, and no "Add to Favorites" GIF-picker entry, which was
-    # the whole point. format:mp4/format:webm remain available as explicit
-    # opt-ins for anyone who'd rather trade those for a much smaller file.
+    # GIF by default: mp4/webm are smaller but Discord renders them as a
+    # real video player (no autoplay/loop, no GIF-picker favoriting) —
+    # see CLAUDE.md decision #1. format:mp4/webm remain explicit opt-ins.
     format: Literal["gif", "mp4", "webm"] = "gif"
     # A quote-driven clip uses the matched subtitle line's own start/end
     # instead of duration_seconds (so the clip is exactly that line, no
@@ -58,16 +51,11 @@ class WorkerConfig(BaseModel):
 
 class SubtitleDefaults(BaseModel):
     # ffmpeg's embedded-subtitle extraction has no equivalent of the -ss
-    # fast seek used for clip rendering — it must read sequentially through
-    # the whole container to demux the subtitle packets. On a large remux
-    # over a slow I/O path (e.g. WSL2-bridged NTFS drives), that can take
-    # well over a minute even though it's a tiny amount of actual subtitle
-    # data. 180s was the original default but proved too tight against a
-    # real file: a 39GB 2160p HDR remux (Akira) measured at 251.6s for a
-    # full extraction on this developer's real library — raised to 300s for
-    # genuine headroom over that measured case, not just a guess. Still just
-    # a default: raise further if you see timeouts on very large files (a
-    # 2160p remux well past 40-50GB is plausible and would need more). If
+    # fast seek used for clip rendering — it reads sequentially through the
+    # whole container to demux the subtitle packets, which can take minutes
+    # on a large remux over a slow mount even though the subtitle data
+    # itself is tiny. 300s gives headroom over a measured ~252s real-world
+    # case (a 39GB 2160p HDR remux); raise further for larger files. If
     # you raise this, also raise RESOLVE_QUOTE_TIMEOUT_SECONDS and
     # RENDER_TIMEOUT_SECONDS in app/bot/worker_client.py — both must stay
     # comfortably above whatever this is set to, or the bot's own client
@@ -191,18 +179,15 @@ def load_settings(
     config_path: Path = Path("config.yaml"),
     override_env: bool = False,
 ) -> Settings:
-    # override_env=False (default) matches python-dotenv's own default: an
-    # already-set os.environ key wins over the .env file, even if that
-    # key's existing value is an empty string. That's normally what you
-    # want (real environment/compose-level overrides shouldn't be clobbered
-    # by a stale .env), but it's a real trap for the one caller that needs
-    # the opposite: app/main.py's post-wizard reload. Docker's `env_file:`
-    # directive (docker-compose.yml) has already loaded .env.example's
-    # empty DISCORD_TOKEN=/PLEX_TOKEN= placeholders into os.environ before
-    # the process even starts, so a plain load_dotenv() call after the
-    # wizard writes real tokens to disk would see those keys as "already
-    # set" and silently keep the stale empty values — see app/main.py's
-    # post-wizard load_settings(override_env=True) call for the fix.
+    # override_env=False (default) matches python-dotenv's default: an
+    # already-set os.environ key wins over .env, even if its value is an
+    # empty string. Normally correct (real env/compose overrides shouldn't
+    # be clobbered by a stale .env), but a trap for the wizard's post-setup
+    # reload: Docker's `env_file:` has already loaded .env.example's empty
+    # placeholders into os.environ before the wizard writes real tokens to
+    # disk, so a plain reload would see those keys as "already set" and
+    # keep the stale empty values. See app/main.py's post-wizard
+    # load_settings(override_env=True) call.
     load_dotenv(env_path, override=override_env)
 
     discord_token = os.environ.get("DISCORD_TOKEN", "").strip()

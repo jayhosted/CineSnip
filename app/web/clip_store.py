@@ -5,15 +5,12 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 
-# How long a rendered clip stays fetchable/postable after generation, and
-# the most clips held in memory at once. Both bounds exist for the same
-# reason: these are ephemeral session artifacts (the point is letting the
-# result panel re-fetch/re-post what it just rendered without re-encoding),
-# not a durable store — nothing here needs to survive a container restart,
-# and main.py already clears the scratch dir on every startup in that same
-# spirit. An unbounded dict would leak memory across a long-running,
-# frequently-used container; a plain LRU-by-count cap alone wouldn't bound
-# how long a single idle clip lingers, so both apply together.
+# How long a rendered clip stays fetchable/postable, and the most clips
+# held in memory at once. These are ephemeral session artifacts (letting
+# the result panel re-fetch/re-post without re-encoding), not a durable
+# store — nothing needs to survive a restart. TTL alone doesn't bound
+# memory on a long-running container; a count cap alone doesn't bound how
+# long an idle clip lingers — both apply together.
 _TTL_SECONDS = 30 * 60
 _MAX_ENTRIES = 50
 

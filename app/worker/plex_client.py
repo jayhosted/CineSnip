@@ -91,19 +91,17 @@ class PlexClient:
 
     def current_section_updated_ats(self) -> dict[str, int]:
         # section.reload() is required to get a genuinely live value —
-        # confirmed directly that re-fetching via self._server.library
-        # .sections()/.section(name) returns the exact same cached Python
-        # object already held here (an `is` identity check confirmed no
-        # network round-trip happens), so only reload() on the already-held
-        # object actually asks Plex again. Lets a connection/timeout
-        # exception propagate uncaught — callers must not treat a failed
-        # call the same as "got a real value back".
+        # re-fetching via self._server.library.sections()/.section(name)
+        # returns the exact same cached Python object already held here (no
+        # network round-trip), so only reload() on the held object actually
+        # asks Plex again. Lets a connection/timeout exception propagate
+        # uncaught — callers must not treat a failed call as "got a value".
         #
         # plexapi parses updatedAt into a datetime, not the raw epoch int
-        # Plex actually returns — converted to an int timestamp here so the
-        # rest of the app (SQLite storage, equality comparisons) deals with
-        # one plain, storable type rather than a datetime object (which
-        # Python 3.12 no longer adapts for sqlite3 automatically).
+        # Plex returns — converted to an int timestamp so the rest of the
+        # app (SQLite storage, equality comparisons) deals with one plain
+        # storable type (Python 3.12 no longer auto-adapts datetime for
+        # sqlite3).
         result: dict[str, int] = {}
         for name, section in self.library_sections():
             section.reload()

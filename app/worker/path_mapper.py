@@ -15,14 +15,11 @@ class NoPathMappingError(RuntimeError):
 def _normalize(path: str) -> str:
     path = path.replace("\\", "/")
     # Windows' extended-length path prefix (\\?\, or \\?\UNC\ for a network
-    # share) is a Win32-API-only escape sequence that lets a path exceed the
+    # share) is a Win32-API-only escape that lets a path exceed the
     # 260-character MAX_PATH limit — Plex reports it verbatim for titles
-    # with a long enough combined path/filename, but it's never part of the
-    # path an installer would actually write into path_mappings, so it must
-    # be stripped before prefix-matching. Confirmed on the real library:
-    # without this, several long-named titles (e.g. a Borat film, a handful
-    # of multi-episode Avatar: The Last Airbender files) failed to resolve
-    # at all despite an otherwise-correct path_mappings entry.
+    # with a long enough combined path/filename, but it's never part of
+    # the path an installer would write into path_mappings, so it must be
+    # stripped before prefix-matching (see docs/build-notes/plex-integration.md).
     if path.startswith("//?/UNC/"):
         return "//" + path[len("//?/UNC/") :]
     if path.startswith("//?/"):

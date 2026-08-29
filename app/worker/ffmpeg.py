@@ -154,13 +154,9 @@ def _three_d_plan(
     return None, width, height
 
 # ffmpeg's own Stereo3D side-data type names, when a file actually carries
-# them (e.g. Matroska's StereoMode element). Confirmed against this
-# project's own 3D library: a "Full-SBS" release had this tagged
-# (side_data_type "Stereo 3D", type "side by side"), but a plain untagged
-# rip of a different title in the same library had none — real-world
-# per-file packing genuinely varies within one library (CLAUDE.md Section
-# 3), so a per-file tag, when present, is trusted over the library's
-# configured default rather than the other way around.
+# them (e.g. Matroska's StereoMode element). Real-world per-file packing
+# varies within one library (CLAUDE.md Section 3), so a per-file tag, when
+# present, is trusted over the library's configured default.
 _STEREO3D_TYPE_MAP: dict[str, str] = {
     "side by side": "side_by_side",
     "top and bottom": "over_under",
@@ -249,10 +245,9 @@ class ClipRenderer:
     ) -> bytes:
         # Only probe files in a library that's configured as 3D at all —
         # avoids an extra ffprobe call on every render for the (much more
-        # common) normal flat-video libraries, which never carry this tag
-        # anyway. When a file *is* tagged, trust the tag over the library
-        # default: real files in the same 3D library have been confirmed to
-        # use different packings from each other.
+        # common) normal flat-video libraries. When a file *is* tagged,
+        # trust the tag over the library default (files within one 3D
+        # library can use different packings — see build notes).
         if three_d_format != "none":
             detected = await probe_stereo_format(input_path)
             if detected is not None:
@@ -410,22 +405,17 @@ class ClipRenderer:
                     # Explicit video-only mapping, not just -an: without it,
                     # ffmpeg's default stream selection can pull in a
                     # subtitle stream some source files have (Matroska/webm
-                    # muxing is more willing to auto-include one than mp4
-                    # is). Demuxing that stream has no fast-seek — same
-                    # class of bug as embedded-subtitle extraction (Section
-                    # 5) — so it stalls trying to read through the whole
-                    # file instead of just the requested span, confirmed via
-                    # a real hang against this project's own test library.
+                    # muxing is more willing to auto-include one than mp4).
+                    # Demuxing it has no fast-seek — same class of bug as
+                    # embedded-subtitle extraction (Section 5) — and stalls
+                    # reading the whole file instead of the requested span.
                     "-map",
                     "0:v:0",
                     # -map alone doesn't stop ffmpeg's mp4 muxer copying the
                     # source's chapter list by default (chapters aren't a
-                    # "stream" -map controls) — confirmed on this project's
-                    # own library: a 2s clip request produced a second
-                    # "data" track whose duration matched the full film's
-                    # runtime, not the clip's. -map_metadata -1 also strips
-                    # title/encoder tags so the clip file doesn't carry the
-                    # source film's metadata either.
+                    # "stream" -map controls) — leaks the full film's
+                    # runtime into a short clip's metadata otherwise.
+                    # -map_metadata -1 also strips title/encoder tags.
                     "-map_chapters",
                     "-1",
                     "-map_metadata",

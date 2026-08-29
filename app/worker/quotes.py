@@ -182,13 +182,11 @@ def find_quote_matches(
 
     # A literal (word-boundary) match of the quote inside a candidate is
     # unambiguously the best possible match, but WRatio doesn't reliably
-    # rank it top: its length-normalized scoring can dilute a short quote
+    # rank it top — its length-normalized scoring can dilute a short quote
     # buried in a much longer line below an unrelated same-length line that
-    # merely shares similar letters. Confirmed on the real library —
-    # searching "Hitler" across Peep Show returned several lines that don't
-    # contain the word ranked ahead of ones that do. Force every literal
-    # substring hit to the top of the ranking (also picks up any candidate
-    # WRatio scored below min_score despite containing the quote outright).
+    # merely shares similar letters. Force every literal substring hit to
+    # the top (also rescues any candidate WRatio scored below min_score
+    # despite containing the quote outright). See docs/build-notes/subtitles-and-search.md.
     literal_pattern = re.compile(r"\b" + re.escape(normalized_quote) + r"\b")
     quote_words = normalized_quote.split()
 
@@ -198,21 +196,17 @@ def find_quote_matches(
             continue
 
         # Partial word-overlap bonus: catches a multi-word quote whose words
-        # are all present in a candidate but out of order or interleaved
-        # with other words — not a literal substring, so the check above
-        # misses it, and WRatio's character-level scoring doesn't reward
-        # word presence directly. Deliberately directional (what fraction of
-        # the QUOTE's words appear in the candidate, not the reverse) —
-        # rapidfuzz's token_set_ratio was tried and rejected here because
-        # it's symmetric: it scores a short candidate that's a strict
-        # word-subset of a much longer quote as a perfect 100 (confirmed:
-        # token_set_ratio("i am", "i am your father") == 100.0), which would
-        # rank an incomplete match as good as a real one — the exact class
-        # of bug this whole scoring pass exists to avoid. A single-word
-        # quote gets no partial credit (either the literal check above
-        # caught it, or it's simply absent); only worth scoring below a
-        # clear majority-present threshold to avoid one shared common word
-        # inflating an otherwise-unrelated line.
+        # are all present but out of order/interleaved — not a literal
+        # substring, so the check above misses it. Deliberately directional
+        # (fraction of the QUOTE's words present in the candidate, never
+        # the reverse) — rapidfuzz's token_set_ratio was tried and rejected
+        # here because it's symmetric: it scores a short candidate that's a
+        # strict word-subset of a much longer quote as a perfect 100
+        # (confirmed: token_set_ratio("i am", "i am your father") == 100.0),
+        # ranking an incomplete match as good as a real one. A single-word
+        # quote gets no partial credit; only scored past a clear
+        # majority-present threshold to avoid one shared common word
+        # inflating an unrelated line.
         if len(quote_words) > 1:
             candidate_words = set(candidate.normalized_text.split())
             overlap = sum(1 for w in quote_words if w in candidate_words) / len(quote_words)
@@ -223,19 +217,13 @@ def find_quote_matches(
             else:
                 # WRatio itself (not just this bonus) can score a short
                 # fragment sharing only a word or two with a much longer
-                # quote surprisingly high, via its internal partial-ratio
-                # weighting for large length-ratio pairs — confirmed on the
-                # real full-library cache: searching "Assistant to the
-                # Regional Manager" (11,463 titles) returned "to the",
-                # "manage.", and "MANAGER" all scoring 90 ahead of every
-                # genuine match, none of which shares more than one real
-                # word with the quote. Invisible at small scale (not enough
-                # short coincidental-overlap candidates existed to surface
-                # it), but a real correctness bug at real-library scale — a
-                # candidate missing most of a multi-word quote's actual
-                # words cannot be a good match regardless of what WRatio's
-                # character-level score says, so cap it here rather than
-                # trust WRatio's raw number for this shape of candidate.
+                # quote surprisingly high via its internal partial-ratio
+                # weighting for large length-ratio pairs (confirmed:
+                # `WRatio("assistant to the regional manager", "to the")
+                # == 90.0`). Invisible below full-library scale, but a real
+                # correctness bug at scale — cap below this threshold
+                # rather than trust WRatio's raw number for this shape of
+                # candidate. See docs/build-notes/subtitles-and-search.md.
                 cap = overlap * 60.0
                 score_by_candidate_index[idx] = min(
                     score_by_candidate_index.get(idx, 0.0), cap

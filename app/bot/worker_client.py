@@ -4,42 +4,28 @@ from dataclasses import dataclass
 
 import httpx
 
-# Must exceed the worker's own render timeout (config.yaml's
-# render_defaults.timeout_seconds, 60s by default) — but a styled /render
-# request can ALSO trigger a cold-cache subtitle extraction inline, before
-# encoding even starts (app/worker/api.py's /render handler calls
-# get_subtitles() first whenever a style is requested), so this must cover
-# extraction_timeout_seconds + render_defaults.timeout_seconds in the worst
-# case, not just the encode step alone — a gap the original 90s value
-# missed entirely (didn't even cover the old 180s extraction default on its
-# own). So the worker's clean error response wins the race instead of this
-# client timing out first with a generic, harder-to-explain exception.
+# Must exceed the worker's own render timeout (render_defaults.timeout_seconds,
+# 60s default) — a styled /render can ALSO trigger a cold-cache subtitle
+# extraction inline before encoding starts, so this must cover
+# extraction_timeout_seconds + render timeout in the worst case, not just
+# the encode step (the original 90s value missed this entirely). Keeps the
+# worker's clean error response winning the race instead of a generic
+# client-side timeout.
 RENDER_TIMEOUT_SECONDS = 480.0
 
-# Must exceed the worker's subtitle extraction timeout (config.yaml's
-# subtitle_defaults.extraction_timeout_seconds, 300s by default) — on a
-# cold cache /resolve-quote demuxes an embedded subtitle stream, which has
-# no fast seek. The shared 30s client default would abort first. 300s isn't
-# a guess: a real 39GB 2160p HDR remux (Akira) measured at 251.6s for a full
-# embedded extraction on this developer's real library.
-#
-# extraction_timeout_seconds is operator-configurable (config.yaml.example
-# explicitly invites raising it for very large files), and this constant
-# has no way to know that value — the worker's own timeout-and-clean-error
-# mechanism should always win the race, so this is set with generous
-# headroom above the *default*, not tightly matched to it. If you raise
-# extraction_timeout_seconds past this in config.yaml, raise this too (and
-# RENDER_TIMEOUT_SECONDS above, which has the same dependency).
+# Must exceed subtitle_defaults.extraction_timeout_seconds (300s default)
+# — a cold-cache /resolve-quote demuxes an embedded subtitle stream, which
+# has no fast seek. 300s isn't a guess: a real 39GB 2160p HDR remux
+# measured at ~252s. extraction_timeout_seconds is operator-configurable
+# (config.yaml.example invites raising it for large files) — if you raise
+# it, raise this and RENDER_TIMEOUT_SECONDS too, since neither can read
+# the configured value.
 RESOLVE_QUOTE_TIMEOUT_SECONDS = 480.0
 
 # /search-episodes-quote may serially cold-extract several never-touched
-# episodes in one request, each up to subtitle_defaults.extraction_timeout_seconds
-# (300s default) in the worst case. Generous headroom above that for a
-# show with many uncached episodes, mirroring RESOLVE_QUOTE_TIMEOUT_SECONDS's
-# reasoning — the worker's own per-episode timeout-and-skip should always
-# win the race, not this client timing out first. In practice TV episode
-# files are far smaller than a feature-length UHD remux, so this worst case
-# is mostly theoretical, but the headroom costs nothing to keep generous.
+# episodes in one request, each up to extraction_timeout_seconds in the
+# worst case. Generous headroom above that (mostly theoretical in practice
+# — TV episode files are far smaller than a feature-length UHD remux).
 SEARCH_EPISODES_TIMEOUT_SECONDS = 900.0
 
 
