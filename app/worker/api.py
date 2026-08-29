@@ -73,19 +73,29 @@ class ResolveResponse(BaseModel):
 
 class RenderRequest(BaseModel):
     rating_key: int
-    timecode: str
+    # Either (start, end) or timecode[, end_timecode] must be given — never
+    # both forms at once. A ClipEditView re-render (issue #5) already has an
+    # exact numeric span and sends start/end directly, skipping timecode
+    # parsing on every nudge/merge; every other caller still sends timecode.
+    timecode: str | None = None
     # Set by a quote-driven clip to the matched line's own span (end -
     # start), so the render is exactly that line rather than a fixed
     # duration. Mutually exclusive with end_timecode in practice (the bot
     # only ever sends one or the other) — duration takes priority if both
-    # are somehow set.
+    # are somehow set. Only meaningful alongside timecode.
     duration: float | None = None
     # Set for a direct timecode request with an explicit end, so the user
     # can pick a custom span instead of the fixed render_defaults.duration_seconds.
     # A raw string (not a pre-computed float) since it needs the same
     # parse_timecode() as `timecode` — kept server-side so timecode format
-    # support only lives in one place.
+    # support only lives in one place. Only meaningful alongside timecode.
     end_timecode: str | None = None
+    # Explicit numeric span in seconds — a ClipEditView edit action's
+    # already-resolved start/end. Takes priority over timecode/end_timecode
+    # when both are given (never happens from a real caller, but priority
+    # is defined so behavior isn't ambiguous).
+    start: float | None = None
+    end: float | None = None
     # None uses render_defaults.format.
     format: Literal["gif", "mp4", "webm"] | None = None
     # None/"none" means no subtitle burn-in. A style requested on a title
@@ -93,6 +103,11 @@ class RenderRequest(BaseModel):
     # (no burn-in) rather than erroring — echoed back via X-Clip-Style so
     # the caller can tell the difference from what it asked for.
     style: Literal["classic", "boxed", "cinematic", "meme", "original", "none"] | None = None
+    # Per-line text overrides/suppressions for a clip-edit session, keyed by
+    # the subtitle entry's own index (SubtitleEntry.index / GET /subtitles'
+    # entries[].index) — JSON object keys are always strings on the wire,
+    # converted to int below. A value of None suppresses that line.
+    subtitle_overrides: dict[str, str | None] | None = None
 
 
 class SubtitleEntryOut(BaseModel):
@@ -380,37 +395,25 @@ def create_app(settings: Settings) -> FastAPI:
                 detail=f"File not found on disk at mapped path: {container_path}",
             )
 
-        try:
-            start = parse_timecode(req.timecode)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-        duration_s = movie.duration_ms / 1000
-        if start < 0 or start >= duration_s:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Timecode {req.timecode} is outside the film's runtime.",
-            )
-
         rd = settings.render_defaults
-        if req.end_timecode is not None:
-            # An explicit end is a deliberate choice the user typed — clamp
-            # duration/timecode-only paths silently instead (a UX nicety),
-            # but reject an explicit request outside the configured bounds
-            # with a clear error rather than silently giving them something
-            # shorter or longer than they asked for.
-            try:
-                end = parse_timecode(req.end_timecode)
-            except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        duration_s = movie.duration_ms / 1000
+
+        if req.start is not None or req.end is not None:
+            if req.start is None or req.end is None:
+                raise HTTPException(
+                    status_code=422, detail="start and end must both be given together."
+                )
+            start = req.start
+            end = req.end
+            if start < 0 or start >= duration_s:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Start ({start:.1f}s) is outside the film's runtime.",
+                )
             clip_duration = end - start
             if clip_duration <= 0:
                 raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"end_timecode ({req.end_timecode}) must be after "
-                        f"timecode ({req.timecode})."
-                    ),
+                    status_code=422, detail=f"end ({end}) must be after start ({start})."
                 )
             if not (rd.min_duration_seconds <= clip_duration <= rd.max_duration_seconds):
                 raise HTTPException(
@@ -418,15 +421,62 @@ def create_app(settings: Settings) -> FastAPI:
                     detail=(
                         f"That's a {clip_duration:.1f}s clip; clips must be "
                         f"between {rd.min_duration_seconds:.0f}s and "
-                        f"{rd.max_duration_seconds:.0f}s. Pick a closer end_timecode."
+                        f"{rd.max_duration_seconds:.0f}s."
                     ),
                 )
+        elif req.timecode is not None:
+            try:
+                start = parse_timecode(req.timecode)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+            if start < 0 or start >= duration_s:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Timecode {req.timecode} is outside the film's runtime.",
+                )
+
+            if req.end_timecode is not None:
+                # An explicit end is a deliberate choice the user typed — clamp
+                # duration/timecode-only paths silently instead (a UX nicety),
+                # but reject an explicit request outside the configured bounds
+                # with a clear error rather than silently giving them something
+                # shorter or longer than they asked for.
+                try:
+                    end = parse_timecode(req.end_timecode)
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+                clip_duration = end - start
+                if clip_duration <= 0:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"end_timecode ({req.end_timecode}) must be after "
+                            f"timecode ({req.timecode})."
+                        ),
+                    )
+                if not (rd.min_duration_seconds <= clip_duration <= rd.max_duration_seconds):
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"That's a {clip_duration:.1f}s clip; clips must be "
+                            f"between {rd.min_duration_seconds:.0f}s and "
+                            f"{rd.max_duration_seconds:.0f}s. Pick a closer end_timecode."
+                        ),
+                    )
+            else:
+                clip_duration = req.duration if req.duration is not None else rd.duration_seconds
+                clip_duration = max(rd.min_duration_seconds, min(rd.max_duration_seconds, clip_duration))
         else:
-            clip_duration = req.duration if req.duration is not None else rd.duration_seconds
-            clip_duration = max(rd.min_duration_seconds, min(rd.max_duration_seconds, clip_duration))
+            raise HTTPException(
+                status_code=422, detail="Give either start and end, or a timecode."
+            )
 
         clip_format = req.format if req.format is not None else rd.format
         requested_style = req.style or "none"
+        subtitle_overrides: dict[int, str | None] = (
+            {int(k): v for k, v in req.subtitle_overrides.items()} if req.subtitle_overrides else {}
+        )
 
         subtitle_entries = None
         style_preset = None
@@ -465,6 +515,7 @@ def create_app(settings: Settings) -> FastAPI:
                 subtitle_entries=subtitle_entries,
                 style=style_preset,
                 three_d_format=settings.three_d_format_for(movie.library_name),
+                subtitle_overrides=subtitle_overrides or None,
             )
         except RenderTimeoutError as exc:
             raise HTTPException(status_code=504, detail=str(exc)) from exc
