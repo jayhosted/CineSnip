@@ -11,7 +11,7 @@ import httpx
 from discord import app_commands
 from discord.ext import commands
 
-from app.bot.worker_client import LibraryQuoteMatchResult, QuoteMatchResult
+from app.bot.worker_client import LibraryQuoteMatchResult, QuoteMatchResult, SubtitleEntryResult
 
 logger = logging.getLogger("cinesnip.bot.gif")
 
@@ -225,6 +225,86 @@ def _post_metadata_line(title: str, start: float, end: float, posted_by: str) ->
         suffix = ""
     span = f"{_format_unit_timecode(start)}-{_format_unit_timecode(end)}"
     return f"-# {slug}{suffix}@{span} posted by {posted_by}"
+
+
+def _entries_in_window(
+    entries: list[SubtitleEntryResult], clip_start: float, clip_end: float
+) -> list[SubtitleEntryResult]:
+    """Subtitle entries overlapping the clip's current [clip_start, clip_end)
+    window, in time order — used to build the Edit Subs modal and to decide
+    which entries are "in the clip" for override purposes. Unlike the
+    worker's own entries_in_window(), this doesn't rebase/trim to
+    clip-relative time: the bot only needs to know *which* entries are in
+    play, not render them."""
+    window = [e for e in entries if e.end > clip_start and e.start < clip_end]
+    return sorted(window, key=lambda e: e.start)
+
+
+_EDIT_BLOCK_SEPARATOR = "\n---\n"
+
+
+def _format_edit_blocks(
+    entries: list[SubtitleEntryResult], overrides: dict[int, str | None]
+) -> str:
+    """Build the Edit Subs modal's prefilled text: each in-window entry's
+    *current* text (its override applied if one exists, blank if
+    suppressed), joined by the same `---`-only-line separator
+    `_parse_edit_blocks` splits on."""
+    blocks = []
+    for entry in entries:
+        if entry.index in overrides:
+            override = overrides[entry.index]
+            blocks.append(override if override is not None else "")
+        else:
+            blocks.append(entry.text)
+    return _EDIT_BLOCK_SEPARATOR.join(blocks)
+
+
+def _parse_edit_blocks(
+    raw_text: str,
+    entries: list[SubtitleEntryResult],
+    overrides: dict[int, str | None],
+) -> dict[int, str | None]:
+    """Parse a submitted Edit Subs modal back into an updated overrides dict.
+    Block N (split on `_EDIT_BLOCK_SEPARATOR`) maps to entries[N] — a
+    locked, position-based mapping; the modal never lets the user add,
+    remove, or reorder blocks. Returns a new dict built from `overrides`: a
+    blank block suppresses its entry, a block matching the entry's original
+    text clears any existing override, and any other text sets/replaces the
+    override."""
+    blocks = raw_text.split(_EDIT_BLOCK_SEPARATOR)
+    result = dict(overrides)
+    for entry, block in zip(entries, blocks):
+        text = block.strip()
+        if not text:
+            result[entry.index] = None
+        elif text == entry.text:
+            result.pop(entry.index, None)
+        else:
+            result[entry.index] = text
+    return result
+
+
+def _find_merge_previous(
+    entries: list[SubtitleEntryResult], clip_start: float
+) -> SubtitleEntryResult | None:
+    """The entry immediately before the clip's current start, if any — its
+    own end becomes the new clip start when "Merge Previous" is pressed."""
+    candidates = [e for e in entries if e.end <= clip_start]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda e: e.end)
+
+
+def _find_merge_next(
+    entries: list[SubtitleEntryResult], clip_end: float
+) -> SubtitleEntryResult | None:
+    """The entry immediately after the clip's current end, if any — its own
+    start becomes the new clip end when "Merge Next" is pressed."""
+    candidates = [e for e in entries if e.start >= clip_end]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda e: e.start)
 
 
 class ClipResultView(discord.ui.View):
