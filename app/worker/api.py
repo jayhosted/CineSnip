@@ -206,6 +206,54 @@ def _to_out(movie: MovieResult) -> MovieResultOut:
     )
 
 
+def _movie_library_matches(
+    app: FastAPI, settings: Settings, quote: str
+) -> tuple[list[CachedTitle], list]:
+    # Shared by /search-quote and /search-quote-extend: both search exactly
+    # "every cached movie-library title" — the TV episodes sharing this same
+    # search_index (CLAUDE.md Section 4) are filtered out here, once.
+    movie_library_names = app.state.plex.movie_library_names
+    cached_titles = [
+        t
+        for t in search_index.list_titles(settings.quote_index_db_path)
+        if t.library_name in movie_library_names
+    ]
+    qm = settings.quote_match
+    matches = search_cached_library(
+        settings.quote_index_db_path,
+        cached_titles,
+        quote,
+        result_limit=qm.candidate_limit,
+        min_score=qm.min_score,
+        max_window_gap_seconds=qm.max_window_gap_seconds,
+        context_lines=qm.context_lines,
+        per_title_limit=qm.library_per_title_limit,
+    )
+    return cached_titles, matches
+
+
+def _library_search_payload(matches: list, qm) -> dict:
+    return {
+        "matches": [
+            {
+                "rating_key": m.rating_key,
+                "title": m.title,
+                "library_name": m.library_name,
+                "start": m.match.start,
+                "end": m.match.end,
+                "timecode": _format_display_timecode(m.match.start),
+                "text": m.match.text,
+                "score": m.match.score,
+                "context_before": list(m.match.context_before),
+                "context_after": list(m.match.context_after),
+            }
+            for m in matches
+        ],
+        "confident_score": qm.confident_score,
+        "min_score": qm.min_score,
+    }
+
+
 def create_app(settings: Settings) -> FastAPI:
     app = FastAPI()
     app.state.settings = settings
@@ -529,54 +577,6 @@ def create_app(settings: Settings) -> FastAPI:
                 for m in matches
             ],
         )
-
-    def _movie_library_matches(
-        app: FastAPI, settings: Settings, quote: str
-    ) -> tuple[list[CachedTitle], list]:
-        # Shared by /search-quote and /search-quote-extend: both search exactly
-        # "every cached movie-library title" — the TV episodes sharing this same
-        # search_index (CLAUDE.md Section 4) are filtered out here, once.
-        movie_library_names = app.state.plex.movie_library_names
-        cached_titles = [
-            t
-            for t in search_index.list_titles(settings.quote_index_db_path)
-            if t.library_name in movie_library_names
-        ]
-        qm = settings.quote_match
-        matches = search_cached_library(
-            settings.quote_index_db_path,
-            cached_titles,
-            quote,
-            result_limit=qm.candidate_limit,
-            min_score=qm.min_score,
-            max_window_gap_seconds=qm.max_window_gap_seconds,
-            context_lines=qm.context_lines,
-            per_title_limit=qm.library_per_title_limit,
-        )
-        return cached_titles, matches
-
-
-    def _library_search_payload(matches: list, qm) -> dict:
-        return {
-            "matches": [
-                {
-                    "rating_key": m.rating_key,
-                    "title": m.title,
-                    "library_name": m.library_name,
-                    "start": m.match.start,
-                    "end": m.match.end,
-                    "timecode": _format_display_timecode(m.match.start),
-                    "text": m.match.text,
-                    "score": m.match.score,
-                    "context_before": list(m.match.context_before),
-                    "context_after": list(m.match.context_after),
-                }
-                for m in matches
-            ],
-            "confident_score": qm.confident_score,
-            "min_score": qm.min_score,
-        }
-
 
     # Library-wide search (CLAUDE.md Section 5's /snip search, Tier 1
     # only): searches the subtitle cache via the quote_index, never the live
