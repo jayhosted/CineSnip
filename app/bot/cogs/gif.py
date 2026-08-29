@@ -1056,7 +1056,8 @@ class GifCog(commands.Cog):
         format: str | None,
         preferred_start: float | None = None,
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
 
         try:
             rating_key = int(film)
