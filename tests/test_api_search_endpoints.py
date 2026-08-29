@@ -27,6 +27,7 @@ class _FakePlexClient:
 
     def __init__(self, settings: Settings, movie_items: list[MovieResult] | None = None) -> None:
         self.movie_library_names = frozenset({"Movies"})
+        self.show_library_names = frozenset({"TV Shows"})
         self._episodes_by_show: dict[int, list[MovieResult]] = {}
         self._movie_items = movie_items or []
 
@@ -507,3 +508,78 @@ def test_search_quote_extend_still_enumerates_when_library_changed(tmp_path, mon
     assert fake_plex.enumerate_called
     assert [e["type"] for e in events] == ["cached", "scanning", "final"]
     assert events[2]["remaining_uncached"] == 0
+
+
+def test_random_quote_endpoint_no_quote_returns_a_cached_line(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    _write_title(
+        settings.quote_index_db_path,
+        "guid-1", 101, "Monty Python", "Movies",
+        ["Nobody expects the Spanish Inquisition!"],
+    )
+    client = _client(settings, monkeypatch)
+
+    resp = client.get("/random-quote", params={"media": "movie"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["rating_key"] == 101
+    assert body["text"] == "Nobody expects the Spanish Inquisition!"
+
+
+def test_random_quote_endpoint_media_movie_excludes_tv(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    _write_title(
+        settings.quote_index_db_path,
+        "guid-2", 202, "Some Show", "TV Shows",
+        ["Only line in the whole cache."],
+    )
+    client = _client(settings, monkeypatch)
+
+    resp = client.get("/random-quote", params={"media": "movie"})
+
+    assert resp.status_code == 404
+
+
+def test_random_quote_endpoint_media_all_includes_tv(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    _write_title(
+        settings.quote_index_db_path,
+        "guid-2", 202, "Some Show", "TV Shows",
+        ["Only line in the whole cache."],
+    )
+    client = _client(settings, monkeypatch)
+
+    resp = client.get("/random-quote", params={"media": "all"})
+
+    assert resp.status_code == 200
+    assert resp.json()["rating_key"] == 202
+
+
+def test_random_quote_endpoint_with_quote_only_returns_whole_word_match(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    _write_title(
+        settings.quote_index_db_path,
+        "guid-1", 101, "Cat Film", "Movies",
+        ["The cat sat on the mat."],
+    )
+    _write_title(
+        settings.quote_index_db_path,
+        "guid-2", 102, "Unrelated Film", "Movies",
+        ["The file was concatenated."],
+    )
+    client = _client(settings, monkeypatch)
+
+    resp = client.get("/random-quote", params={"quote": "cat", "media": "movie"})
+
+    assert resp.status_code == 200
+    assert resp.json()["rating_key"] == 101
+
+
+def test_random_quote_endpoint_returns_404_when_nothing_cached(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    client = _client(settings, monkeypatch)
+
+    resp = client.get("/random-quote", params={"media": "all"})
+
+    assert resp.status_code == 404

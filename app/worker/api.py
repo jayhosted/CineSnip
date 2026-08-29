@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from app.settings import Settings, SettingsError
 from app.worker import quote_index, search_index
 from app.worker.ffmpeg import ClipRenderer, RenderTimeoutError, parse_timecode
-from app.worker.library_search import LibraryQuoteMatch, search_cached_library
+from app.worker.library_search import LibraryQuoteMatch, pick_random_quote, search_cached_library
 from app.worker.library_sync import sync_one_title
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 from app.worker.plex_client import (
@@ -149,6 +149,16 @@ class LibrarySearchResponse(BaseModel):
     matches: list[LibraryQuoteMatchOut]
     confident_score: float
     min_score: float
+
+
+class RandomQuoteResponse(BaseModel):
+    rating_key: int
+    title: str
+    library_name: str
+    start: float
+    end: float
+    timecode: str
+    text: str
 
 
 def _format_display_timecode(seconds: float) -> str:
@@ -587,6 +597,41 @@ def create_app(settings: Settings) -> FastAPI:
     async def search_quote(quote: str) -> LibrarySearchResponse:
         _, matches = _movie_library_matches(app, settings, quote)
         return LibrarySearchResponse(**_library_search_payload(matches, settings.quote_match))
+
+    @app.get("/random-quote", response_model=RandomQuoteResponse)
+    async def random_quote(
+        quote: str | None = None, media: Literal["movie", "tv", "all"] = "all"
+    ) -> RandomQuoteResponse:
+        # Tier 1 (already-cached titles) only, deliberately — no auto-extend,
+        # same reasoning as elsewhere: extracting subtitles for random titles
+        # just to serve a for-fun command isn't worth the cost.
+        movie_library_names = app.state.plex.movie_library_names
+        show_library_names = app.state.plex.show_library_names
+        if media == "movie":
+            allowed_libraries = movie_library_names
+        elif media == "tv":
+            allowed_libraries = show_library_names
+        else:
+            allowed_libraries = movie_library_names | show_library_names
+
+        cached_titles = [
+            t
+            for t in search_index.list_titles(settings.quote_index_db_path)
+            if t.library_name in allowed_libraries
+        ]
+        result = pick_random_quote(settings.quote_index_db_path, cached_titles, quote)
+        if result is None:
+            raise HTTPException(status_code=404, detail="No matching cached line found.")
+
+        return RandomQuoteResponse(
+            rating_key=result.rating_key,
+            title=result.title,
+            library_name=result.library_name,
+            start=result.match.start,
+            end=result.match.end,
+            timecode=_format_display_timecode(result.match.start),
+            text=result.match.text,
+        )
 
     # Tier 2: extends /search-quote into not-yet-cached movie titles, gated
     # behind library_sync.enabled (CLAUDE.md Roadmap / issue #2 design spec) —

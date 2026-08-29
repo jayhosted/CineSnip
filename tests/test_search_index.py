@@ -15,6 +15,7 @@ from app.worker.search_index import (
     iter_all_entries,
     list_titles,
     list_titles_for_library,
+    pick_random_entry_id,
     remove_title,
     search_entry_ids,
     upsert_title,
@@ -586,3 +587,61 @@ def test_wal_mode_allows_concurrent_read_during_write(tmp_path):
     assert "error" not in read_error, read_error.get("error")
     assert "rows" in read_result
     assert len(read_result["rows"]) == 2
+
+
+def test_pick_random_entry_id_returns_none_when_db_does_not_exist(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    assert pick_random_entry_id(db_path, title_ids=[1]) is None
+
+
+def test_pick_random_entry_id_returns_none_for_empty_title_ids(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    upsert_title(
+        db_path,
+        guid="guid-1",
+        rating_key=101,
+        title="Film One",
+        library_name="Movies",
+        source="sidecar",
+        sidecar_path=None,
+        stream_index=None,
+        entries=_entries("first line", "second line"),
+        fingerprint=None,
+    )
+    assert pick_random_entry_id(db_path, title_ids=[]) is None
+
+
+def test_pick_random_entry_id_only_returns_entries_from_scoped_titles(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    upsert_title(
+        db_path,
+        guid="guid-1",
+        rating_key=101,
+        title="Film One",
+        library_name="Movies",
+        source="sidecar",
+        sidecar_path=None,
+        stream_index=None,
+        entries=_entries("only line in film one"),
+        fingerprint=None,
+    )
+    upsert_title(
+        db_path,
+        guid="guid-2",
+        rating_key=102,
+        title="Film Two",
+        library_name="Movies",
+        source="sidecar",
+        sidecar_path=None,
+        stream_index=None,
+        entries=_entries("only line in film two"),
+        fingerprint=None,
+    )
+    title_ids = get_title_ids_by_guid(db_path, ["guid-1"])
+    scoped_title_id = title_ids["guid-1"]
+
+    for _ in range(10):
+        result = pick_random_entry_id(db_path, title_ids=[scoped_title_id])
+        assert result is not None
+        entry_id, title_id, idx = result
+        assert title_id == scoped_title_id

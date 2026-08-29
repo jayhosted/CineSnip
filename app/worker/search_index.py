@@ -342,6 +342,31 @@ def search_entry_ids(
     return [(r[0], r[1], r[2]) for r in rows]
 
 
+def pick_random_entry_id(
+    db_path: Path, title_ids: list[int]
+) -> tuple[int, int, int] | None:
+    """Pick one uniformly-random entry row, scoped to `title_ids`, as
+    (entry_id, title_id, idx) — same tuple shape as search_entry_ids' rows,
+    so callers can feed it straight into fetch_entry_windows. Used by
+    /snip random's no-quote path (a genuinely random cached line), scoped
+    to whatever media-type filter the caller already resolved to title_ids.
+    """
+    if not db_path.exists():
+        return None
+    if not title_ids:
+        return None
+    placeholders = ",".join("?" for _ in title_ids)
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            f"SELECT id, title_id, idx FROM entries "
+            f"WHERE title_id IN ({placeholders}) ORDER BY RANDOM() LIMIT 1",
+            title_ids,
+        ).fetchone()
+    if row is None:
+        return None
+    return (row[0], row[1], row[2])
+
+
 def fetch_entries_for_titles(db_path: Path, title_ids: list[int]) -> dict[int, list[SubtitleEntry]]:
     from app.worker.subtitles import SubtitleEntry
 

@@ -1,5 +1,5 @@
 from app.worker import search_index
-from app.worker.library_search import _merge_ranges, search_cached_library
+from app.worker.library_search import _merge_ranges, pick_random_quote, search_cached_library
 from app.worker.quote_index import CachedTitle
 from app.worker.quotes import find_quote_matches, normalize_for_match
 from app.worker.subtitles import SubtitleEntry
@@ -439,3 +439,50 @@ def test_search_cached_library_fallback_scoped_to_cached_titles(tmp_path, monkey
     scoped = seen_title_ids_args[0]
     assert scoped == [ep1_id]
     assert other_id not in scoped
+
+
+def test_pick_random_quote_returns_none_for_no_cached_titles(tmp_path):
+    db_path = _db_path(tmp_path)
+    assert pick_random_quote(db_path, [], quote=None) is None
+
+
+def test_pick_random_quote_without_quote_picks_a_cached_line(tmp_path):
+    db_path = _db_path(tmp_path)
+    _write_title(db_path, "guid-1", 1, "Monty Python", "Movies", ["Nobody expects the Spanish Inquisition!"])
+
+    cached_titles = [CachedTitle(guid="guid-1", rating_key=1, title="Monty Python", library_name="Movies")]
+
+    result = pick_random_quote(db_path, cached_titles, quote=None)
+
+    assert result is not None
+    assert result.rating_key == 1
+    assert result.match.text == "Nobody expects the Spanish Inquisition!"
+
+
+def test_pick_random_quote_with_quote_only_returns_whole_word_matches(tmp_path):
+    # "cat" must match the literal-word entry, never the entry that merely
+    # shares letters as a substring inside another word ("concatenated") —
+    # mirrors find_quote_matches' word-boundary test
+    # (test_literal_match_word_boundary_does_not_match_inside_another_word).
+    db_path = _db_path(tmp_path)
+    _write_title(db_path, "guid-1", 1, "Cat Film", "Movies", ["The cat sat on the mat."])
+    _write_title(db_path, "guid-2", 2, "Unrelated Film", "Movies", ["The file was concatenated."])
+
+    cached_titles = [
+        CachedTitle(guid="guid-1", rating_key=1, title="Cat Film", library_name="Movies"),
+        CachedTitle(guid="guid-2", rating_key=2, title="Unrelated Film", library_name="Movies"),
+    ]
+
+    for _ in range(10):
+        result = pick_random_quote(db_path, cached_titles, quote="cat")
+        assert result is not None
+        assert result.rating_key == 1
+
+
+def test_pick_random_quote_with_quote_returns_none_when_no_whole_word_match(tmp_path):
+    db_path = _db_path(tmp_path)
+    _write_title(db_path, "guid-1", 1, "Unrelated Film", "Movies", ["The file was concatenated."])
+
+    cached_titles = [CachedTitle(guid="guid-1", rating_key=1, title="Unrelated Film", library_name="Movies")]
+
+    assert pick_random_quote(db_path, cached_titles, quote="cat") is None

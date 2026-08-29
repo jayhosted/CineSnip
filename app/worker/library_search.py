@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from pathlib import Path
 
 from app.worker import search_index
 from app.worker.quote_index import CachedTitle
-from app.worker.quotes import QuoteMatch, find_quote_matches, normalize_for_match
+from app.worker.quotes import QuoteMatch, find_quote_matches, normalize_for_match, strip_markup
 from app.worker.subtitles import SubtitleEntry
 
 # Default number of entries either side of an FTS5 hit pulled into its
@@ -249,3 +250,123 @@ def search_cached_library(
                 per_title_matches.append((cached, title_matches))
 
     return _diversify_and_rank(per_title_matches, result_limit)
+
+
+def pick_random_quote(
+    db_path: Path,
+    cached_titles: list[CachedTitle],
+    quote: str | None,
+    max_window_gap_seconds: float = 3.0,
+    context_lines: int = 1,
+) -> LibraryQuoteMatch | None:
+    """Pick one random cached line, scoped to `cached_titles` (the caller's
+    already-resolved media-type filter, same convention as
+    search_cached_library above). Used by /snip random.
+
+    Without a quote, picks a genuinely random cached entry.
+
+    With a quote, restricts to WHOLE-WORD matches only (find_quote_matches'
+    literal-substring tier, which is force-scored to exactly 100.0 — see
+    quotes.py) rather than any fuzzy-only match, then picks randomly among
+    those literal hits instead of returning the top-ranked one. min_score=
+    100.0 is what selects literal-only: the partial-word-overlap bonus tier
+    tops out at 95.0, so it can never leak in here.
+    """
+    if not cached_titles:
+        return None
+
+    guid_to_cached = {cached.guid: cached for cached in cached_titles}
+    guid_to_title_id = search_index.get_title_ids_by_guid(db_path, list(guid_to_cached))
+    if not guid_to_title_id:
+        return None
+
+    title_id_to_cached = {
+        title_id: guid_to_cached[guid] for guid, title_id in guid_to_title_id.items()
+    }
+    scope_title_ids = list(title_id_to_cached.keys())
+
+    if quote is None:
+        picked = search_index.pick_random_entry_id(db_path, scope_title_ids)
+        if picked is None:
+            return None
+        _entry_id, title_id, idx = picked
+        cached = title_id_to_cached[title_id]
+        windowed = search_index.fetch_entry_windows(db_path, [(title_id, idx, idx)])
+        windowed_entries = windowed.get(title_id)
+        if not windowed_entries:
+            return None
+        _, entry = windowed_entries[0]
+        match = QuoteMatch(
+            start=entry.start,
+            end=entry.end,
+            text=strip_markup(entry.text),
+            score=0.0,
+            entry_indices=(entry.index,),
+            context_before=(),
+            context_after=(),
+        )
+        return LibraryQuoteMatch(
+            rating_key=cached.rating_key,
+            title=cached.title,
+            library_name=cached.library_name,
+            match=match,
+        )
+
+    normalized_quote = normalize_for_match(quote)
+    if not normalized_quote:
+        return None
+
+    hits = search_index.search_entry_ids(
+        db_path,
+        normalized_quote.split(),
+        limit=_DEFAULT_ENTRY_SCAN_LIMIT,
+        title_ids=scope_title_ids,
+    )
+    if not hits:
+        return None
+
+    pad = _window_pad(context_lines)
+    idxs_by_title: dict[int, list[int]] = {}
+    for _entry_id, title_id, idx in hits:
+        idxs_by_title.setdefault(title_id, []).append(idx)
+
+    ranges_by_title: dict[int, list[tuple[int, int]]] = {}
+    windows: list[tuple[int, int, int]] = []
+    for title_id, idxs in idxs_by_title.items():
+        merged = _merge_ranges([(idx - pad, idx + pad) for idx in idxs])
+        ranges_by_title[title_id] = merged
+        windows.extend((title_id, lo, hi) for lo, hi in merged)
+
+    entries_by_title = search_index.fetch_entry_windows(db_path, windows)
+
+    pool: list[LibraryQuoteMatch] = []
+    for title_id, merged in ranges_by_title.items():
+        cached = title_id_to_cached.get(title_id)
+        windowed_entries = entries_by_title.get(title_id)
+        if cached is None or not windowed_entries:
+            continue
+        for lo, hi in merged:
+            slice_entries = [entry for _, entry in windowed_entries if lo <= entry.index <= hi]
+            if not slice_entries:
+                continue
+            literal_matches = find_quote_matches(
+                slice_entries,
+                quote,
+                limit=len(slice_entries),
+                min_score=100.0,
+                max_window_gap_seconds=max_window_gap_seconds,
+                context_lines=context_lines,
+            )
+            for match in literal_matches:
+                pool.append(
+                    LibraryQuoteMatch(
+                        rating_key=cached.rating_key,
+                        title=cached.title,
+                        library_name=cached.library_name,
+                        match=match,
+                    )
+                )
+
+    if not pool:
+        return None
+    return random.choice(pool)

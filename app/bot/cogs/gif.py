@@ -294,6 +294,81 @@ class ClipResultView(discord.ui.View):
         await interaction.response.edit_message(view=self)
 
 
+class RandomResultView(discord.ui.View):
+    """Shown by /snip random: just Shuffle (re-roll + re-render in place,
+    same message-edit pattern as ClipResultView's style swap) and Post to
+    channel — no confirm-the-timestamp step (doesn't apply to a random
+    pick) and no style select (CLAUDE.md's random-command design keeps this
+    minimal)."""
+
+    def __init__(
+        self,
+        worker,
+        quote: str | None,
+        media: str,
+        rating_key: int,
+        timecode: str,
+        duration: float,
+        content: bytes,
+        filename: str,
+    ) -> None:
+        super().__init__(timeout=300)
+        self._worker = worker
+        self._quote = quote
+        self._media = media
+        self._rating_key = rating_key
+        self._timecode = timecode
+        self._duration = duration
+        self._content = content
+        self._filename = filename
+
+    @discord.ui.button(label="🔀 Shuffle", style=discord.ButtonStyle.secondary, row=0)
+    async def shuffle(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.defer()
+        try:
+            picked = await self._worker.random_quote(self._quote, self._media)
+        except httpx.HTTPError as exc:
+            await interaction.edit_original_response(
+                content=f"Couldn't find another match: {_error_detail(exc)}"
+            )
+            return
+
+        self._rating_key = picked.rating_key
+        self._timecode = str(picked.start)
+        self._duration = picked.end - picked.start
+
+        try:
+            render_result = await self._worker.render(
+                self._rating_key,
+                self._timecode,
+                duration=self._duration,
+                style="classic",
+            )
+        except httpx.HTTPError as exc:
+            await interaction.edit_original_response(
+                content=f"Couldn't render that match: {_error_detail(exc)}"
+            )
+            return
+
+        self._content = render_result.content
+        self._filename = f"clip.{render_result.format}"
+        file = discord.File(io.BytesIO(self._content), filename=self._filename)
+        await interaction.edit_original_response(
+            content=f"**{picked.title}** — {picked.timecode}", attachments=[file], view=self
+        )
+
+    @discord.ui.button(label="Post to channel", style=discord.ButtonStyle.primary, row=0)
+    async def post(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        file = discord.File(io.BytesIO(self._content), filename=self._filename)
+        await interaction.channel.send(file=file)
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+
+
 def _validate_quote_or_timecode(
     quote: str | None, timecode: str | None, end_timecode: str | None
 ) -> str | None:
@@ -760,6 +835,65 @@ class GifCog(commands.Cog):
     async def snip_search(self, interaction: discord.Interaction, quote: str) -> None:
         await interaction.response.defer(ephemeral=True)
         await self._run_library_search(interaction, quote)
+
+    @snip_group.command(
+        name="random",
+        description="Pick a random line from your library, optionally matching a word/phrase.",
+    )
+    @app_commands.describe(
+        quote="Restrict to lines containing this as a whole word/phrase (omit for a fully random line)",
+        media="Which libraries to search (default: all)",
+    )
+    async def snip_random(
+        self,
+        interaction: discord.Interaction,
+        quote: str | None = None,
+        media: Literal["movie", "tv", "all"] | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        effective_media = media or "all"
+
+        try:
+            picked = await self.bot.worker.random_quote(quote, effective_media)
+        except httpx.HTTPError as exc:
+            await interaction.edit_original_response(
+                content=f"Couldn't find a match: {_error_detail(exc)}"
+            )
+            return
+
+        render_timecode = str(picked.start)
+        render_duration = picked.end - picked.start
+
+        try:
+            render_result = await self.bot.worker.render(
+                picked.rating_key,
+                render_timecode,
+                duration=render_duration,
+                style="classic",
+            )
+        except httpx.HTTPError as exc:
+            await interaction.edit_original_response(
+                content=f"Couldn't generate the clip: {_error_detail(exc)}"
+            )
+            return
+
+        filename = f"clip.{render_result.format}"
+        file = discord.File(io.BytesIO(render_result.content), filename=filename)
+        view = RandomResultView(
+            self.bot.worker,
+            quote,
+            effective_media,
+            picked.rating_key,
+            render_timecode,
+            render_duration,
+            render_result.content,
+            filename,
+        )
+        await interaction.edit_original_response(
+            content=f"**{picked.title}** — {picked.timecode}",
+            attachments=[file],
+            view=view,
+        )
 
     @snip_group.command(
         name="tv",
