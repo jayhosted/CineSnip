@@ -99,26 +99,6 @@ STYLE_PRESETS: dict[str, StylePreset] = {
         uppercase=True,
         margin_v=16,
     ),
-    # "Original" is meant to mirror the source subtitle's own styling
-    # (CLAUDE.md Section 7) — but a plain sidecar/embedded SRT carries no
-    # style data to mirror, and extracting real style info from an
-    # embedded ASS/SSA track isn't built (V2 gap, same class of limitation
-    # as the rest of Section 5's subtitle-source handling). Falls back to
-    # the same neutral look as Classic until that exists.
-    "original": StylePreset(
-        name="original",
-        font="Liberation Sans",
-        font_size=26,
-        primary_color="&H00FFFFFF",
-        outline_color="&H00000000",
-        back_color="&H00000000",
-        border_style=1,
-        outline=2.0,
-        shadow=0.0,
-        bold=False,
-        uppercase=False,
-        margin_v=24,
-    ),
 }
 
 

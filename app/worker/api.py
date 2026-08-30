@@ -103,7 +103,7 @@ class RenderRequest(BaseModel):
     # with no usable subtitles for the clip's own window degrades to plain
     # (no burn-in) rather than erroring — echoed back via X-Clip-Style so
     # the caller can tell the difference from what it asked for.
-    style: Literal["classic", "boxed", "cinematic", "meme", "original", "none"] | None = None
+    style: Literal["classic", "boxed", "cinematic", "meme", "none"] | None = None
     # Per-line text overrides/suppressions for a clip-edit session, keyed by
     # the subtitle entry's own index (SubtitleEntry.index / GET /subtitles'
     # entries[].index) — JSON object keys are always strings on the wire,

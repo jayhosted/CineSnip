@@ -22,7 +22,6 @@ _STYLE_OPTIONS: list[tuple[str, str]] = [
     ("boxed", "Boxed (white on black box)"),
     ("cinematic", "Cinematic (yellow)"),
     ("meme", "Meme (bold caps)"),
-    ("original", "Original (mirrors source style)"),
     ("none", "No Subtitles"),
 ]
 _STYLE_LABELS = {value: label.split(" (")[0] for value, label in _STYLE_OPTIONS}

@@ -136,7 +136,7 @@ burned in using a sensible default style — Classic after a quote match
 (there's a known line to show), or no subtitles for a bare timecode (no
 guarantee that title even has usable subtitles). A style dropdown sits
 below the result if you want something else — Boxed, Cinematic, Meme,
-Original, or No Subtitles — and picking one re-renders in place, no need to
+or No Subtitles — and picking one re-renders in place, no need to
 restart the command. A "Post to channel" button shares whatever's currently
 shown beyond just you. If you ask for a style on a title with no usable
 subtitles, CineSnip still renders the clip, just without burned-in text, and
