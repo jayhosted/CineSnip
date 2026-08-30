@@ -95,3 +95,93 @@ def test_quote_match_view_no_page_buttons_when_batch_fits_one_page():
 
     assert view._prev_button is None
     assert view._next_button is None
+
+
+from app.bot.cogs.gif import LibrarySearchView, _library_results_embed
+from app.bot.worker_client import LibraryQuoteMatchResult
+
+
+def _library_match(i: int, score: float = 60.0) -> LibraryQuoteMatchResult:
+    return LibraryQuoteMatchResult(
+        rating_key=i,
+        title=f"Title {i}",
+        library_name="Movies",
+        start=float(i),
+        end=float(i) + 2.0,
+        timecode=f"0:{i:02d}",
+        text=f"Line {i}",
+        score=score,
+        context_before=[],
+        context_after=[],
+    )
+
+
+class _FakeCog:
+    async def _run_library_search(self, interaction, quote):
+        raise AssertionError("not exercised by these tests")
+
+    async def _generate(self, interaction, film, quote, timecode, end_timecode, format, preferred_start=None):
+        self.generated = (film, preferred_start)
+
+
+def test_library_search_view_first_page_has_eight_options_and_next_enabled():
+    matches = [_library_match(i) for i in range(20)]
+    view = LibrarySearchView(_FakeCog(), "quote", matches)
+
+    assert len(view._select.options) == _PAGE_SIZE
+    assert [opt.value for opt in view._select.options] == [str(i) for i in range(8)]
+    assert view._prev_button.disabled is True
+    assert view._next_button.disabled is False
+
+
+def test_library_search_view_embed_shows_only_current_page_with_footer():
+    matches = [_library_match(i) for i in range(20)]
+    view = LibrarySearchView(_FakeCog(), "quote", matches)
+
+    embed = view.embed()
+    assert len(embed.fields) == _PAGE_SIZE
+    assert embed.fields[0].name.startswith("1. ")
+    assert embed.footer.text == "Page 1 of 3"
+
+
+def test_library_search_view_next_shows_second_page():
+    matches = [_library_match(i) for i in range(20)]
+    view = LibrarySearchView(_FakeCog(), "quote", matches)
+
+    asyncio.run(view._on_next(_fake_interaction()))
+
+    assert [opt.value for opt in view._select.options] == [str(i) for i in range(8, 16)]
+    embed = view.embed()
+    assert embed.fields[0].name.startswith("9. ")
+    assert embed.footer.text == "Page 2 of 3"
+    assert view._next_button.disabled is False
+
+    asyncio.run(view._on_next(_fake_interaction()))
+    assert view._next_button.disabled is True
+
+
+def test_library_search_view_no_page_buttons_or_footer_when_batch_fits_one_page():
+    matches = [_library_match(i) for i in range(5)]
+    view = LibrarySearchView(_FakeCog(), "quote", matches)
+
+    assert view._prev_button is None
+    assert view._next_button is None
+    assert view.embed().footer.text is None
+
+
+def test_library_search_view_select_on_second_page_resolves_absolute_match():
+    matches = [_library_match(i) for i in range(20)]
+    cog = _FakeCog()
+    view = LibrarySearchView(cog, "quote", matches)
+
+    asyncio.run(view._on_next(_fake_interaction()))
+    view._select._values = ["10"]
+    asyncio.run(view._on_select(_fake_interaction()))
+
+    assert cog.generated == (str(10), 10.0)
+
+
+def test_library_results_embed_footer_omitted_for_single_page():
+    matches = [_library_match(i) for i in range(3)]
+    embed = _library_results_embed("quote", matches)
+    assert embed.footer.text is None

@@ -1374,15 +1374,27 @@ def _library_results_embed(
     quote: str,
     matches: list[LibraryQuoteMatchResult],
     description: str = "Pick a film below to generate a clip from that line.",
+    start_index: int = 1,
+    page: int | None = None,
+    total_pages: int | None = None,
 ) -> discord.Embed:
+    """`matches` is the slice to render (one page's worth once a
+    LibrarySearchView exists — see its own embed() method), not the full
+    fetched batch; `start_index` is what the first rendered item is
+    numbered as, so a later page's items keep counting up from where the
+    previous page left off rather than restarting at 1. A "Page X of Y"
+    footer only appears when there's more than one page to distinguish."""
     embed = discord.Embed(title=f'Results for "{quote}"', description=description)
-    for i, m in enumerate(matches, start=1):
+    for offset, m in enumerate(matches):
+        i = start_index + offset
         snippet = m.text if len(m.text) <= 200 else m.text[:197] + "..."
         embed.add_field(
             name=f"{i}. {m.title} — {m.library_name}",
             value=f"> {snippet}\n{m.timecode} · {m.score:.0f}%",
             inline=False,
         )
+    if total_pages and total_pages > 1:
+        embed.set_footer(text=f"Page {page} of {total_pages}")
     return embed
 
 
@@ -1394,6 +1406,12 @@ class LibrarySearchView(discord.ui.View):
     UI") via GifCog._generate. Reused as-is for episodes — an episode's
     MovieResult.title already reads as "Show — S02E01 — Title", so no
     TV-specific formatting is needed here.
+
+    Holds the FULL fetched batch (up to quote_match.fetch_limit matches,
+    already diversity-ranked by the worker) and pages through it in place
+    with Next/Previous buttons, _PAGE_SIZE at a time — Discord's own
+    25-option select cap means each page's select mirrors only that page's
+    slice, never the whole batch (issue #7).
     """
 
     def __init__(
@@ -1402,24 +1420,21 @@ class LibrarySearchView(discord.ui.View):
         quote: str,
         matches: list[LibraryQuoteMatchResult],
         remaining_uncached: int | None = None,
+        description: str = "Pick a film below to generate a clip from that line.",
     ) -> None:
         super().__init__(timeout=120)
         self._cog = cog
         self._quote = quote
         self._matches = matches
+        self._description = description
+        self._page = 0
+        self._select: discord.ui.Select | None = None
+        self._prev_button: discord.ui.Button | None = None
+        self._next_button: discord.ui.Button | None = None
 
-        options = []
-        for i, m in enumerate(matches):
-            label = m.text if len(m.text) <= 100 else m.text[:97] + "..."
-            description = f"{m.title} — {m.library_name} · {m.timecode} · {m.score:.0f}%"
-            if len(description) > 100:
-                description = description[:97] + "..."
-            options.append(
-                discord.SelectOption(label=label, description=description, value=str(i))
-            )
-        select = discord.ui.Select(placeholder="Choose a quote", options=options)
-        select.callback = self._on_select
-        self.add_item(select)
+        self._add_select()
+        if len(matches) > _PAGE_SIZE:
+            self._add_page_buttons()
 
         # remaining_uncached is only ever a real int when Tier 2 (extend)
         # actually ran and hit its cap — None (extend didn't run, e.g.
@@ -1432,18 +1447,88 @@ class LibrarySearchView(discord.ui.View):
             more_button.callback = self._on_search_more
             self.add_item(more_button)
 
+    def _total_pages(self) -> int:
+        return max(1, (len(self._matches) + _PAGE_SIZE - 1) // _PAGE_SIZE)
+
+    def _page_slice(self) -> list[LibraryQuoteMatchResult]:
+        start = self._page * _PAGE_SIZE
+        return self._matches[start : start + _PAGE_SIZE]
+
+    def embed(self) -> discord.Embed:
+        return _library_results_embed(
+            self._quote,
+            self._page_slice(),
+            description=self._description,
+            start_index=self._page * _PAGE_SIZE + 1,
+            page=self._page + 1,
+            total_pages=self._total_pages(),
+        )
+
+    def _add_select(self) -> None:
+        start = self._page * _PAGE_SIZE
+        options = []
+        for offset, m in enumerate(self._page_slice()):
+            i = start + offset
+            label = m.text if len(m.text) <= 100 else m.text[:97] + "..."
+            description = f"{m.title} — {m.library_name} · {m.timecode} · {m.score:.0f}%"
+            if len(description) > 100:
+                description = description[:97] + "..."
+            options.append(
+                discord.SelectOption(label=label, description=description, value=str(i))
+            )
+        select = discord.ui.Select(placeholder="Choose a quote", options=options)
+        select.callback = self._on_select
+        self._select = select
+        self.add_item(select)
+
+    def _add_page_buttons(self) -> None:
+        total_pages = self._total_pages()
+        prev_button = discord.ui.Button(
+            label="◀ Previous", style=discord.ButtonStyle.secondary, disabled=self._page == 0
+        )
+        prev_button.callback = self._on_previous
+        self._prev_button = prev_button
+        self.add_item(prev_button)
+
+        next_button = discord.ui.Button(
+            label="Next ▶",
+            style=discord.ButtonStyle.secondary,
+            disabled=self._page >= total_pages - 1,
+        )
+        next_button.callback = self._on_next
+        self._next_button = next_button
+        self.add_item(next_button)
+
+    async def _change_page(self, interaction: discord.Interaction, delta: int) -> None:
+        self._page += delta
+        if self._select is not None:
+            self.remove_item(self._select)
+            self._select = None
+        if self._prev_button is not None:
+            self.remove_item(self._prev_button)
+            self._prev_button = None
+        if self._next_button is not None:
+            self.remove_item(self._next_button)
+            self._next_button = None
+        self._add_select()
+        self._add_page_buttons()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    async def _on_previous(self, interaction: discord.Interaction) -> None:
+        await self._change_page(interaction, -1)
+
+    async def _on_next(self, interaction: discord.Interaction) -> None:
+        await self._change_page(interaction, 1)
+
     async def _on_search_more(self, interaction: discord.Interaction) -> None:
         self.stop()
         await interaction.response.defer()
         await self._cog._run_library_search(interaction, self._quote)
 
     async def _on_select(self, interaction: discord.Interaction) -> None:
-        for item in list(self.children):
-            if isinstance(item, discord.ui.Select):
-                match = self._matches[int(item.values[0])]
-                break
-        else:
+        if self._select is None:
             return
+        match = self._matches[int(self._select.values[0])]
 
         self.stop()
         await self._cog._generate(
@@ -1721,7 +1806,7 @@ class GifCog(commands.Cog):
                         ok = await _safe_edit(
                             content="🔍 **Still searching the rest of the library...** 🔍 Results below will update.",
                             embed=_library_results_embed(
-                                quote, cached_matches,
+                                quote, cached_matches[:_PAGE_SIZE],
                                 description="Results so far — the picker below appears once the search finishes.",
                             ),
                             view=None,
@@ -1780,7 +1865,7 @@ class GifCog(commands.Cog):
         view = LibrarySearchView(self, quote, final_matches, remaining_uncached=remaining_uncached)
         await _safe_edit(
             content=None,
-            embed=_library_results_embed(quote, final_matches),
+            embed=view.embed(),
             view=view,
         )
 
@@ -1947,12 +2032,13 @@ class GifCog(commands.Cog):
             )
             return
 
-        view = LibrarySearchView(self, quote, result.matches)
+        view = LibrarySearchView(
+            self,
+            quote,
+            result.matches,
+            description="Pick an episode below to generate a clip from that line.",
+        )
         await interaction.edit_original_response(
-            embed=_library_results_embed(
-                quote,
-                result.matches,
-                description="Pick an episode below to generate a clip from that line.",
-            ),
+            embed=view.embed(),
             view=view,
         )
