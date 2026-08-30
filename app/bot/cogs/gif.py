@@ -1173,6 +1173,7 @@ class RandomResultView(discord.ui.View):
         quote: str | None,
         media: str,
         rating_key: int,
+        title: str,
         timecode: str,
         duration: float,
         content: bytes,
@@ -1183,6 +1184,7 @@ class RandomResultView(discord.ui.View):
         self._quote = quote
         self._media = media
         self._rating_key = rating_key
+        self._title = title
         self._timecode = timecode
         self._duration = duration
         self._content = content
@@ -1202,6 +1204,7 @@ class RandomResultView(discord.ui.View):
             return
 
         self._rating_key = picked.rating_key
+        self._title = picked.title
         self._timecode = str(picked.start)
         self._duration = picked.end - picked.start
 
@@ -1232,8 +1235,14 @@ class RandomResultView(discord.ui.View):
         # See ClipResultView.post — same defer-before-send fix.
         await interaction.response.defer()
         file = discord.File(io.BytesIO(self._content), filename=self._filename)
+        content = _post_metadata_line(
+            self._title,
+            float(self._timecode),
+            float(self._timecode) + self._duration,
+            interaction.user.display_name,
+        )
         try:
-            await interaction.channel.send(file=file)
+            await interaction.channel.send(content=content, file=file)
         except discord.HTTPException as exc:
             await interaction.edit_original_response(
                 content=f"Couldn't post that clip: {_error_detail_from_discord(exc)}"
@@ -1775,6 +1784,7 @@ class GifCog(commands.Cog):
             quote,
             effective_media,
             picked.rating_key,
+            picked.title,
             render_timecode,
             render_duration,
             render_result.content,
