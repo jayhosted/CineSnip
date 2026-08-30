@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
-from pathlib import Path
 
 from app.worker.subprocess_utils import run_and_capture
 
@@ -47,12 +45,57 @@ class GifOptimizeError(RuntimeError):
     pass
 
 
-async def _run_gifsicle(args: list[str], timeout_seconds: float, error_prefix: str) -> None:
-    await run_and_capture(["gifsicle", *args], timeout_seconds, error_prefix)
+async def _run_gifsicle_to_bytes(
+    args: list[str], gif_bytes: bytes, timeout_seconds: float, error_prefix: str
+) -> bytes:
+    """Runs gifsicle over stdin/stdout (`-` for both input and output) so
+    no scratch-directory temp file is ever created for this pass — avoids
+    the whole read/write/cleanup lifecycle repeating per candidate."""
+    result = await run_and_capture(
+        ["gifsicle", *args, "-", "-o", "-"],
+        timeout_seconds,
+        error_prefix,
+        capture_stdout=True,
+        stdin_data=gif_bytes,
+    )
+    assert result is not None  # capture_stdout=True guarantees bytes, not None
+    return result
+
+
+async def _optimize_gif_unsafe(
+    gif_bytes: bytes, max_bytes: int, timeout_seconds: float
+) -> bytes:
+    """The real optimization logic, allowed to raise anything — every
+    exception is normalized to GifOptimizeError by optimize_gif() below."""
+    baseline = await _run_gifsicle_to_bytes(
+        ["-O3"], gif_bytes, timeout_seconds, "gifsicle -O3"
+    )
+    if len(baseline) <= max_bytes:
+        return baseline
+
+    async def _lossy_attempt(lossy: int) -> bytes | None:
+        try:
+            return await _run_gifsicle_to_bytes(
+                ["-O3", f"--lossy={lossy}", "--gamma=1"],
+                gif_bytes,
+                timeout_seconds,
+                f"gifsicle --lossy={lossy}",
+            )
+        except Exception:
+            # One candidate failing (e.g. a timeout on an especially
+            # large input) shouldn't sink the whole optimization —
+            # _pick_best skips None entries and falls back to
+            # whichever candidates did succeed.
+            return None
+
+    lossy_results = await asyncio.gather(
+        *(_lossy_attempt(n) for n in _LOSSY_CANDIDATES)
+    )
+    return _pick_best(baseline, list(lossy_results), max_bytes)
 
 
 async def optimize_gif(
-    gif_bytes: bytes, max_bytes: int, scratch_dir: Path, timeout_seconds: float = 60.0
+    gif_bytes: bytes, max_bytes: int, timeout_seconds: float = 60.0
 ) -> bytes:
     """Re-optimizes an already-rendered GIF with gifsicle, without ever
     touching resolution or frame rate. Tries -O3 (lossless) first; if the
@@ -61,52 +104,16 @@ async def optimize_gif(
     one via _pick_best. --gamma=1 is required on gifsicle >=1.96 — it
     restores the pre-1.96 linear-space --lossy math this candidate list
     was tuned against; the 1.96 default (sRGB-perceptual) needs much
-    larger N values for equivalent compression. Never raises for "still
-    too big" — only for an actual gifsicle failure on the lossless pass,
-    which indicates a real tooling problem (missing binary, corrupt
-    input) rather than an oversized-but-valid clip."""
-    scratch_dir.mkdir(parents=True, exist_ok=True)
-    src_path = scratch_dir / f"gifopt-src-{uuid.uuid4().hex}.gif"
-    src_path.write_bytes(gif_bytes)
+    larger N values for equivalent compression. Runs entirely over
+    stdin/stdout (`-`/`-o -`) — no scratch-directory temp file is ever
+    written for this tier.
 
+    Only ever raises GifOptimizeError, never a bare OSError/RuntimeError —
+    the whole function body runs under one try/except so *any* failure
+    (missing binary, corrupt input, or anything else) degrades to
+    _render_within_size_limit's downscale-tier fallback in api.py, rather
+    than surfacing as an unhandled 500."""
     try:
-        lossless_path = scratch_dir / f"gifopt-o3-{uuid.uuid4().hex}.gif"
-        try:
-            await _run_gifsicle(
-                ["-O3", str(src_path), "-o", str(lossless_path)],
-                timeout_seconds,
-                "gifsicle -O3",
-            )
-            baseline = lossless_path.read_bytes()
-        except Exception as exc:
-            raise GifOptimizeError(f"gifsicle -O3 lossless pass failed: {exc}") from exc
-        finally:
-            lossless_path.unlink(missing_ok=True)
-
-        if len(baseline) <= max_bytes:
-            return baseline
-
-        async def _lossy_attempt(lossy: int) -> bytes | None:
-            out_path = scratch_dir / f"gifopt-lossy{lossy}-{uuid.uuid4().hex}.gif"
-            try:
-                await _run_gifsicle(
-                    ["-O3", f"--lossy={lossy}", "--gamma=1", str(src_path), "-o", str(out_path)],
-                    timeout_seconds,
-                    f"gifsicle --lossy={lossy}",
-                )
-                return out_path.read_bytes()
-            except Exception:
-                # One candidate failing (e.g. a timeout on an especially
-                # large input) shouldn't sink the whole optimization —
-                # _pick_best skips None entries and falls back to
-                # whichever candidates did succeed.
-                return None
-            finally:
-                out_path.unlink(missing_ok=True)
-
-        lossy_results = await asyncio.gather(
-            *(_lossy_attempt(n) for n in _LOSSY_CANDIDATES)
-        )
-        return _pick_best(baseline, list(lossy_results), max_bytes)
-    finally:
-        src_path.unlink(missing_ok=True)
+        return await _optimize_gif_unsafe(gif_bytes, max_bytes, timeout_seconds)
+    except Exception as exc:
+        raise GifOptimizeError(f"gifsicle optimization failed: {exc}") from exc

@@ -240,7 +240,7 @@ async def _render_within_size_limit(
     if clip_format == "gif":
         try:
             gifsicle_result = await optimize_gif(
-                clip_bytes, max_bytes, scratch_dir, timeout_seconds=gifsicle_timeout_seconds
+                clip_bytes, max_bytes, timeout_seconds=gifsicle_timeout_seconds
             )
         except GifOptimizeError as exc:
             logger.warning("gifsicle tier unavailable, falling back to downscaling: %s", exc)
@@ -610,7 +610,7 @@ def create_app(settings: Settings) -> FastAPI:
                 settings.render_defaults.fps,
                 settings.render_defaults.width,
                 settings.render_defaults.max_file_size_bytes,
-                gifsicle_timeout_seconds=settings.render_defaults.timeout_seconds,
+                gifsicle_timeout_seconds=settings.render_defaults.gifsicle_timeout_seconds,
             )
         except RenderTimeoutError as exc:
             raise HTTPException(status_code=504, detail=str(exc)) from exc

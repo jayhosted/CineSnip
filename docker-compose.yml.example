@@ -1,6 +1,10 @@
 services:
   cinesnip:
     build: .
+    # Pinned so Compose doesn't auto-suffix it (cinesnip-1, etc). Running a
+    # second CineSnip checkout on this same Docker host? Rename this to
+    # something unique first, or the second `docker compose up` will fail
+    # with "container name ... already in use".
     container_name: cinesnip
     env_file:
       - .env

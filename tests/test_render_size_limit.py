@@ -38,7 +38,7 @@ def _noop_optimize_gif(calls_log=None):
     what they tested before — no accidental dependency on gifsicle being
     installed on the machine running the tests."""
 
-    async def optimize_gif(gif_bytes, max_bytes, scratch_dir, timeout_seconds=60.0):
+    async def optimize_gif(gif_bytes, max_bytes, timeout_seconds=60.0):
         if calls_log is not None:
             calls_log.append((len(gif_bytes), max_bytes))
         return gif_bytes
@@ -121,7 +121,7 @@ def test_gif_format_tries_gifsicle_before_downscale_tiers():
     # must never be reached at all.
     renderer = _FakeRenderer(size_for=lambda fps, width: 900)
 
-    async def shrinking_optimize_gif(gif_bytes, max_bytes, scratch_dir, timeout_seconds=60.0):
+    async def shrinking_optimize_gif(gif_bytes, max_bytes, timeout_seconds=60.0):
         return b"x" * 80
 
     result = _run(renderer, max_bytes=100, optimize_gif=shrinking_optimize_gif)
@@ -139,7 +139,7 @@ def test_gif_format_falls_through_to_downscale_tiers_when_gifsicle_is_not_enough
 
     renderer = _FakeRenderer(size_for=size_for)
 
-    async def insufficient_optimize_gif(gif_bytes, max_bytes, scratch_dir, timeout_seconds=60.0):
+    async def insufficient_optimize_gif(gif_bytes, max_bytes, timeout_seconds=60.0):
         # gifsicle helps, but not enough to clear budget on its own.
         return b"x" * 600
 
@@ -160,7 +160,7 @@ def test_gif_optimize_error_falls_through_to_downscale_tiers():
 
     renderer = _FakeRenderer(size_for=size_for)
 
-    async def broken_optimize_gif(gif_bytes, max_bytes, scratch_dir, timeout_seconds=60.0):
+    async def broken_optimize_gif(gif_bytes, max_bytes, timeout_seconds=60.0):
         raise GifOptimizeError("gifsicle not found")
 
     result = _run(renderer, max_bytes=500, optimize_gif=broken_optimize_gif)

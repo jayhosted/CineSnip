@@ -12,7 +12,11 @@ FROM debian:bookworm-slim AS gifsicle-builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+# SHA-256 pinned against the actual dist tarball (checked during
+# development) — an unverified curl|build of a third-party source archive
+# would otherwise ship whatever bytes the download happened to return.
 RUN curl -sL -o /tmp/gifsicle.tar.gz https://www.lcdf.org/gifsicle/gifsicle-1.96.tar.gz \
+    && echo "fd23d279681a6dfe3c15264e33f344045b3ba473da4d19f49e67a50994b077fb  /tmp/gifsicle.tar.gz" | sha256sum -c - \
     && tar xzf /tmp/gifsicle.tar.gz -C /tmp \
     && cd /tmp/gifsicle-1.96 \
     && ./configure --disable-gifview \

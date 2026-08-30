@@ -31,6 +31,13 @@ class RenderDefaults(BaseModel):
     fps: int = 15
     width: int = 480
     timeout_seconds: float = 60.0
+    # Separate from timeout_seconds above: that budgets a single ffmpeg
+    # render call, but the gifsicle tier (app/worker/gif_optimize.py) runs
+    # its own -O3 pass and then a batch of parallel --lossy=N passes, each
+    # independently bounded by this value — reusing timeout_seconds would
+    # silently couple two unrelated tuning knobs and let worst-case gifsicle
+    # latency roughly double whenever someone raises the ffmpeg timeout.
+    gifsicle_timeout_seconds: float = 60.0
     # GIF by default: mp4/webm are smaller but Discord renders them as a
     # real video player (no autoplay/loop, no GIF-picker favoriting) —
     # see CLAUDE.md decision #1. format:mp4/webm remain explicit opt-ins.
