@@ -36,13 +36,29 @@ def _confidence_label(score: float, min_score: float, confident_score: float) ->
     return "low"
 
 
+def _pagination_footer(page: int, total_pages: int, truncated: bool) -> str | None:
+    """Shared footer text for QuoteMatchView and LibrarySearchView/
+    _library_results_embed: "Page X of Y" once there's more than one page,
+    plus a short note on the LAST page only when the worker's fetch hit
+    quote_match.fetch_limit — so a user who paged all the way through
+    knows the list they just finished browsing might not be everything,
+    without repeating the note on every page (issue #7 follow-up)."""
+    parts = []
+    if total_pages > 1:
+        parts.append(f"Page {page} of {total_pages}")
+    if truncated and page == total_pages:
+        parts.append("more results may exist — try a more specific quote")
+    return " · ".join(parts) if parts else None
+
+
 def _match_embed(
     title: str,
     match: QuoteMatchResult,
     min_score: float,
     confident_score: float,
-    position: int,
-    total: int,
+    page: int,
+    total_pages: int,
+    truncated: bool,
 ) -> discord.Embed:
     lines = [f"> {line}" for line in match.context_before]
     lines.append(f"> **{match.text}**")
@@ -52,20 +68,25 @@ def _match_embed(
     label = _confidence_label(match.score, min_score, confident_score)
     embed.add_field(name="Timecode", value=match.timecode)
     embed.add_field(name="Confidence", value=f"{match.score:.0f}% ({label})")
-    embed.set_footer(text=f"Match {position} of {total}")
+    footer = _pagination_footer(page, total_pages, truncated)
+    if footer:
+        embed.set_footer(text=footer)
     return embed
 
 
 class QuoteMatchView(discord.ui.View):
-    """Confirm/cancel a quote match, with an optional select menu to browse
+    """Confirm/cancel a quote match, with a select menu to browse
     alternatives. Per CLAUDE.md decision #4, browsing alternatives never
     stops the view or re-asks the film step — only Confirm/Cancel does.
 
     Holds the FULL fetched batch (up to quote_match.fetch_limit candidates,
     already ranked by the worker) and pages through it in place with
-    Next/Previous buttons, _PAGE_SIZE at a time, once alternatives are
-    shown — Discord's own 25-option select cap means each page's select
-    mirrors only that page's slice, never the whole batch (issue #7).
+    Next/Previous buttons, _PAGE_SIZE at a time — Discord's own 25-option
+    select cap means each page's select mirrors only that page's slice,
+    never the whole batch (issue #7). The picker is shown immediately
+    regardless of how confident the top match is: true pagination makes
+    browsing cheap, so hiding it behind a "Show other matches" button (an
+    earlier design, before this class could page) just adds a click.
     """
 
     def __init__(
@@ -75,6 +96,7 @@ class QuoteMatchView(discord.ui.View):
         min_score: float,
         confident_score: float,
         initial_index: int = 0,
+        truncated: bool = False,
     ) -> None:
         super().__init__(timeout=120)
         self._title = title
@@ -87,27 +109,27 @@ class QuoteMatchView(discord.ui.View):
         # LibrarySearchView, re-running this search for a line already
         # picked by its exact text) can pre-select it instead.
         self.index = initial_index
-        # Land on the page containing the pre-selected index, so opening
-        # "show other matches" on a LibrarySearchView-driven re-search
-        # reveals the right page instead of always page 0.
+        # Land on the page containing the pre-selected index, so a
+        # LibrarySearchView-driven re-search opens on the right page
+        # instead of always page 0.
         self._page = initial_index // _PAGE_SIZE
+        self._truncated = truncated
 
-        self._show_others_button: discord.ui.Button | None = None
         self._select: discord.ui.Select | None = None
         self._prev_button: discord.ui.Button | None = None
         self._next_button: discord.ui.Button | None = None
 
         if len(matches) > 1:
-            if matches[self.index].score >= confident_score:
-                self._add_show_others_button()
-            else:
-                # Borderline top match: open straight to the alternatives
-                # menu rather than hiding it behind a button.
-                self._show_alternatives()
+            self._add_select()
+            if len(matches) > _PAGE_SIZE:
+                self._add_page_buttons()
 
     @property
     def selected(self) -> QuoteMatchResult:
         return self.matches[self.index]
+
+    def _total_pages(self) -> int:
+        return max(1, (len(self.matches) + _PAGE_SIZE - 1) // _PAGE_SIZE)
 
     def embed(self) -> discord.Embed:
         return _match_embed(
@@ -115,25 +137,10 @@ class QuoteMatchView(discord.ui.View):
             self.selected,
             self.min_score,
             self.confident_score,
-            self.index + 1,
-            len(self.matches),
+            self._page + 1,
+            self._total_pages(),
+            self._truncated,
         )
-
-    def _total_pages(self) -> int:
-        return max(1, (len(self.matches) + _PAGE_SIZE - 1) // _PAGE_SIZE)
-
-    def _add_show_others_button(self) -> None:
-        button = discord.ui.Button(
-            label="Show other matches", style=discord.ButtonStyle.secondary, row=1
-        )
-        button.callback = self._on_show_others
-        self._show_others_button = button
-        self.add_item(button)
-
-    def _show_alternatives(self) -> None:
-        self._add_select()
-        if len(self.matches) > _PAGE_SIZE:
-            self._add_page_buttons()
 
     def _add_select(self) -> None:
         start = self._page * _PAGE_SIZE
@@ -193,19 +200,6 @@ class QuoteMatchView(discord.ui.View):
 
     async def _on_next(self, interaction: discord.Interaction) -> None:
         await self._change_page(interaction, 1)
-
-    async def _on_show_others(self, interaction: discord.Interaction) -> None:
-        if self._show_others_button is None:
-            # A select is already showing — e.g. a fast double-click sent
-            # two interactions for this button before the first one's
-            # edit_message() landed. Ignore the second one rather than
-            # adding a duplicate discord.ui.Select.
-            await interaction.response.defer()
-            return
-        self.remove_item(self._show_others_button)
-        self._show_others_button = None
-        self._show_alternatives()
-        await interaction.response.edit_message(embed=self.embed(), view=self)
 
     async def _on_select(self, interaction: discord.Interaction) -> None:
         if self._select is None:
@@ -1384,13 +1378,14 @@ def _library_results_embed(
     start_index: int = 1,
     page: int | None = None,
     total_pages: int | None = None,
+    truncated: bool = False,
 ) -> discord.Embed:
     """`matches` is the slice to render (one page's worth once a
     LibrarySearchView exists — see its own embed() method), not the full
     fetched batch; `start_index` is what the first rendered item is
     numbered as, so a later page's items keep counting up from where the
-    previous page left off rather than restarting at 1. A "Page X of Y"
-    footer only appears when there's more than one page to distinguish."""
+    previous page left off rather than restarting at 1. Footer text is
+    shared with QuoteMatchView via _pagination_footer()."""
     embed = discord.Embed(title=f'Results for "{quote}"', description=description)
     for offset, m in enumerate(matches):
         i = start_index + offset
@@ -1400,8 +1395,9 @@ def _library_results_embed(
             value=f"> {snippet}\n{m.timecode} · {m.score:.0f}%",
             inline=False,
         )
-    if total_pages and total_pages > 1:
-        embed.set_footer(text=f"Page {page} of {total_pages}")
+    footer = _pagination_footer(page or 1, total_pages or 1, truncated)
+    if footer:
+        embed.set_footer(text=footer)
     return embed
 
 
@@ -1428,12 +1424,14 @@ class LibrarySearchView(discord.ui.View):
         matches: list[LibraryQuoteMatchResult],
         remaining_uncached: int | None = None,
         description: str = "Pick a film below to generate a clip from that line.",
+        truncated: bool = False,
     ) -> None:
         super().__init__(timeout=120)
         self._cog = cog
         self._quote = quote
         self._matches = matches
         self._description = description
+        self._truncated = truncated
         self._page = 0
         self._select: discord.ui.Select | None = None
         self._prev_button: discord.ui.Button | None = None
@@ -1470,6 +1468,7 @@ class LibrarySearchView(discord.ui.View):
             start_index=self._page * _PAGE_SIZE + 1,
             page=self._page + 1,
             total_pages=self._total_pages(),
+            truncated=self._truncated,
         )
 
     def _add_select(self) -> None:
@@ -1674,6 +1673,7 @@ class GifCog(commands.Cog):
                 resolved_quote.min_score,
                 resolved_quote.confident_score,
                 initial_index=initial_index,
+                truncated=resolved_quote.truncated,
             )
             await interaction.edit_original_response(
                 content=None, embed=match_view.embed(), view=match_view
@@ -1780,6 +1780,7 @@ class GifCog(commands.Cog):
         # component interaction), both already deferred by their caller.
         last_progress_edit = 0.0
         cached_matches: list[LibraryQuoteMatchResult] = []
+        cached_truncated = False
         final_event = None
         interaction_dead = False
 
@@ -1808,6 +1809,7 @@ class GifCog(commands.Cog):
             async for event in self.bot.worker.search_quote_extend(quote):
                 if event.type == "cached":
                     cached_matches = event.matches or []
+                    cached_truncated = event.truncated or False
                     if cached_matches:
                         # The "still searching" status lives in `content`
                         # (above the embed), not buried in the embed's own
@@ -1874,7 +1876,14 @@ class GifCog(commands.Cog):
             return
 
         remaining_uncached = final_event.remaining_uncached if final_event else None
-        view = LibrarySearchView(self, quote, final_matches, remaining_uncached=remaining_uncached)
+        final_truncated = (final_event.truncated if final_event else cached_truncated) or False
+        view = LibrarySearchView(
+            self,
+            quote,
+            final_matches,
+            remaining_uncached=remaining_uncached,
+            truncated=final_truncated,
+        )
         await _safe_edit(
             content=None,
             embed=view.embed(),
@@ -2049,6 +2058,7 @@ class GifCog(commands.Cog):
             quote,
             result.matches,
             description="Pick an episode below to generate a clip from that line.",
+            truncated=result.truncated,
         )
         await interaction.edit_original_response(
             embed=view.embed(),

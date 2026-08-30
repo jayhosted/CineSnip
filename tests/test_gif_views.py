@@ -36,24 +36,19 @@ def test_quote_match_view_below_confident_score_opens_first_page_select():
     assert view._next_button.disabled is False
 
 
-def test_quote_match_view_confident_top_match_shows_button_not_select():
+def test_quote_match_view_confident_top_match_still_opens_select_immediately():
+    # Issue #7 follow-up: with true pagination available, hiding the picker
+    # behind a "Show other matches" button just adds a click — the picker
+    # (and its Next/Previous paging) is shown immediately regardless of
+    # the top match's score.
     matches = [_quote_match(0, score=95.0)] + [_quote_match(i, score=60.0) for i in range(1, 20)]
     view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
-
-    assert view._select is None
-    labels = [item.label for item in view.children if isinstance(item, discord.ui.Button)]
-    assert "Show other matches" in labels
-
-
-def test_quote_match_view_show_others_reveals_paged_select():
-    matches = [_quote_match(0, score=95.0)] + [_quote_match(i, score=60.0) for i in range(1, 20)]
-    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
-
-    asyncio.run(view._on_show_others(_fake_interaction()))
 
     assert view._select is not None
     assert len(view._select.options) == _PAGE_SIZE
     assert view._next_button.disabled is False
+    labels = [item.label for item in view.children if hasattr(item, "label")]
+    assert "Show other matches" not in labels
 
 
 def test_quote_match_view_next_then_previous_round_trips():
@@ -117,6 +112,50 @@ def test_quote_match_view_previous_before_first_page_is_a_noop():
     asyncio.run(view._on_previous(_fake_interaction()))
     assert view._page == 0
     assert len(view._select.options) > 0
+
+
+def test_quote_match_view_footer_shows_page_of_pages_not_raw_count():
+    matches = [_quote_match(i, score=60.0) for i in range(20)]  # 3 pages
+    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+
+    assert view.embed().footer.text == "Page 1 of 3"
+
+    asyncio.run(view._on_next(_fake_interaction()))
+    assert view.embed().footer.text == "Page 2 of 3"
+
+
+def test_quote_match_view_footer_omitted_when_batch_fits_one_page():
+    matches = [_quote_match(i, score=60.0) for i in range(3)]
+    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+
+    assert view.embed().footer.text is None
+
+
+def test_quote_match_view_truncated_note_only_on_last_page():
+    matches = [_quote_match(i, score=60.0) for i in range(20)]  # 3 pages
+    view = QuoteMatchView(
+        "Title", matches, min_score=50.0, confident_score=85.0, truncated=True
+    )
+
+    assert view.embed().footer.text == "Page 1 of 3"
+
+    asyncio.run(view._on_next(_fake_interaction()))
+    assert view.embed().footer.text == "Page 2 of 3"
+
+    asyncio.run(view._on_next(_fake_interaction()))
+    assert "more results may exist" in view.embed().footer.text
+    assert view.embed().footer.text.startswith("Page 3 of 3")
+
+
+def test_quote_match_view_no_truncated_note_when_not_truncated():
+    matches = [_quote_match(i, score=60.0) for i in range(20)]
+    view = QuoteMatchView(
+        "Title", matches, min_score=50.0, confident_score=85.0, truncated=False
+    )
+
+    asyncio.run(view._on_next(_fake_interaction()))
+    asyncio.run(view._on_next(_fake_interaction()))
+    assert view.embed().footer.text == "Page 3 of 3"
 
 
 def test_quote_match_view_component_rows_keep_pagination_off_cancel_row():
@@ -219,6 +258,29 @@ def test_library_results_embed_footer_omitted_for_single_page():
     matches = [_library_match(i) for i in range(3)]
     embed = _library_results_embed("quote", matches)
     assert embed.footer.text is None
+
+
+def test_library_search_view_truncated_note_only_on_last_page():
+    matches = [_library_match(i) for i in range(20)]  # 3 pages
+    view = LibrarySearchView(_FakeCog(), "quote", matches, truncated=True)
+
+    assert view.embed().footer.text == "Page 1 of 3"
+
+    asyncio.run(view._on_next(_fake_interaction()))
+    assert view.embed().footer.text == "Page 2 of 3"
+
+    asyncio.run(view._on_next(_fake_interaction()))
+    assert "more results may exist" in view.embed().footer.text
+    assert view.embed().footer.text.startswith("Page 3 of 3")
+
+
+def test_library_search_view_no_truncated_note_when_not_truncated():
+    matches = [_library_match(i) for i in range(20)]
+    view = LibrarySearchView(_FakeCog(), "quote", matches, truncated=False)
+
+    asyncio.run(view._on_next(_fake_interaction()))
+    asyncio.run(view._on_next(_fake_interaction()))
+    assert view.embed().footer.text == "Page 3 of 3"
 
 
 def test_library_search_view_next_past_last_page_is_a_noop():
