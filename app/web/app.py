@@ -249,37 +249,40 @@ async def _seed_wizard_state_from_settings(state: WizardState, settings: Setting
         state.plex_server_name = server_name
         state.library_choices = choices
 
+    if state.library_sync_enabled is None:
+        state.library_sync_enabled = settings.library_sync.enabled
 
-def _run_validation_sync(state: WizardState) -> list[tuple[str, bool, str]]:
+
+def _run_validation_sync(state: WizardState) -> list[tuple[str, bool, str, str]]:
     # Discord's own check is deliberately NOT here — it needs a live async
     # HTTP call (_verify_discord_token), and this function runs off the
     # event loop via run_in_threadpool alongside the Plex checks below.
     # _validate_panel awaits it separately and prepends the result.
     from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 
-    checks: list[tuple[str, bool, str]] = []
+    checks: list[tuple[str, bool, str, str]] = []
 
     try:
         plex_server = PlexServer(state.plex_url, state.plex_account_token, timeout=10)
         plex_server.friendlyName
-        checks.append(("Plex server reachable", True, state.plex_server_name or state.plex_url))
+        checks.append(("Plex server reachable", True, state.plex_server_name or state.plex_url, "/wizard/plex"))
     except Exception as exc:
-        checks.append(("Plex server reachable", False, str(exc)))
+        checks.append(("Plex server reachable", False, str(exc), "/wizard/plex"))
         plex_server = None
 
     for library in state.selected_libraries():
         if not library.path_mappings:
-            checks.append((f"{library.name}: files resolve", False, "no path mapping entered"))
+            checks.append((f"{library.name}: files resolve", False, "no path mapping entered", "/wizard/libraries"))
             continue
         if plex_server is None:
-            checks.append((f"{library.name}: files resolve", False, "Plex unreachable"))
+            checks.append((f"{library.name}: files resolve", False, "Plex unreachable", "/wizard/plex"))
             continue
 
         try:
             section = plex_server.library.section(library.name)
             items = section.searchEpisodes(maxresults=10) if section.type == "show" else section.all(maxresults=10)
         except Exception as exc:
-            checks.append((f"{library.name}: files resolve", False, str(exc)))
+            checks.append((f"{library.name}: files resolve", False, str(exc), "/wizard/libraries"))
             continue
 
         resolved_count = 0
@@ -305,7 +308,7 @@ def _run_validation_sync(state: WizardState) -> list[tuple[str, bool, str]]:
         detail = f"{resolved_count}/{total} sample titles resolve" if total else "no titles found to sample"
         if not ok and first_problem:
             detail += f" — {first_problem}"
-        checks.append((f"{library.name}: files resolve", ok, detail))
+        checks.append((f"{library.name}: files resolve", ok, detail, "/wizard/libraries"))
 
     return checks
 
@@ -333,7 +336,7 @@ def create_web_app(
         # template either way, so the two paths can never drift apart. The
         # step-nav strip lives outside #wizard-panel, so an htmx response
         # also carries an out-of-band update for it (step_nav_oob.html) —
-        # otherwise the "2 of 4" indicator would silently go stale the
+        # otherwise the "2 of 5" indicator would silently go stale the
         # moment a step transition happens without a full page reload.
         state: WizardState = request.app.state.wizard
         context = {"request": request, "state": state, "current_step": state.current_step, **ctx}
@@ -350,7 +353,13 @@ def create_web_app(
             state: WizardState = request.app.state.wizard
             step = state.current_step
             return RedirectResponse(
-                {1: "/wizard/discord", 2: "/wizard/plex", 3: "/wizard/libraries", 4: "/wizard/validate"}[step]
+                {
+                    1: "/wizard/discord",
+                    2: "/wizard/plex",
+                    3: "/wizard/libraries",
+                    4: "/wizard/sync",
+                    5: "/wizard/validate",
+                }[step]
             )
         return RedirectResponse("/dashboard")
 
@@ -603,9 +612,23 @@ def create_web_app(
         if not any(c.selected for c in state.library_choices):
             return render(request, "panel_libraries.html", mounts=media_mount_candidates(), error="Pick at least one library.")
 
+        return render(request, "panel_sync.html")
+
+    # ---- Step 4: Sync -----------------------------------------------------
+
+    @app.get("/wizard/sync", response_class=HTMLResponse)
+    async def sync_step(request: Request):
+        await _enter_wizard_step(request)
+        return render(request, "panel_sync.html")
+
+    @app.post("/wizard/sync", response_class=HTMLResponse)
+    async def sync_submit(request: Request):
+        form = await request.form()
+        state: WizardState = request.app.state.wizard
+        state.library_sync_enabled = "enabled" in form
         return await _validate_panel(request)
 
-    # ---- Step 4: Validate -----------------------------------------------
+    # ---- Step 5: Validate -----------------------------------------------
 
     async def _validate_panel(request: Request) -> HTMLResponse:
         # Validates against the ACTUAL end result (a real sample of titles
@@ -620,7 +643,7 @@ def create_web_app(
             discord_ok, discord_detail, _ = await _verify_discord_token(state.discord_token)
         else:
             discord_ok, discord_detail = False, "no token entered yet"
-        checks: list[tuple[str, bool, str]] = [("Discord bot token", discord_ok, discord_detail)]
+        checks: list[tuple[str, bool, str, str]] = [("Discord bot token", discord_ok, discord_detail, "/wizard/discord")]
 
         try:
             checks += await _call_with_timeout(_run_validation_sync, state)
@@ -629,8 +652,9 @@ def create_web_app(
                 "Validation",
                 False,
                 f"Plex didn't respond within {int(_PLEX_CALL_TIMEOUT_SECONDS)}s — check the connection and try again.",
+                "/wizard/plex",
             ))
-        all_ok = all(ok for _, ok, _ in checks)
+        all_ok = all(ok for _, ok, _, _ in checks)
         state.last_validation_ok = all_ok
         return render(request, "panel_validate.html", checks=checks, all_ok=all_ok)
 
@@ -680,19 +704,27 @@ def _write_config_files(
     ]
     env_path.write_text("\n".join(kept) + "\n")
 
-    # Everything below "libraries" is preserved from the currently-running
-    # Settings when there is one (a reconfiguration, decision #6), not
-    # rebuilt from Pydantic defaults — the wizard only ever collects
-    # discord_token/plex_url/plex_token/libraries, so wiping the rest back
-    # to defaults on every re-run would silently discard anything edited
-    # via app/web/settings.py. Falls back to fresh defaults only on a
-    # genuine first run.
+    # Everything below "libraries"/"library_sync" is preserved from the
+    # currently-running Settings when there is one (a reconfiguration,
+    # decision #6), not rebuilt from Pydantic defaults — the wizard only
+    # ever collects discord_token/plex_url/plex_token/libraries/
+    # library_sync.enabled, so wiping the rest back to defaults on every
+    # re-run would silently discard anything edited via app/web/settings.py.
+    # Falls back to fresh defaults only on a genuine first run.
+    existing_sync = current_settings.library_sync if current_settings else LibrarySyncDefaults()
+    library_sync = LibrarySyncDefaults(
+        # state.library_sync_enabled is only None if the Sync step was
+        # somehow skipped (shouldn't happen — finish() always re-runs
+        # validation after it); fall back to whatever's already on disk.
+        enabled=state.library_sync_enabled if state.library_sync_enabled is not None else existing_sync.enabled,
+        interval_hours=existing_sync.interval_hours,
+    )
     config = {
         "libraries": [lib.model_dump() for lib in state.selected_libraries()],
         "render_defaults": (current_settings.render_defaults if current_settings else RenderDefaults()).model_dump(),
         "subtitle_defaults": (current_settings.subtitle_defaults if current_settings else SubtitleDefaults()).model_dump(),
         "quote_match": (current_settings.quote_match if current_settings else QuoteMatchDefaults()).model_dump(),
         "worker": (current_settings.worker if current_settings else WorkerConfig()).model_dump(),
-        "library_sync": (current_settings.library_sync if current_settings else LibrarySyncDefaults()).model_dump(),
+        "library_sync": library_sync.model_dump(),
     }
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))

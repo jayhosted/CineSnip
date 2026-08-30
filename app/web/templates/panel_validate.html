@@ -6,7 +6,7 @@
   <p class="desc">Confirming everything actually works before CineSnip starts for real.</p>
 
   <div>
-    {% for label, ok, detail in checks %}
+    {% for label, ok, detail, step_url in checks %}
       <div class="check-row">
         <span class="icon">
           {% if ok %}
@@ -17,6 +17,10 @@
         </span>
         <span class="{{ 'check-ok' if ok else 'check-fail' }}">{{ label }}</span>
         <span class="detail">{{ detail }}</span>
+        {% if not ok %}
+          <button type="button" class="btn-link" style="margin-left:12px; white-space:nowrap; flex-shrink:0;"
+            hx-get="{{ step_url }}" hx-target="#wizard-panel" hx-swap="innerHTML">Fix &rarr;</button>
+        {% endif %}
       </div>
     {% endfor %}
   </div>
@@ -26,7 +30,6 @@
       <button class="btn btn-primary btn-block" type="submit"><span class="btn-spinner"></span><span class="btn-label-idle">Finish setup</span></button>
     </form>
   {% else %}
-    <p class="error-banner" style="margin-top: 20px;">Something above needs fixing before CineSnip can start. Go back and correct it, then this check will re-run.</p>
-    <button class="btn btn-ghost" type="button" hx-get="/wizard/libraries" hx-target="#wizard-panel" hx-swap="innerHTML" style="margin-top: 8px;">&larr; Back to libraries</button>
+    <p class="error-banner" style="margin-top: 20px;">Something above needs fixing before CineSnip can start &mdash; use "Fix" next to a failed check to jump straight to that step, then this check will re-run.</p>
   {% endif %}
 </div>

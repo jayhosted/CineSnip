@@ -1,0 +1,31 @@
+<div class="card">
+  <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
+    <h1 style="flex:1;">Keep the library in sync</h1>
+    <span class="badge badge-accent" style="margin-left:0;">Recommended</span>
+  </div>
+  <p class="desc">
+    With this on, CineSnip checks your libraries for changes and keeps the quote-search cache current on its own:
+    new titles get their subtitles extracted automatically, and titles removed from Plex have their cache entries
+    cleared out (behind a two-layer safety check, so a Plex outage or a dead drive is never mistaken for real removal).
+    It's also what lets <code>/snip search</code> reach titles it hasn't indexed yet, instead of only the ones already cached.
+  </p>
+  <p class="desc">
+    Search itself is already proven fine at real scale &mdash; on the reference install's index (~10.7k titles, ~7.5M
+    subtitle entries), a full-library search measures 0.04&ndash;4s, with the slow end only hit by queries whose words
+    are individually too common for the index to narrow much. So this isn't a search-performance trade-off. The one
+    reason to leave it off is the <strong>initial extraction cost</strong> for a very large, not-yet-cached library
+    &mdash; the first backfill has real CPU work to do. You can change this later from Settings.
+  </p>
+
+  <form hx-post="/wizard/sync" hx-target="#wizard-panel" hx-swap="innerHTML">
+    <label style="display:flex; align-items:center; gap:8px; font-size:13.5px; margin-bottom:20px;">
+      <input type="checkbox" name="enabled" {% if state.library_sync_enabled is none or state.library_sync_enabled %}checked{% endif %} style="accent-color:var(--accent); width:16px; height:16px;">
+      Automatically keep the subtitle cache in sync
+    </label>
+    <button class="btn btn-primary btn-block" type="submit"><span class="btn-spinner"></span><span class="btn-label-idle">Continue</span></button>
+  </form>
+  {% if state.wizard_return_to %}
+  <a href="/settings/{{ state.wizard_return_to }}" class="btn-link" style="display:inline-block; margin-top:16px;">&larr; Cancel, back to Settings</a>
+  {% endif %}
+</div>

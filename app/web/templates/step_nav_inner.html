@@ -1,4 +1,4 @@
-{% set steps = [(1, "Discord"), (2, "Plex"), (3, "Libraries"), (4, "Validate")] %}
+{% set steps = [(1, "Discord"), (2, "Plex"), (3, "Libraries"), (4, "Sync"), (5, "Validate")] %}
 <div class="step-nav">
   {% for num, label in steps %}
     {% if not loop.first %}<div class="rule {{ 'done' if num <= current_step else '' }}"></div>{% endif %}

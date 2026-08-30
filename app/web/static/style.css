@@ -339,6 +339,11 @@ form.htmx-request [type="submit"] .btn-label-idle { display: none; }
 
 .badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--surface); color: var(--text-tertiary); border: 1px solid var(--border-subtle); flex-shrink: 0; margin-left: 10px; }
 
+/* Accent variant: for a badge marking something as the recommended/positive
+   choice rather than neutral metadata — same shape as .badge, same
+   selected-state accent treatment as a checked .style-pill. */
+.badge-accent { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em; }
+
 .selected-chip { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; padding: 10px 12px; background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 8px; }
 .selected-chip-title { font-size: 13.5px; font-weight: 500; }
 .btn-link { background: none; border: none; color: var(--accent); font-size: 12.5px; font-weight: 600; font-family: var(--font-body); cursor: pointer; padding: 0; }

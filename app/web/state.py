@@ -67,6 +67,13 @@ class WizardState:
     plex_server_name: str | None = None
 
     library_choices: list[LibraryChoice] = field(default_factory=list)
+
+    # None until the Sync step is submitted (fresh install) or seeded from
+    # a live config (reconfiguration) — distinct from False, which means
+    # "user explicitly turned it off." Drives both current_step (below) and
+    # the Sync panel's default-checked state (issue #8: recommended/on).
+    library_sync_enabled: bool | None = None
+
     last_validation_ok: bool = False
 
     # Set when a wizard step is entered via a Settings "Edit ___" link
@@ -100,7 +107,9 @@ class WizardState:
             return 2
         if not any(c.selected for c in self.library_choices):
             return 3
-        return 4
+        if self.library_sync_enabled is None:
+            return 4
+        return 5
 
 
 def media_mount_candidates(media_root: Path = Path("/media")) -> list[str]:

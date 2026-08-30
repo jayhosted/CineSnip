@@ -5,7 +5,7 @@ import httpx
 import pytest
 import yaml
 
-from app.settings import LibrarySyncDefaults, QuoteMatchDefaults, RenderDefaults, SubtitleDefaults, WorkerConfig, load_settings
+from app.settings import LibraryConfig, LibrarySyncDefaults, QuoteMatchDefaults, RenderDefaults, Settings, SubtitleDefaults, WorkerConfig, load_settings
 from app.web.state import LibraryChoice, MappingRow, WizardState
 from app.web.app import _verify_discord_token, _write_config_files
 
@@ -155,6 +155,54 @@ def test_write_config_files_defaults_track_settings_models_not_a_hardcoded_copy(
     assert raw["quote_match"] == QuoteMatchDefaults().model_dump()
     assert raw["worker"] == WorkerConfig().model_dump()
     assert raw["library_sync"] == LibrarySyncDefaults().model_dump()
+
+
+# ---- Sync step (issue #8) --------------------------------------------------
+
+
+def test_current_step_advances_through_sync_before_validate():
+    state = _state_with_one_library()
+    assert state.library_sync_enabled is None
+    assert state.current_step == 4  # Sync — not yet decided
+
+    state.library_sync_enabled = True
+    assert state.current_step == 5  # Validate
+
+
+def test_write_config_files_uses_wizard_sync_choice_on_first_run(tmp_path):
+    state = _state_with_one_library()
+    state.library_sync_enabled = True
+    env_path = tmp_path / ".env"
+    config_path = tmp_path / "config.yaml"
+
+    _write_config_files(state, env_path=env_path, config_path=config_path)
+    raw = yaml.safe_load(config_path.read_text())
+
+    assert raw["library_sync"]["enabled"] is True
+    assert raw["library_sync"]["interval_hours"] == LibrarySyncDefaults().interval_hours
+
+
+def test_write_config_files_preserves_interval_hours_on_reconfiguration(tmp_path):
+    # The Sync step only ever collects the on/off choice — interval_hours
+    # stays whatever a Settings "Edit ___" user already set, matching the
+    # existing preserve-the-rest behavior for render_defaults etc.
+    state = _state_with_one_library()
+    state.library_sync_enabled = False
+    current_settings = Settings(
+        discord_token="old",
+        plex_url="http://plex:32400",
+        plex_token="old",
+        libraries=[LibraryConfig(name="Movies")],
+        library_sync=LibrarySyncDefaults(enabled=True, interval_hours=6.0),
+    )
+    env_path = tmp_path / ".env"
+    config_path = tmp_path / "config.yaml"
+
+    _write_config_files(state, current_settings=current_settings, env_path=env_path, config_path=config_path)
+    raw = yaml.safe_load(config_path.read_text())
+
+    assert raw["library_sync"]["enabled"] is False  # the wizard's own choice wins
+    assert raw["library_sync"]["interval_hours"] == 6.0  # untouched, preserved
 
 
 # ---- _verify_discord_token ------------------------------------------------
