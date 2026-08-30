@@ -145,6 +145,11 @@ class ResolveQuoteResponse(BaseModel):
     subtitle_source: str
     confident_score: float
     min_score: float
+    # True when the engine found more matches than quote_match.fetch_limit
+    # and this response was cut off at that cap — lets the bot tell "this
+    # is every match" apart from "there may be more" without guessing off
+    # a raw count that could coincidentally equal fetch_limit on its own.
+    truncated: bool
     matches: list[QuoteMatchOut]
 
 
@@ -165,6 +170,8 @@ class LibrarySearchResponse(BaseModel):
     matches: list[LibraryQuoteMatchOut]
     confident_score: float
     min_score: float
+    # Same truncation signal as ResolveQuoteResponse.truncated, see there.
+    truncated: bool
 
 
 class RandomQuoteResponse(BaseModel):
@@ -323,7 +330,7 @@ def _to_out(movie: MovieResult) -> MovieResultOut:
 
 async def _movie_library_matches(
     app: FastAPI, settings: Settings, quote: str
-) -> tuple[list[CachedTitle], list]:
+) -> tuple[list[CachedTitle], list, bool]:
     # Shared by /search-quote and /search-quote-extend: both search exactly
     # "every cached movie-library title" — the TV episodes sharing this same
     # search_index (CLAUDE.md Section 4) are filtered out here, once.
@@ -341,21 +348,27 @@ async def _movie_library_matches(
     # freezes Discord's own interaction dispatch for the same duration —
     # confirmed as the root cause of "The application did not respond"
     # errors on /snip tv.
+    #
+    # Fetching fetch_limit + 1 (rather than exactly fetch_limit) is what
+    # lets the caller tell "this is genuinely every match" apart from "the
+    # cap was hit, there may be more" — a plain len(matches) == fetch_limit
+    # check can't distinguish those two cases (issue #7 follow-up).
     matches = await asyncio.to_thread(
         search_cached_library,
         settings.quote_index_db_path,
         cached_titles,
         quote,
-        result_limit=qm.fetch_limit,
+        result_limit=qm.fetch_limit + 1,
         min_score=qm.min_score,
         max_window_gap_seconds=qm.max_window_gap_seconds,
         context_lines=qm.context_lines,
         per_title_limit=qm.library_per_title_limit,
     )
-    return cached_titles, matches
+    truncated = len(matches) > qm.fetch_limit
+    return cached_titles, matches[: qm.fetch_limit], truncated
 
 
-def _library_search_payload(matches: list[LibraryQuoteMatch], qm) -> dict:
+def _library_search_payload(matches: list[LibraryQuoteMatch], qm, truncated: bool) -> dict:
     return {
         "matches": [
             {
@@ -374,6 +387,7 @@ def _library_search_payload(matches: list[LibraryQuoteMatch], qm) -> dict:
         ],
         "confident_score": qm.confident_score,
         "min_score": qm.min_score,
+        "truncated": truncated,
     }
 
 
@@ -712,14 +726,20 @@ def create_app(settings: Settings) -> FastAPI:
         # entries), so this just calls find_quote_matches() directly and
         # lets it build its own candidates internally (its default
         # `precomputed=None` path) rather than duplicating that logic here.
+        #
+        # Fetching fetch_limit + 1 (not exactly fetch_limit) is what lets
+        # `truncated` below tell "this is genuinely every match" apart from
+        # "the cap was hit, there may be more" (issue #7 follow-up).
         matches = find_quote_matches(
             result.entries,
             quote,
-            limit=qm.fetch_limit,
+            limit=qm.fetch_limit + 1,
             min_score=qm.min_score,
             max_window_gap_seconds=qm.max_window_gap_seconds,
             context_lines=qm.context_lines,
         )
+        truncated = len(matches) > qm.fetch_limit
+        matches = matches[: qm.fetch_limit]
 
         if not matches:
             raise HTTPException(
@@ -736,6 +756,7 @@ def create_app(settings: Settings) -> FastAPI:
             subtitle_source=result.source.value,
             confident_score=qm.confident_score,
             min_score=qm.min_score,
+            truncated=truncated,
             matches=[
                 QuoteMatchOut(
                     start=m.start,
@@ -758,8 +779,10 @@ def create_app(settings: Settings) -> FastAPI:
     # empty index/no matches is a normal outcome, not an error.
     @app.get("/search-quote", response_model=LibrarySearchResponse)
     async def search_quote(quote: str) -> LibrarySearchResponse:
-        _, matches = await _movie_library_matches(app, settings, quote)
-        return LibrarySearchResponse(**_library_search_payload(matches, settings.quote_match))
+        _, matches, truncated = await _movie_library_matches(app, settings, quote)
+        return LibrarySearchResponse(
+            **_library_search_payload(matches, settings.quote_match, truncated)
+        )
 
     @app.get("/random-quote", response_model=RandomQuoteResponse)
     async def random_quote(
@@ -807,14 +830,17 @@ def create_app(settings: Settings) -> FastAPI:
         extend_cap = cap if cap is not None else settings.quote_match.library_extend_cap
 
         async def event_stream():
-            cached_titles, matches = await _movie_library_matches(app, settings, quote)
-            yield json.dumps({"type": "cached", **_library_search_payload(matches, settings.quote_match)}) + "\n"
+            cached_titles, matches, truncated = await _movie_library_matches(app, settings, quote)
+            yield json.dumps({
+                "type": "cached",
+                **_library_search_payload(matches, settings.quote_match, truncated),
+            }) + "\n"
 
             if not settings.library_sync.enabled:
                 yield json.dumps({
                     "type": "final",
                     "remaining_uncached": None,
-                    **_library_search_payload(matches, settings.quote_match),
+                    **_library_search_payload(matches, settings.quote_match, truncated),
                 }) + "\n"
                 return
 
@@ -887,7 +913,7 @@ def create_app(settings: Settings) -> FastAPI:
                 yield json.dumps({
                     "type": "final",
                     "remaining_uncached": 0,
-                    **_library_search_payload(matches, settings.quote_match),
+                    **_library_search_payload(matches, settings.quote_match, truncated),
                 }) + "\n"
                 return
 
@@ -919,11 +945,11 @@ def create_app(settings: Settings) -> FastAPI:
             # Items never even reached this call (not skipped — never
             # looked at) are what's left to report as "remaining".
             remaining = len(uncached_items) - scanned_count
-            _, final_matches = await _movie_library_matches(app, settings, quote)
+            _, final_matches, final_truncated = await _movie_library_matches(app, settings, quote)
             yield json.dumps({
                 "type": "final",
                 "remaining_uncached": remaining,
-                **_library_search_payload(final_matches, settings.quote_match),
+                **_library_search_payload(final_matches, settings.quote_match, final_truncated),
             }) + "\n"
 
         return StreamingResponse(event_stream(), media_type="application/x-ndjson")
@@ -996,17 +1022,22 @@ def create_app(settings: Settings) -> FastAPI:
         ]
 
         qm = settings.quote_match
+        # Fetching fetch_limit + 1 (not exactly fetch_limit) is what lets
+        # `truncated` below tell "this is genuinely every match" apart from
+        # "the cap was hit, there may be more" (issue #7 follow-up).
         matches = await asyncio.to_thread(
             search_cached_library,
             settings.quote_index_db_path,
             cached_titles,
             quote,
-            result_limit=qm.fetch_limit,
+            result_limit=qm.fetch_limit + 1,
             min_score=qm.min_score,
             max_window_gap_seconds=qm.max_window_gap_seconds,
             context_lines=qm.context_lines,
             per_title_limit=qm.library_per_title_limit,
         )
+        truncated = len(matches) > qm.fetch_limit
+        matches = matches[: qm.fetch_limit]
 
         return LibrarySearchResponse(
             matches=[
@@ -1026,6 +1057,7 @@ def create_app(settings: Settings) -> FastAPI:
             ],
             confident_score=qm.confident_score,
             min_score=qm.min_score,
+            truncated=truncated,
         )
 
     return app

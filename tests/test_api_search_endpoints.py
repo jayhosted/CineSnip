@@ -603,3 +603,70 @@ def test_search_quote_endpoint_returns_more_than_eight_when_available(tmp_path, 
     # asserting >8 proves qm.fetch_limit (default 50), not the old cap,
     # is what reaches search_cached_library's result_limit.
     assert len(body["matches"]) == 12
+
+
+def test_search_quote_endpoint_reports_truncated_when_more_than_fetch_limit(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    settings.quote_match = QuoteMatchDefaults(fetch_limit=5)
+    for i in range(8):
+        _write_title(
+            settings.quote_index_db_path,
+            f"guid-{i}", 100 + i, f"Title {i}", "Movies",
+            ["Nobody expects the Spanish Inquisition!"],
+        )
+
+    client = _client(settings, monkeypatch)
+    resp = client.get("/search-quote", params={"quote": "nobody expects the spanish inquisition"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["matches"]) == 5
+    assert body["truncated"] is True
+
+
+def test_search_quote_endpoint_reports_not_truncated_when_within_fetch_limit(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    settings.quote_match = QuoteMatchDefaults(fetch_limit=5)
+    for i in range(3):
+        _write_title(
+            settings.quote_index_db_path,
+            f"guid-{i}", 100 + i, f"Title {i}", "Movies",
+            ["Nobody expects the Spanish Inquisition!"],
+        )
+
+    client = _client(settings, monkeypatch)
+    resp = client.get("/search-quote", params={"quote": "nobody expects the spanish inquisition"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["matches"]) == 3
+    assert body["truncated"] is False
+
+
+def test_search_episodes_quote_endpoint_reports_truncated_when_more_than_fetch_limit(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    settings.quote_match = QuoteMatchDefaults(fetch_limit=2)
+    episodes = []
+    for i in range(4):
+        episode = MovieResult(
+            rating_key=500 + i, title=f"The Office — S01E0{i} — Ep{i}", year=None,
+            duration_ms=1000, thumb_url=None, plex_path=f"D:\\TV\\office{i}.mkv",
+            guid=f"ep-guid-{i}", library_name="TV Shows",
+        )
+        episodes.append(episode)
+        _write_title(
+            settings.quote_index_db_path,
+            f"ep-guid-{i}", 500 + i, f"The Office — S01E0{i} — Ep{i}", "TV Shows",
+            ["That's what she said."],
+        )
+
+    fake_plex = _FakePlexClient(settings)
+    fake_plex._episodes_by_show[900] = episodes
+    client = _client(settings, monkeypatch, fake_plex)
+
+    resp = client.get("/search-episodes-quote/900", params={"quote": "that's what she said"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["matches"]) == 2
+    assert body["truncated"] is True

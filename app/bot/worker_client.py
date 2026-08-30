@@ -98,6 +98,10 @@ class ResolveQuoteResult:
     subtitle_source: str
     confident_score: float
     min_score: float
+    # True when the worker's fetch hit quote_match.fetch_limit and this
+    # result was cut off there — see ResolveQuoteResponse.truncated
+    # (app/worker/api.py) for how it's computed.
+    truncated: bool
     matches: list[QuoteMatchResult]
 
 
@@ -129,6 +133,8 @@ class LibrarySearchResult:
     matches: list[LibraryQuoteMatchResult]
     confident_score: float
     min_score: float
+    # Same truncation signal as ResolveQuoteResult.truncated, see there.
+    truncated: bool
 
 
 @dataclass
@@ -152,6 +158,10 @@ class LibrarySearchExtendEvent:
     total: int | None = None
     title: str | None = None
     remaining_uncached: int | None = None
+    # Present (True/False) alongside matches on "cached"/"final" events;
+    # absent on "scanning"/"progress" events, same as confident_score/
+    # min_score above.
+    truncated: bool | None = None
 
 
 class WorkerClient:
