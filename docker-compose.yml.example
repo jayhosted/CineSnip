@@ -1,6 +1,7 @@
 services:
   cinesnip:
     build: .
+    container_name: cinesnip
     env_file:
       - .env
     ports:
