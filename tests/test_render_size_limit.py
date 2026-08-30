@@ -8,6 +8,7 @@ that now runs before the downscale tiers for GIF renders.
 import asyncio
 
 from app.worker.api import _render_within_size_limit
+from app.worker.gif_optimize import GifOptimizeError
 
 
 class _FakeRenderer:
@@ -143,6 +144,26 @@ def test_gif_format_falls_through_to_downscale_tiers_when_gifsicle_is_not_enough
         return b"x" * 600
 
     result = _run(renderer, max_bytes=500, optimize_gif=insufficient_optimize_gif)
+    assert len(result) == 50
+    assert renderer.calls == [(15, 480), (12, 480), (10, 400)]
+
+
+def test_gif_optimize_error_falls_through_to_downscale_tiers():
+    # gifsicle itself failing (missing binary, timeout, unusual GIF) must
+    # degrade to the downscale tiers, not propagate out of
+    # _render_within_size_limit and become an HTTP 500 (CLAUDE.md: "a
+    # still-oversized clip is more useful than none").
+    def size_for(fps, width):
+        if (fps, width) == (10, 400):
+            return 50
+        return 1000
+
+    renderer = _FakeRenderer(size_for=size_for)
+
+    async def broken_optimize_gif(gif_bytes, max_bytes, scratch_dir, timeout_seconds=60.0):
+        raise GifOptimizeError("gifsicle not found")
+
+    result = _run(renderer, max_bytes=500, optimize_gif=broken_optimize_gif)
     assert len(result) == 50
     assert renderer.calls == [(15, 480), (12, 480), (10, 400)]
 

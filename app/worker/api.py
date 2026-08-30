@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from app.settings import Settings, SettingsError
 from app.worker import quote_index, search_index
 from app.worker.ffmpeg import ClipRenderer, RenderTimeoutError, parse_timecode
-from app.worker.gif_optimize import optimize_gif as _real_optimize_gif
+from app.worker.gif_optimize import GifOptimizeError, optimize_gif as _real_optimize_gif
 from app.worker.library_search import LibraryQuoteMatch, pick_random_quote, search_cached_library
 from app.worker.library_sync import sync_one_title
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
@@ -238,13 +238,17 @@ async def _render_within_size_limit(
     smallest = clip_bytes
 
     if clip_format == "gif":
-        gifsicle_result = await optimize_gif(
-            clip_bytes, max_bytes, scratch_dir, timeout_seconds=gifsicle_timeout_seconds
-        )
-        if len(gifsicle_result) < len(smallest):
-            smallest = gifsicle_result
-        if len(gifsicle_result) <= max_bytes:
-            return gifsicle_result
+        try:
+            gifsicle_result = await optimize_gif(
+                clip_bytes, max_bytes, scratch_dir, timeout_seconds=gifsicle_timeout_seconds
+            )
+        except GifOptimizeError as exc:
+            logger.warning("gifsicle tier unavailable, falling back to downscaling: %s", exc)
+        else:
+            if len(gifsicle_result) < len(smallest):
+                smallest = gifsicle_result
+            if len(gifsicle_result) <= max_bytes:
+                return gifsicle_result
 
     for tier_fps, tier_width in _DOWNSCALE_TIERS:
         fps = min(configured_fps, tier_fps)
