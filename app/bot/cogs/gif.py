@@ -144,6 +144,28 @@ class QuoteMatchView(discord.ui.View):
             if len(matches) > _PAGE_SIZE:
                 self._add_page_buttons()
 
+        # Confirm/Cancel are added last (manually, not @discord.ui.button)
+        # so they always land below whichever of the select/pagination rows
+        # above actually exist — row 1 with nothing else, row 2 with just
+        # the select, row 3 once pagination is also present.
+        confirm_cancel_row = 1
+        if self._select is not None:
+            confirm_cancel_row = 2
+        if self._next_button is not None:
+            confirm_cancel_row = 3
+
+        confirm_button = discord.ui.Button(
+            label="Confirm", style=discord.ButtonStyle.success, row=confirm_cancel_row
+        )
+        confirm_button.callback = self._on_confirm
+        self.add_item(confirm_button)
+
+        cancel_button = discord.ui.Button(
+            label="Cancel", style=discord.ButtonStyle.danger, row=confirm_cancel_row
+        )
+        cancel_button.callback = self._on_cancel
+        self.add_item(cancel_button)
+
     @property
     def selected(self) -> QuoteMatchResult | LibraryQuoteMatchResult:
         return self.matches[self.index]
@@ -236,18 +258,12 @@ class QuoteMatchView(discord.ui.View):
         self._add_select()
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
-    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, row=0)
-    async def confirm(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def _on_confirm(self, interaction: discord.Interaction) -> None:
         self.value = True
         await interaction.response.defer()
         self.stop()
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=0)
-    async def cancel(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def _on_cancel(self, interaction: discord.Interaction) -> None:
         self.value = False
         await interaction.response.defer()
         self.stop()
@@ -744,18 +760,32 @@ class _EditSubsModal(discord.ui.Modal, title="Edit subtitles"):
         await self._view._re_render(interaction, self._view._clip_start, self._view._clip_end)
 
 
+# Duration category's selectable nudge/shift magnitude, in seconds —
+# order matters: _open_duration() renders these left-to-right, and
+# ClipEditView._duration_step defaults to the middle value (1s).
+_DURATION_STEP_CHOICES: list[float] = [0.5, 1.0, 3.0]
+
+
+def _format_step(step: float) -> str:
+    # %g drops a trailing ".0" (1.0 -> "1") but keeps "0.5" as-is.
+    return f"{step:g}s"
+
+
 class ClipEditView(ClipResultView):
     """ClipResultView plus in-place duration/merge/subtitle editing controls
-    (issue #5): three collapsible category toggles (⏱ Duration, 💬
-    Subtitles, 🔀 Merge Subs) between the existing Style select and Post button.
-    Merge is its own top-level toggle rather than nested under Duration —
-    moved there after real-world testing showed Merge Previous/Next were
-    easy to miss when buried in a second category. Edit state (current
-    span, per-line text overrides) lives only on this view instance, the
-    same approach QuoteMatchView already uses. Row layout is fixed
-    regardless of which category (if any) is open, so Post never moves:
-    row 0 Style select, row 1 category toggles, row 2 the open category's
-    controls, row 4 Post — always last.
+    (issue #5): row 1 holds ⏱ Duration and 🔀 Merge Subs — collapsible
+    category toggles — plus ✏️ Edit Subs, which isn't a category at all:
+    it has no options of its own, so it opens its modal directly rather
+    than expanding a row first (see _on_edit_subs_entry for the one
+    unavoidable exception, a cold-cache fallback). Merge is its own
+    top-level toggle rather than nested under Duration — moved there after
+    real-world testing showed Merge Previous/Next were easy to miss when
+    buried in a second category. Edit state (current span, per-line text
+    overrides) lives only on this view instance, the same approach
+    QuoteMatchView already uses. Row layout is fixed regardless of which
+    category (if any) is open, so Post never moves: row 0 Style select,
+    row 1 category toggles, rows 2-3 the open category's controls, row 4
+    Post — always last.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -770,7 +800,12 @@ class ClipEditView(ClipResultView):
         # for that, not a render-performance issue.
         self.timeout = 1800
         self.overrides: dict[int, str | None] = {}
+        # Shared magnitude for every Duration-category nudge/shift button —
+        # changing it (via the 0.5s/1s/3s row) rebuilds the whole category
+        # so every button's label reflects the new step.
+        self._duration_step: float = _DURATION_STEP_CHOICES[1]
         self._all_entries: list[SubtitleEntryResult] | None = None
+        self._entries_task: asyncio.Task[list[SubtitleEntryResult]] | None = None
         self._open_category: str | None = None
         self._category_buttons: list[discord.ui.Button] = []
         # Surrounding-lines readout for the Merge Subs screen (issue #5
@@ -789,6 +824,7 @@ class ClipEditView(ClipResultView):
         self._last_merge_previous_count: int = 0
         self._last_merge_next_count: int = 0
         self._add_category_toggles()
+        self._start_entries_prefetch()
 
     def _add_category_toggles(self) -> None:
         duration_button = discord.ui.Button(
@@ -796,9 +832,9 @@ class ClipEditView(ClipResultView):
         )
         duration_button.callback = self._on_toggle_duration
         subtitles_button = discord.ui.Button(
-            label="💬 Subtitles", style=discord.ButtonStyle.secondary, row=1
+            label="✏️ Edit Subs", style=discord.ButtonStyle.secondary, row=1
         )
-        subtitles_button.callback = self._on_toggle_subtitles
+        subtitles_button.callback = self._on_edit_subs_entry
         # Its own always-visible toggle (not nested under Duration) per
         # real-world testing feedback: Merge Previous/Next were easy to
         # miss buried inside the Duration category, and users expect a
@@ -853,20 +889,38 @@ class ClipEditView(ClipResultView):
             interaction, self._clip_start, self._clip_end, status_message=status_message
         )
 
+    def _start_entries_prefetch(self) -> None:
+        # Fired the moment this view is built (see __init__) rather than
+        # waiting for the first click that needs entries (Duration's Custom
+        # aside, that's Merge or Edit Subs) — a title just got rendered, so
+        # it's very likely about to be edited, and starting the fetch here
+        # instead of on first click is what lets a warm-cache click on Edit
+        # Subs open its modal on the very first click (a modal can only be
+        # an interaction's *initial* response, so any click that still has
+        # to await a fetch can't pop one). On a genuinely cold title this
+        # doesn't do extra work, only earlier work — the same extraction
+        # would otherwise start on whichever click needed it first.
+        self._entries_task = asyncio.create_task(self._fetch_entries())
+
+    async def _fetch_entries(self) -> list[SubtitleEntryResult]:
+        try:
+            entries = await self._worker.subtitles(self._rating_key)
+        except httpx.HTTPError:
+            # Don't cache the failure as a successful empty result — a
+            # transient error (e.g. a slow cold extraction that timed out)
+            # would otherwise permanently disable Merge Previous/Next and
+            # Edit Subs for the rest of this edit session. Leave
+            # self._all_entries as None so the next call retries.
+            return []
+        self._all_entries = entries
+        return entries
+
     async def _ensure_entries(self) -> list[SubtitleEntryResult]:
-        if self._all_entries is None:
-            try:
-                entries = await self._worker.subtitles(self._rating_key)
-            except httpx.HTTPError:
-                # Don't cache the failure as a successful empty result — a
-                # transient error (e.g. a slow cold extraction that timed
-                # out) would otherwise permanently disable Merge
-                # Previous/Next and Edit Subs for the rest of this edit
-                # session. Leave self._all_entries as None so the next
-                # click retries.
-                return []
-            self._all_entries = entries
-        return self._all_entries
+        if self._all_entries is not None:
+            return self._all_entries
+        if self._entries_task is None or self._entries_task.done():
+            self._start_entries_prefetch()
+        return await self._entries_task
 
     def _clear_category_rows(self) -> None:
         for button in self._category_buttons:
@@ -876,21 +930,19 @@ class ClipEditView(ClipResultView):
     async def _open_duration(self) -> None:
         self._clear_category_rows()
         self._open_category = "duration"
+        step = self._duration_step
+        step_label = _format_step(step)
 
         # Full two-sided control (spec requirement): each boundary (start,
         # end) must be nudgeable in BOTH directions, not just one — the
         # tvgif-style one-directional-extend limitation this feature is
         # explicitly meant to fix. That's 2 boundaries x 2 directions = 4
-        # nudge buttons per magnitude. The spec lists three magnitudes
-        # (0.5s/1s/5s), but a Discord view row caps out at 5 buttons; with
-        # Merge Previous/Next now living in their own category (moved out
-        # per real-world testing feedback) this row only needs to fit the
-        # 4 nudges + Custom, so a single magnitude (1s, the spec's middle
-        # value) with full symmetry is what fits — dropping 0.5s and 5s
-        # entirely rather than compromising symmetry, per the earlier
-        # review ruling that both-directions-per-boundary outranks
-        # magnitude count. Custom (free-text modal) remains available for
-        # any other span.
+        # nudge buttons, plus Custom, which is exactly a row's 5-button cap
+        # — so all three magnitudes (0.5s/1s/3s) share one step size rather
+        # than each getting a fixed row of buttons. Row 3 holds Shift
+        # (moves start+end together, preserving duration) and the
+        # 0.5s/1s/3s step-size buttons that retarget every arrow above
+        # (labels update to match) and Shift itself.
         # Arrows show which way the boundary moves along the timeline
         # (← earlier, → later), not the sign of the delta applied to its
         # timestamp — "Start +1s" reads as "extend the clip" but actually
@@ -898,15 +950,18 @@ class ClipEditView(ClipResultView):
         # showed was genuinely confusing. The arrow direction matches the
         # visible effect directly: ← always makes more of the source appear,
         # → always trims it, regardless of which boundary it's attached to.
+        # Shift follows the same convention: ← always slides the window
+        # earlier (more of what came before appears), → always slides it
+        # later.
         nudges = [
-            ("Start ← 1s", -1.0, "start"),
-            ("Start → 1s", 1.0, "start"),
-            ("End ← 1s", -1.0, "end"),
-            ("End → 1s", 1.0, "end"),
+            (f"Start ← {step_label}", "start", -1),
+            (f"Start → {step_label}", "start", 1),
+            (f"End ← {step_label}", "end", -1),
+            (f"End → {step_label}", "end", 1),
         ]
-        for label, delta, side in nudges:
+        for label, side, direction in nudges:
             button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, row=2)
-            button.callback = self._make_nudge_callback(delta, side)
+            button.callback = self._make_nudge_callback(side, direction)
             self._category_buttons.append(button)
             self.add_item(button)
 
@@ -914,6 +969,28 @@ class ClipEditView(ClipResultView):
         custom_button.callback = self._on_custom_duration
         self._category_buttons.append(custom_button)
         self.add_item(custom_button)
+
+        shift_nudges = [
+            (f"Shift ← {step_label}", "shift", -1),
+            (f"Shift → {step_label}", "shift", 1),
+        ]
+        for label, side, direction in shift_nudges:
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, row=3)
+            button.callback = self._make_nudge_callback(side, direction)
+            self._category_buttons.append(button)
+            self.add_item(button)
+
+        for candidate in _DURATION_STEP_CHOICES:
+            is_active = candidate == step
+            step_button = discord.ui.Button(
+                label=_format_step(candidate),
+                style=discord.ButtonStyle.success if is_active else discord.ButtonStyle.secondary,
+                row=3,
+                disabled=is_active,
+            )
+            step_button.callback = self._make_step_callback(candidate)
+            self._category_buttons.append(step_button)
+            self.add_item(step_button)
 
     def _build_merge_embed(self, filename: str, description: str | None) -> discord.Embed:
         """Discord's message layout is fixed — content, then embeds, then
@@ -980,18 +1057,24 @@ class ClipEditView(ClipResultView):
         self._category_buttons.append(count_button)
         self.add_item(count_button)
 
-    async def _open_subtitles(self) -> None:
+    def _add_subtitles_fallback_row(self) -> None:
+        """Only ever shown right after a cold Edit Subs click that had to
+        extract subtitles first (see _on_edit_subs_entry) — a modal can only
+        be sent as an interaction's *initial* response, so that first click
+        can't defer-with-a-warning and still pop the modal itself. Once
+        entries are cached, every later Edit Subs click skips this
+        entirely and opens the modal directly."""
         self._clear_category_rows()
         self._open_category = "subtitles"
-        entries = await self._ensure_entries()
+        entries = self._all_entries or []
         window = _entries_in_window(entries, self._clip_start, self._clip_end)
-        edit_button = discord.ui.Button(
-            label="Edit Subs", style=discord.ButtonStyle.secondary, row=2,
+        open_button = discord.ui.Button(
+            label="Open Edit Subs", style=discord.ButtonStyle.secondary, row=2,
             disabled=not window,
         )
-        edit_button.callback = self._on_edit_subs
-        self._category_buttons.append(edit_button)
-        self.add_item(edit_button)
+        open_button.callback = self._on_open_edit_subs_fallback
+        self._category_buttons.append(open_button)
+        self.add_item(open_button)
 
     async def _on_toggle_duration(self, interaction: discord.Interaction) -> None:
         # Collapsing needs no worker call, so it can go straight through —
@@ -1016,25 +1099,56 @@ class ClipEditView(ClipResultView):
         # straight from that category into this one.
         await interaction.edit_original_response(content=None, embed=None, view=self)
 
-    async def _on_toggle_subtitles(self, interaction: discord.Interaction) -> None:
-        # See _on_toggle_duration — same defer-before-possibly-slow-fetch
-        # shape, mirroring _on_style_change's existing warning pattern.
-        await interaction.response.defer()
-        if self._open_category == "subtitles":
+    async def _on_edit_subs_entry(self, interaction: discord.Interaction) -> None:
+        # Fast path: subtitles already cached (Duration/Merge opened first,
+        # or this is a later Edit Subs click this session) — open the modal
+        # immediately, no intermediate toggle/loading step. A modal can
+        # only be sent as an interaction's initial response, so this must
+        # not defer.
+        if self._all_entries is not None:
+            window = _entries_in_window(self._all_entries, self._clip_start, self._clip_end)
+            # Mutating view state (no interaction response involved) so any
+            # leftover fallback row from an earlier cold click is gone next
+            # time the message is redrawn.
             self._clear_category_rows()
             self._open_category = None
-            await interaction.edit_original_response(view=self)
+            if not window:
+                await interaction.response.send_message(
+                    "No subtitles available for this clip's span.", ephemeral=True
+                )
+                return
+            await interaction.response.send_modal(_EditSubsModal(self, window))
             return
 
+        # Cold path: subtitles aren't cached yet, and fetching them can hit
+        # the slow-extraction path — same defer-before-possibly-slow-fetch
+        # shape as the other category toggles, mirroring _on_style_change's
+        # existing warning pattern. Falls back to a one-off "Open Edit Subs"
+        # button once entries are ready, since the modal window is now
+        # closed for this click.
+        await interaction.response.defer()
         slow_warning = await _slow_subtitle_warning(self._worker, self._rating_key)
         if slow_warning:
             await interaction.edit_original_response(
-                content=f"Loading subtitle controls…{slow_warning}", embed=None
+                content=f"Loading subtitles…{slow_warning}", embed=None
             )
-        await self._open_subtitles()
+        await self._ensure_entries()
+        self._add_subtitles_fallback_row()
         # embed=None clears a Merge Subs embed left over from switching
         # straight from that category into this one.
         await interaction.edit_original_response(content=None, embed=None, view=self)
+
+    async def _on_open_edit_subs_fallback(self, interaction: discord.Interaction) -> None:
+        entries = self._all_entries or []
+        window = _entries_in_window(entries, self._clip_start, self._clip_end)
+        self._clear_category_rows()
+        self._open_category = None
+        if not window:
+            await interaction.response.edit_message(
+                content="No subtitles available for this clip's span.", embed=None, view=self
+            )
+            return
+        await interaction.response.send_modal(_EditSubsModal(self, window))
 
     async def _on_toggle_merge(self, interaction: discord.Interaction) -> None:
         # See _on_toggle_duration — same defer-before-possibly-slow-fetch
@@ -1058,12 +1172,29 @@ class ClipEditView(ClipResultView):
         embed = self._build_merge_embed(self._filename, description=None)
         await interaction.edit_original_response(content=None, embed=embed, view=self)
 
-    def _make_nudge_callback(self, delta: float, side: str):
+    def _make_nudge_callback(self, side: str, direction: int):
+        # Reads self._duration_step at click time rather than baking in a
+        # delta, so switching step size never requires touching this
+        # closure — only the buttons' labels (rebuilt by _open_duration)
+        # need to change.
         async def _callback(interaction: discord.Interaction) -> None:
             await interaction.response.defer()
-            new_start = self._clip_start + delta if side == "start" else self._clip_start
-            new_end = self._clip_end + delta if side == "end" else self._clip_end
+            delta = direction * self._duration_step
+            if side == "shift":
+                new_start = self._clip_start + delta
+                new_end = self._clip_end + delta
+            else:
+                new_start = self._clip_start + delta if side == "start" else self._clip_start
+                new_end = self._clip_end + delta if side == "end" else self._clip_end
             await self._re_render(interaction, new_start, new_end)
+        return _callback
+
+    def _make_step_callback(self, step: float):
+        async def _callback(interaction: discord.Interaction) -> None:
+            self._duration_step = step
+            await interaction.response.defer()
+            await self._open_duration()
+            await interaction.edit_original_response(view=self)
         return _callback
 
     async def _on_merge_previous(self, interaction: discord.Interaction) -> None:
@@ -1103,11 +1234,6 @@ class ClipEditView(ClipResultView):
 
     async def _on_custom_duration(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(_CustomDurationModal(self))
-
-    async def _on_edit_subs(self, interaction: discord.Interaction) -> None:
-        entries = await self._ensure_entries()
-        window = _entries_in_window(entries, self._clip_start, self._clip_end)
-        await interaction.response.send_modal(_EditSubsModal(self, window))
 
     @property
     def _clip_end(self) -> float:
@@ -1216,7 +1342,7 @@ class ClipEditView(ClipResultView):
         if self._open_category == "duration":
             await self._open_duration()
         elif self._open_category == "subtitles":
-            await self._open_subtitles()
+            self._add_subtitles_fallback_row()
         elif self._open_category == "merge":
             await self._open_merge()
 
