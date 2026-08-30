@@ -583,3 +583,23 @@ def test_random_quote_endpoint_returns_404_when_nothing_cached(tmp_path, monkeyp
     resp = client.get("/random-quote", params={"media": "all"})
 
     assert resp.status_code == 404
+
+
+def test_search_quote_endpoint_returns_more_than_eight_when_available(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    for i in range(12):
+        _write_title(
+            settings.quote_index_db_path,
+            f"guid-{i}", 100 + i, f"Title {i}", "Movies",
+            ["Nobody expects the Spanish Inquisition!"],
+        )
+
+    client = _client(settings, monkeypatch)
+    resp = client.get("/search-quote", params={"quote": "nobody expects the spanish inquisition"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # Old behavior (candidate_limit=8) would have truncated this to 8 —
+    # asserting >8 proves qm.fetch_limit (default 50), not the old cap,
+    # is what reaches search_cached_library's result_limit.
+    assert len(body["matches"]) == 12

@@ -1,6 +1,15 @@
 import pytest
 
-from app.settings import LibraryConfig, LibrarySyncDefaults, PathMapping, Settings, SettingsError
+from app.settings import (
+    LibraryConfig,
+    LibrarySyncDefaults,
+    PathMapping,
+    QuoteMatchDefaults,
+    Settings,
+    SettingsError,
+    load_settings,
+    write_config_yaml,
+)
 
 
 def _settings(libraries: list[LibraryConfig]) -> Settings:
@@ -71,3 +80,22 @@ def test_library_sync_config_overrides_apply():
 
     assert settings.library_sync.enabled is True
     assert settings.library_sync.interval_hours == 6.0
+
+
+def test_quote_match_fetch_limit_defaults_to_50():
+    quote_match = QuoteMatchDefaults()
+    assert quote_match.fetch_limit == 50
+
+
+def test_quote_match_fetch_limit_round_trips_through_config_yaml(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("DISCORD_TOKEN=x\nPLEX_URL=http://x\nPLEX_TOKEN=x\n")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("libraries: []\n")
+
+    settings = load_settings(env_path=env_path, config_path=config_path)
+    settings.quote_match.fetch_limit = 75
+    write_config_yaml(settings, config_path=config_path)
+
+    reloaded = load_settings(env_path=env_path, config_path=config_path)
+    assert reloaded.quote_match.fetch_limit == 75

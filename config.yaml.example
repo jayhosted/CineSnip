@@ -66,7 +66,10 @@ subtitle_defaults:
 # only controls whether the Discord UI treats the top match as good enough
 # to lead with, or opens straight to "show other matches".
 quote_match:
-  candidate_limit: 8
+  # How many top candidates the worker fetches/ranks per search — the bot
+  # pages through the result in place 8 at a time (Next/Previous buttons),
+  # so this should stay generous rather than matching what's shown at once.
+  fetch_limit: 50
   min_score: 50
   confident_score: 85
   max_window_gap_seconds: 3
