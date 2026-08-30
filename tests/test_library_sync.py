@@ -285,10 +285,41 @@ def test_sync_library_writes_progress_per_item(tmp_path):
     progress = get_sync_progress(settings.quote_index_db_path)
     # sync_library doesn't flip status itself (run_library_sync_once owns
     # that, Step 9 below) — this test only checks the per-item counters
-    # landed correctly by the time the loop finished.
+    # landed correctly by the time the loop finished. current_title is
+    # cleared once every item is done (issue #15) rather than staying
+    # pinned on the last title through the removal/spot-check phase.
     assert progress.processed == 2
     assert progress.total == 2
-    assert progress.current_title == "Film Two"
+    assert progress.current_title is None
+
+
+def test_sync_library_shows_current_title_while_item_still_in_flight(tmp_path, monkeypatch):
+    # Regression for issue #15: current_title must reflect the item actually
+    # being processed, not the last one that finished — otherwise a slow
+    # extraction shows a stale, already-completed title while it runs.
+    settings = _settings(tmp_path)
+    plex = _FakePlex(items=[_item("guid-1", 101, title="Film One"), _item("guid-2", 102, title="Film Two")])
+    _precache(settings, "guid-1")
+
+    seen_mid_flight = {}
+
+    import app.worker.library_sync as library_sync_module
+
+    real_sync_one_title = library_sync_module.sync_one_title
+
+    async def _spy(settings, item, *, force=False):
+        if item.title == "Film Two":
+            progress = quote_index.get_sync_progress(settings.quote_index_db_path)
+            seen_mid_flight["current_title"] = progress.current_title
+            seen_mid_flight["processed"] = progress.processed
+        return await real_sync_one_title(settings, item, force=force)
+
+    monkeypatch.setattr(library_sync_module, "sync_one_title", _spy)
+
+    asyncio.run(sync_library(settings, plex, "Movies", section=None, updated_at=200))
+
+    assert seen_mid_flight["current_title"] == "Film Two"
+    assert seen_mid_flight["processed"] == 1
 
 
 from app.worker.library_sync import run_library_sync_once

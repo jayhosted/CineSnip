@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -428,7 +429,7 @@ async def get_subtitles(
     video_path = Path(container_video_path)
     sidecar = find_sidecar_subtitle(video_path)
 
-    cached = _read_cached_via_index(db_path, movie.guid, sidecar, video_path)
+    cached = await asyncio.to_thread(_read_cached_via_index, db_path, movie.guid, sidecar, video_path)
     if cached is not None:
         return cached
 
@@ -446,7 +447,8 @@ async def get_subtitles(
                 entries=entries,
                 sidecar_path=str(sidecar),
             )
-            search_index.upsert_title(
+            await asyncio.to_thread(
+                search_index.upsert_title,
                 db_path,
                 movie.guid,
                 movie.rating_key,
@@ -483,7 +485,8 @@ async def get_subtitles(
                 entries=entries,
                 stream_index=chosen.relative_index,
             )
-            search_index.upsert_title(
+            await asyncio.to_thread(
+                search_index.upsert_title,
                 db_path,
                 movie.guid,
                 movie.rating_key,
@@ -498,7 +501,8 @@ async def get_subtitles(
             return result
 
     result = SubtitleResult(guid=movie.guid, source=SubtitleSource.NONE, entries=[])
-    search_index.upsert_title(
+    await asyncio.to_thread(
+        search_index.upsert_title,
         db_path,
         movie.guid,
         movie.rating_key,

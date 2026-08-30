@@ -53,10 +53,17 @@ def _coverage_stats(settings_holder: SettingsHolder) -> CoverageStats:
     )
 
 
-def _sync_panel_html(templates: Jinja2Templates, request: Request, settings_holder: SettingsHolder) -> str:
+def _sync_panel_state(settings_holder: SettingsHolder) -> tuple:
     settings = settings_holder.settings
     progress = quote_index.get_sync_progress(settings.quote_index_db_path)
     log_lines = quote_index.tail_sync_log(settings.quote_index_db_path)
+    return progress, log_lines
+
+
+def _render_sync_panel(
+    templates: Jinja2Templates, request: Request, settings_holder: SettingsHolder, progress, log_lines
+) -> str:
+    settings = settings_holder.settings
     return templates.env.get_template("panel_dashboard_sync.html").render(
         {
             "request": request,
@@ -76,8 +83,7 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates, settings
             return RedirectResponse("/")
         stats = await run_in_threadpool(_coverage_stats, settings_holder)
         settings = settings_holder.settings
-        progress = quote_index.get_sync_progress(settings.quote_index_db_path)
-        log_lines = quote_index.tail_sync_log(settings.quote_index_db_path)
+        progress, log_lines = await run_in_threadpool(_sync_panel_state, settings_holder)
         context = {
             "request": request,
             "stats": stats,
@@ -104,7 +110,8 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates, settings
         plex = settings_holder.plex_client
         if plex is not None:
             asyncio.create_task(run_library_sync_once(settings, plex))
-        return HTMLResponse(_sync_panel_html(templates, request, settings_holder))
+        progress, log_lines = await run_in_threadpool(_sync_panel_state, settings_holder)
+        return HTMLResponse(_render_sync_panel(templates, request, settings_holder, progress, log_lines))
 
     @app.get("/dashboard/sync-stream")
     async def dashboard_sync_stream(request: Request):
@@ -119,12 +126,14 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates, settings
                 if await request.is_disconnected():
                     break
                 settings = settings_holder.settings
-                progress = quote_index.get_sync_progress(settings.quote_index_db_path)
-                log_seq = quote_index.latest_sync_log_seq(settings.quote_index_db_path)
+                progress, log_lines = await run_in_threadpool(_sync_panel_state, settings_holder)
+                log_seq = log_lines[-1].seq if log_lines else 0
                 payload = (progress.status, progress.current_title, progress.processed, progress.total, log_seq)
                 if payload != last_payload:
                     last_payload = payload
-                    html = _sync_panel_html(templates, request, settings_holder).replace("\n", "")
+                    html = _render_sync_panel(templates, request, settings_holder, progress, log_lines).replace(
+                        "\n", ""
+                    )
                     yield f"data: {html}\n\n"
                 await asyncio.sleep(_SSE_POLL_INTERVAL_SECONDS)
 

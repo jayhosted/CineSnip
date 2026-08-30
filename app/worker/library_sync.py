@@ -74,17 +74,22 @@ async def sync_one_title(settings: Settings, item: MovieResult, *, force: bool =
     db_path = settings.quote_index_db_path
 
     if not force:
-        already_indexed = search_index.has_title(db_path, item.guid) or is_no_subtitle_title(db_path, item.guid)
+        already_indexed = await asyncio.to_thread(
+            lambda: search_index.has_title(db_path, item.guid) or is_no_subtitle_title(db_path, item.guid)
+        )
         if already_indexed:
             return f"CACHED (already have it): {item.title}"
 
         if cache_path_for_guid(settings.cache_dir, item.guid).exists():
-            cached = read_cached_subtitles(settings.cache_dir, item.guid)
+            cached = await asyncio.to_thread(read_cached_subtitles, settings.cache_dir, item.guid)
             if cached is not None:
                 if cached.source is SubtitleSource.NONE:
-                    upsert_no_subtitle_title(db_path, item.guid, item.rating_key, item.title, item.library_name)
+                    await asyncio.to_thread(
+                        upsert_no_subtitle_title, db_path, item.guid, item.rating_key, item.title, item.library_name
+                    )
                 else:
-                    search_index.upsert_title(
+                    await asyncio.to_thread(
+                        search_index.upsert_title,
                         db_path,
                         item.guid,
                         item.rating_key,
@@ -125,7 +130,9 @@ async def sync_one_title(settings: Settings, item: MovieResult, *, force: bool =
         # no_subtitle_titles is a separate table search_index doesn't own —
         # get_subtitles() already wrote the NONE result into search_index
         # itself, so this is the only bookkeeping left to do here.
-        upsert_no_subtitle_title(db_path, result.guid, item.rating_key, item.title, item.library_name)
+        await asyncio.to_thread(
+            upsert_no_subtitle_title, db_path, result.guid, item.rating_key, item.title, item.library_name
+        )
     # else: a searchable result. get_subtitles() (Task 3) already wrote it
     # into search_index itself — no further write needed here, and
     # candidates are never persisted in the new design.
@@ -155,6 +162,32 @@ def _mount_check(settings: Settings, library_name: str) -> bool:
     return True
 
 
+def _spot_check_removed_titles(
+    settings: Settings, library_name: str, live_items: list[MovieResult]
+) -> str | None:
+    """Layer 2: a random sample of titles Plex still lists must actually
+    resolve on disk before an apparent removal is trusted. Runs entirely
+    synchronously (real filesystem stats against mounted media drives) —
+    callers must run this via asyncio.to_thread, same as _mount_check.
+    Returns a removal_skipped_reason, or None if the sample checked out."""
+    sample = random.sample(live_items, min(_SPOT_CHECK_SAMPLE_SIZE, len(live_items))) if live_items else []
+    for item in sample:
+        try:
+            container_path = resolve_container_path(item.plex_path, settings.path_mappings_for(item.library_name))
+        except NoPathMappingError:
+            continue  # a separate, unrelated problem — not evidence of a mount failure
+        if not os.path.exists(container_path):
+            logger.warning(
+                "library sync: spot check failed for '%s' — a title Plex still lists "
+                "('%s') has no file on disk — skipping cleanup this cycle",
+                library_name,
+                item.title,
+            )
+            return "spot_check_failed"
+    return None
+    return True
+
+
 async def sync_library(
     settings: Settings,
     plex: PlexClient,
@@ -176,64 +209,77 @@ async def sync_library(
         return result
 
     total_items = len(live_items)
-    set_library_item_count(settings.quote_index_db_path, library_name, total_items)
-    append_sync_log(
-        settings.quote_index_db_path, f"Checking library: {library_name} — {total_items} items"
+    await asyncio.to_thread(set_library_item_count, settings.quote_index_db_path, library_name, total_items)
+    await asyncio.to_thread(
+        append_sync_log, settings.quote_index_db_path, f"Checking library: {library_name} — {total_items} items"
     )
     # One upfront write so the dashboard shows the correct total/0-processed
     # state immediately, rather than waiting for the first item to finish.
-    update_sync_progress(settings.quote_index_db_path, library_name, None, 0, total_items)
+    await asyncio.to_thread(update_sync_progress, settings.quote_index_db_path, library_name, None, 0, total_items)
 
     for index, item in enumerate(live_items, start=1):
+        # Written before sync_one_title runs, not after — current_title must
+        # reflect the item actually in flight (a slow embedded extraction can
+        # take minutes), not the last one that finished. processed=index-1
+        # keeps the count/percentage honest: this item isn't done yet.
+        await asyncio.to_thread(
+            update_sync_progress, settings.quote_index_db_path, library_name, item.title, index - 1, total_items
+        )
         outcome = await sync_one_title(settings, item)
         if outcome.startswith("CACHED"):
             result.already_cached += 1
         elif outcome.startswith("OK"):
             result.added += 1
-            append_sync_log(settings.quote_index_db_path, f"Extracted subtitles — {item.title}")
+            await asyncio.to_thread(append_sync_log, settings.quote_index_db_path, f"Extracted subtitles — {item.title}")
         elif outcome.startswith("SKIP (no path mapping"):
             result.skipped_no_mapping += 1
+            await asyncio.to_thread(append_sync_log, settings.quote_index_db_path, f"Skipped — {outcome}")
         elif outcome.startswith("SKIP (file not found"):
             result.skipped_missing_file += 1
+            await asyncio.to_thread(append_sync_log, settings.quote_index_db_path, f"Skipped — {outcome}")
         elif outcome.startswith("ERROR"):
             result.errors += 1
             logger.warning("library sync: %s", outcome)
-            append_sync_log(settings.quote_index_db_path, f"Error — {item.title}")
-        update_sync_progress(settings.quote_index_db_path, library_name, item.title, index, total_items)
+            await asyncio.to_thread(append_sync_log, settings.quote_index_db_path, f"Error — {outcome}")
+
+    # One trailing write so the bar reaches a true 100% and current_title
+    # clears, rather than staying pinned on the last item while the
+    # removal/spot-check phase below (a different kind of work) runs.
+    await asyncio.to_thread(
+        update_sync_progress, settings.quote_index_db_path, library_name, None, total_items, total_items
+    )
 
     live_guids = {item.guid for item in live_items}
     # search_index is authoritative for what sync_one_title has actually
     # indexed (quote_index.cached_titles is no longer written by this
     # file — see module docstring notes above), so the removal diff reads
     # from there, not the old bookkeeping table.
-    existing = search_index.list_titles_for_library(settings.quote_index_db_path, library_name)
+    existing = await asyncio.to_thread(search_index.list_titles_for_library, settings.quote_index_db_path, library_name)
     removal_candidates = [t for t in existing if t.guid not in live_guids]
 
     if removal_candidates:
-        if not _mount_check(settings, library_name):
+        await asyncio.to_thread(
+            update_sync_progress,
+            settings.quote_index_db_path,
+            library_name,
+            f"Verifying {len(removal_candidates)} possibly-removed title(s)",
+            total_items,
+            total_items,
+        )
+
+        if not await asyncio.to_thread(_mount_check, settings, library_name):
             result.removal_skipped_reason = "mount_check_failed"
             return result
 
-        sample = random.sample(live_items, min(_SPOT_CHECK_SAMPLE_SIZE, len(live_items))) if live_items else []
-        for item in sample:
-            try:
-                container_path = resolve_container_path(
-                    item.plex_path, settings.path_mappings_for(item.library_name)
-                )
-            except NoPathMappingError:
-                continue  # a separate, unrelated problem — not evidence of a mount failure
-            if not os.path.exists(container_path):
-                logger.warning(
-                    "library sync: spot check failed for '%s' — a title Plex still lists "
-                    "('%s') has no file on disk — skipping cleanup this cycle",
-                    library_name,
-                    item.title,
-                )
-                result.removal_skipped_reason = "spot_check_failed"
-                return result
+        spot_check_failure = await asyncio.to_thread(
+            _spot_check_removed_titles, settings, library_name, live_items
+        )
+        if spot_check_failure is not None:
+            result.removal_skipped_reason = spot_check_failure
+            return result
 
         for cached in removal_candidates:
-            search_index.remove_title(settings.quote_index_db_path, cached.guid)
+            await asyncio.to_thread(search_index.remove_title, settings.quote_index_db_path, cached.guid)
             # Legacy JSON (if any survives from before this migration) is
             # deliberately left on disk untouched — deleting it isn't this
             # migration's job.
@@ -243,13 +289,13 @@ async def sync_library(
     # completed for this library — if either safety layer aborted above,
     # this is never reached, so the next cycle's cheap check still sees
     # "changed" and retries the whole thing rather than giving up silently.
-    set_section_updated_at(settings.quote_index_db_path, library_name, updated_at)
+    await asyncio.to_thread(set_section_updated_at, settings.quote_index_db_path, library_name, updated_at)
     return result
 
 
 async def run_library_sync_once(settings: Settings, plex: PlexClient) -> list[LibrarySyncResult]:
     db_path = settings.quote_index_db_path
-    if not start_sync_run(db_path):
+    if not await asyncio.to_thread(start_sync_run, db_path):
         logger.info("library sync: skipped — a run is already in progress")
         return []
 
@@ -264,8 +310,8 @@ async def run_library_sync_once(settings: Settings, plex: PlexClient) -> list[Li
         sections_by_name = dict(plex.library_sections())
 
         for library_name, updated_at in current.items():
-            stored = get_section_updated_at(db_path, library_name)
-            has_count = get_library_item_count(db_path, library_name) is not None
+            stored = await asyncio.to_thread(get_section_updated_at, db_path, library_name)
+            has_count = await asyncio.to_thread(get_library_item_count, db_path, library_name) is not None
             if stored == updated_at and has_count:
                 continue
 
@@ -288,7 +334,7 @@ async def run_library_sync_once(settings: Settings, plex: PlexClient) -> list[Li
 
         return results
     finally:
-        finish_sync_run(db_path, new_count=sum(r.added for r in results))
+        await asyncio.to_thread(finish_sync_run, db_path, new_count=sum(r.added for r in results))
 
 
 async def library_sync_task(settings: Settings, plex: PlexClient) -> None:

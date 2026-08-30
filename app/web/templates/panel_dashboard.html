@@ -54,10 +54,14 @@
 <script>
   (function () {
     var container = document.getElementById('sync-panel-container');
+    var initialLog = container.querySelector('.sync-log');
+    if (initialLog) { initialLog.scrollTop = initialLog.scrollHeight; }
     var source = new EventSource('/dashboard/sync-stream');
     source.onmessage = function (event) {
       container.innerHTML = event.data;
       htmx.process(container);
+      var log = container.querySelector('.sync-log');
+      if (log) { log.scrollTop = log.scrollHeight; }
     };
     window.addEventListener('beforeunload', function () { source.close(); });
   })();
