@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from app.worker.ffmpeg import ClipRenderer, _three_d_plan, build_seek_args, parse_timecode
+from app.worker.ffmpeg import ClipRenderer, _three_d_plan, build_seek_args, is_hdr_transfer, parse_timecode
 from app.worker.subtitle_render import STYLE_PRESETS
 from app.worker.subtitles import SubtitleEntry
 
@@ -113,6 +113,53 @@ def test_scale_filter_puts_three_d_prefix_before_scale_and_subtitles():
 def test_scale_filter_uses_the_given_width_not_the_renderer_default():
     renderer = ClipRenderer(fps=15, width=480)
     assert renderer._scale_and_subtitle_filter(240, None, None) == "scale=240:-2:flags=lanczos"
+
+
+# HDR tonemap: ffmpeg's plain `scale` filter doesn't tonemap, so an
+# HDR-tagged source (PQ/smpte2084, HLG/arib-std-b67) must get a tonemap
+# filter chain before scale/subtitles, or the output is washed-out/wrong
+# (issue #12 — confirmed against real HDR10 remuxes in this library).
+
+
+@pytest.mark.parametrize(
+    "color_transfer,expected",
+    [
+        ("smpte2084", True),
+        ("arib-std-b67", True),
+        ("bt709", False),
+        (None, False),
+        ("", False),
+    ],
+)
+def test_is_hdr_transfer(color_transfer, expected):
+    assert is_hdr_transfer(color_transfer) is expected
+
+
+def test_scale_filter_has_no_tonemap_for_sdr_video():
+    renderer = ClipRenderer(fps=15, width=480)
+    filt = renderer._scale_and_subtitle_filter(480, None, None, is_hdr=False)
+    assert "tonemap" not in filt
+    assert filt == "scale=480:-2:flags=lanczos"
+
+
+def test_scale_filter_inserts_tonemap_before_scale_for_hdr_video():
+    renderer = ClipRenderer(fps=15, width=480)
+    filt = renderer._scale_and_subtitle_filter(480, None, None, is_hdr=True)
+    assert filt.index("tonemap") < filt.index("scale=480")
+
+
+def test_scale_filter_puts_tonemap_after_three_d_prefix_and_before_subtitles():
+    from pathlib import Path
+
+    renderer = ClipRenderer(fps=15, width=480)
+    filt = renderer._scale_and_subtitle_filter(
+        480, Path("/tmp/subs.ass"), "crop=iw:ih/2:0:0,setsar=1", is_hdr=True
+    )
+    crop_idx = filt.index("crop=")
+    tonemap_idx = filt.index("tonemap")
+    scale_idx = filt.index("scale=480")
+    subs_idx = filt.index("subtitles=")
+    assert crop_idx < tonemap_idx < scale_idx < subs_idx
 
 
 # _three_d_plan: distinguishes "full" 3D packs (each eye at native

@@ -98,6 +98,19 @@ _VIDEO_CODEC_ARGS: dict[str, list[str]] = {
 
 _PROBE_TIMEOUT_SECONDS = 30.0
 
+# ffmpeg's plain `scale` filter does not tonemap — an HDR-tagged source
+# (PQ/smpte2084 or HLG/arib-std-b67 transfer) passes its HDR pixel values
+# through unchanged, which then render washed-out/wrong once treated as SDR
+# downstream (every output format: GIF, mp4, webm). Confirmed against real
+# HDR10/DV-tagged remuxes in this library (Dune (2021), Blade Runner 2049,
+# Blade Runner) — see docs/build-notes/ffmpeg-rendering.md before touching
+# this filter chain.
+_HDR_TRANSFERS = {"smpte2084", "arib-std-b67"}
+_HDR_TONEMAP_FILTER = (
+    "zscale=transfer=linear:npl=100,format=gbrpf32le,zscale=primaries=bt709,"
+    "tonemap=tonemap=hable:desat=0,zscale=transfer=bt709:matrix=bt709,format=yuv420p"
+)
+
 # 3D encodes pack both eyes into one frame; crop to a single eye before any
 # scaling/subtitle work so the rest of the pipeline sees a normal flat frame.
 # Defaults to the left/top eye — no per-request override yet (CLAUDE.md
@@ -195,6 +208,36 @@ async def probe_stereo_format(input_path: str) -> str | None:
     return None
 
 
+async def probe_color_transfer(input_path: str) -> str | None:
+    """Returns the file's tagged color transfer function (e.g. 'smpte2084'
+    for PQ, 'arib-std-b67' for HLG, 'bt709' for ordinary SDR), or None if
+    the stream carries no such tag."""
+    stdout = await run_and_capture(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=color_transfer",
+            "-of",
+            "json",
+            input_path,
+        ],
+        _PROBE_TIMEOUT_SECONDS,
+        error_prefix="ffprobe color transfer",
+        capture_stdout=True,
+    )
+    data = json.loads(stdout or b"{}")
+    streams = data.get("streams") or [{}]
+    return streams[0].get("color_transfer")
+
+
+def is_hdr_transfer(color_transfer: str | None) -> bool:
+    return color_transfer in _HDR_TRANSFERS
+
+
 async def probe_video_dimensions(input_path: str) -> tuple[int, int]:
     stdout = await run_and_capture(
         [
@@ -271,6 +314,11 @@ class ClipRenderer:
                 three_d_format, src_width, src_height
             )
 
+        # Every source gets this check (unlike the 3D probe above, which is
+        # gated behind a per-library flag) — HDR tagging is unrelated to 3D
+        # and there's no equivalent per-library signal to gate it on.
+        is_hdr = is_hdr_transfer(await probe_color_transfer(input_path))
+
         ass_path: Path | None = None
         if subtitle_entries and style is not None:
             ass_path = await self._write_ass_file(
@@ -281,10 +329,10 @@ class ClipRenderer:
         try:
             if fmt == "gif":
                 return await self._render_gif(
-                    input_path, start, duration, scratch_dir, fps, width, ass_path, three_d_prefix
+                    input_path, start, duration, scratch_dir, fps, width, ass_path, three_d_prefix, is_hdr
                 )
             return await self._render_video(
-                input_path, start, duration, scratch_dir, fmt, fps, width, ass_path, three_d_prefix
+                input_path, start, duration, scratch_dir, fmt, fps, width, ass_path, three_d_prefix, is_hdr
             )
         finally:
             if ass_path is not None:
@@ -327,7 +375,11 @@ class ClipRenderer:
         return ass_path
 
     def _scale_and_subtitle_filter(
-        self, width: int, ass_path: Path | None, three_d_prefix: str | None = None
+        self,
+        width: int,
+        ass_path: Path | None,
+        three_d_prefix: str | None = None,
+        is_hdr: bool = False,
     ) -> str:
         # -2 (not -1) guarantees an even output height, matching the
         # rounding _write_ass_file uses to compute PlayResY — a mismatch
@@ -336,6 +388,8 @@ class ClipRenderer:
         filters = []
         if three_d_prefix:
             filters.append(three_d_prefix)
+        if is_hdr:
+            filters.append(_HDR_TONEMAP_FILTER)
         filters.append(f"scale={width}:-2:flags=lanczos")
         if ass_path is not None:
             filters.append(f"subtitles={_escape_filter_path(ass_path)}")
@@ -351,10 +405,11 @@ class ClipRenderer:
         width: int,
         ass_path: Path | None = None,
         three_d_prefix: str | None = None,
+        is_hdr: bool = False,
     ) -> bytes:
         scratch_dir.mkdir(parents=True, exist_ok=True)
         palette_path = scratch_dir / f"palette-{uuid.uuid4().hex}.png"
-        scale_filter = self._scale_and_subtitle_filter(width, ass_path, three_d_prefix)
+        scale_filter = self._scale_and_subtitle_filter(width, ass_path, three_d_prefix, is_hdr)
 
         try:
             await self._run(
@@ -407,10 +462,11 @@ class ClipRenderer:
         width: int,
         ass_path: Path | None = None,
         three_d_prefix: str | None = None,
+        is_hdr: bool = False,
     ) -> bytes:
         scratch_dir.mkdir(parents=True, exist_ok=True)
         out_path = scratch_dir / f"clip-{uuid.uuid4().hex}.{fmt}"
-        scale_filter = self._scale_and_subtitle_filter(width, ass_path, three_d_prefix)
+        scale_filter = self._scale_and_subtitle_filter(width, ass_path, three_d_prefix, is_hdr)
 
         try:
             await self._run(
