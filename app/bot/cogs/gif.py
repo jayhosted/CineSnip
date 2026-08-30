@@ -107,7 +107,11 @@ class QuoteMatchView(discord.ui.View):
         initial_index: int = 0,
         truncated: bool = False,
     ) -> None:
-        super().__init__(timeout=120)
+        # 120s was calibrated for scanning a fixed 8 results — with up to
+        # quote_match.fetch_limit (default 50) now possible across several
+        # pages, that timed out mid-browse (issue #7 follow-up). Matches
+        # the 300s already used by the post-render views below.
+        super().__init__(timeout=300)
         self._title = title
         self.matches = matches
         self.min_score = min_score
@@ -1436,7 +1440,8 @@ class LibrarySearchView(discord.ui.View):
         description: str = "Pick a film below to generate a clip from that line.",
         truncated: bool = False,
     ) -> None:
-        super().__init__(timeout=120)
+        # See QuoteMatchView's __init__ for why this isn't 120s anymore.
+        super().__init__(timeout=300)
         self._cog = cog
         self._quote = quote
         self._matches = matches

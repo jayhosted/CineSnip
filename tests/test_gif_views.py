@@ -26,6 +26,16 @@ def _fake_interaction() -> AsyncMock:
     return interaction
 
 
+def test_quote_match_view_timeout_gives_time_to_browse_multiple_pages():
+    # Issue #7 follow-up: 120s was calibrated for scanning 8 results — with
+    # up to 50 now possible across several pages, that timed out too fast
+    # mid-browse.
+    matches = [_quote_match(i) for i in range(20)]
+    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+
+    assert view.timeout == 300
+
+
 def test_quote_match_view_below_confident_score_opens_first_page_select():
     matches = [_quote_match(i, score=60.0) for i in range(20)]
     view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
@@ -222,6 +232,13 @@ class _FakeCog:
 
     async def _generate(self, interaction, film, quote, timecode, end_timecode, format, preferred_start=None):
         self.generated = (film, preferred_start)
+
+
+def test_library_search_view_timeout_gives_time_to_browse_multiple_pages():
+    matches = [_library_match(i) for i in range(20)]
+    view = LibrarySearchView(_FakeCog(), "quote", matches)
+
+    assert view.timeout == 300
 
 
 def test_library_search_view_first_page_has_eight_options_and_next_enabled():
