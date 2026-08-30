@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from app.settings import Settings, SettingsError
 from app.worker import quote_index, search_index
 from app.worker.ffmpeg import ClipRenderer, RenderTimeoutError, parse_timecode
+from app.worker.gif_optimize import optimize_gif as _real_optimize_gif
 from app.worker.library_search import LibraryQuoteMatch, pick_random_quote, search_cached_library
 from app.worker.library_sync import sync_one_title
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
@@ -208,15 +209,24 @@ async def _render_within_size_limit(
     configured_fps: int,
     configured_width: int,
     max_bytes: int,
+    optimize_gif=_real_optimize_gif,
+    gifsicle_timeout_seconds: float = 60.0,
 ) -> bytes:
-    """Renders at the configured fps/width first; only if the result
-    exceeds max_bytes does it retry at progressively smaller settings
+    """Renders at the configured fps/width first. If the result exceeds
+    max_bytes and the format is GIF, tries gifsicle recompression
+    (app/worker/gif_optimize.py) next — resolution and frame rate are
+    never touched for this step. Only if that's still not enough (or the
+    format isn't GIF) does it retry at progressively smaller settings
     from _DOWNSCALE_TIERS, stopping as soon as one fits. If every tier is
     exhausted and still too large (a very long or high-motion clip), the
     smallest attempt made is returned rather than erroring — a
     still-oversized clip is more useful than none, and Discord's own
     upload rejection (surfaced to the user as a clear error, not a raw
-    500) is the actual final backstop CLAUDE.md Section 7 falls back on."""
+    500) is the actual final backstop CLAUDE.md Section 7 falls back on.
+
+    optimize_gif is an injectable seam (defaults to the real gifsicle
+    wrapper) purely for testability — mirrors how `renderer` is already
+    swapped for a fake in tests/test_render_size_limit.py."""
     clip_bytes = await renderer.render_clip(
         container_path, start, clip_duration, scratch_dir, clip_format,
         subtitle_entries=subtitle_entries, style=style_preset,
@@ -226,6 +236,16 @@ async def _render_within_size_limit(
         return clip_bytes
 
     smallest = clip_bytes
+
+    if clip_format == "gif":
+        gifsicle_result = await optimize_gif(
+            clip_bytes, max_bytes, scratch_dir, timeout_seconds=gifsicle_timeout_seconds
+        )
+        if len(gifsicle_result) < len(smallest):
+            smallest = gifsicle_result
+        if len(gifsicle_result) <= max_bytes:
+            return gifsicle_result
+
     for tier_fps, tier_width in _DOWNSCALE_TIERS:
         fps = min(configured_fps, tier_fps)
         width = min(configured_width, tier_width)
@@ -586,6 +606,7 @@ def create_app(settings: Settings) -> FastAPI:
                 settings.render_defaults.fps,
                 settings.render_defaults.width,
                 settings.render_defaults.max_file_size_bytes,
+                gifsicle_timeout_seconds=settings.render_defaults.timeout_seconds,
             )
         except RenderTimeoutError as exc:
             raise HTTPException(status_code=504, detail=str(exc)) from exc

@@ -1,6 +1,8 @@
 """Covers the /render size-downscale retry loop (_render_within_size_limit,
 _DOWNSCALE_TIERS) — CLAUDE.md documents auto-downscaling on an oversized
 render as existing behavior, but it was never actually built until now.
+Also covers the gifsicle compression tier (app/worker/gif_optimize.py)
+that now runs before the downscale tiers for GIF renders.
 """
 
 import asyncio
@@ -29,7 +31,28 @@ class _FakeRenderer:
         return b"x" * self._size_for(fps, width)
 
 
-def _run(renderer, max_bytes, configured_fps=15, configured_width=480):
+def _noop_optimize_gif(calls_log=None):
+    """Default fake for the optimize_gif seam: returns the input
+    unchanged, so pre-existing downscale-tier tests keep testing exactly
+    what they tested before — no accidental dependency on gifsicle being
+    installed on the machine running the tests."""
+
+    async def optimize_gif(gif_bytes, max_bytes, scratch_dir, timeout_seconds=60.0):
+        if calls_log is not None:
+            calls_log.append((len(gif_bytes), max_bytes))
+        return gif_bytes
+
+    return optimize_gif
+
+
+def _run(
+    renderer,
+    max_bytes,
+    configured_fps=15,
+    configured_width=480,
+    clip_format="gif",
+    optimize_gif=None,
+):
     return asyncio.run(
         _render_within_size_limit(
             renderer,
@@ -37,7 +60,7 @@ def _run(renderer, max_bytes, configured_fps=15, configured_width=480):
             0.0,
             5.0,
             None,
-            "gif",
+            clip_format,
             None,
             None,
             "none",
@@ -45,6 +68,7 @@ def _run(renderer, max_bytes, configured_fps=15, configured_width=480):
             configured_fps,
             configured_width,
             max_bytes,
+            optimize_gif=optimize_gif or _noop_optimize_gif(),
         )
     )
 
@@ -88,3 +112,50 @@ def test_returns_smallest_attempt_when_every_tier_is_still_too_large():
     renderer = _FakeRenderer(size_for=lambda fps, width: sizes[(fps, width)])
     result = _run(renderer, max_bytes=100)
     assert len(result) == 600
+
+
+def test_gif_format_tries_gifsicle_before_downscale_tiers():
+    # The oversized 900-byte render should go through optimize_gif first;
+    # if optimize_gif's (faked) result already fits, the downscale tiers
+    # must never be reached at all.
+    renderer = _FakeRenderer(size_for=lambda fps, width: 900)
+
+    async def shrinking_optimize_gif(gif_bytes, max_bytes, scratch_dir, timeout_seconds=60.0):
+        return b"x" * 80
+
+    result = _run(renderer, max_bytes=100, optimize_gif=shrinking_optimize_gif)
+    assert len(result) == 80
+    # Only the initial configured-settings render happened — no downscale
+    # tier attempts, because gifsicle alone was enough.
+    assert renderer.calls == [(15, 480)]
+
+
+def test_gif_format_falls_through_to_downscale_tiers_when_gifsicle_is_not_enough():
+    def size_for(fps, width):
+        if (fps, width) == (10, 400):
+            return 50
+        return 1000
+
+    renderer = _FakeRenderer(size_for=size_for)
+
+    async def insufficient_optimize_gif(gif_bytes, max_bytes, scratch_dir, timeout_seconds=60.0):
+        # gifsicle helps, but not enough to clear budget on its own.
+        return b"x" * 600
+
+    result = _run(renderer, max_bytes=500, optimize_gif=insufficient_optimize_gif)
+    assert len(result) == 50
+    assert renderer.calls == [(15, 480), (12, 480), (10, 400)]
+
+
+def test_non_gif_formats_skip_gifsicle_entirely():
+    calls_log: list[tuple[int, int]] = []
+    renderer = _FakeRenderer(size_for=lambda fps, width: 1000)
+    result = _run(
+        renderer,
+        max_bytes=500,
+        clip_format="mp4",
+        optimize_gif=_noop_optimize_gif(calls_log),
+    )
+    # optimize_gif must never be called for a non-gif format — it falls
+    # straight through to the downscale tiers, whatever they produce.
+    assert calls_log == []
