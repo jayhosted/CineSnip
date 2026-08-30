@@ -12,8 +12,9 @@ async def run_and_capture(
     timeout_seconds: float,
     error_prefix: str,
     capture_stdout: bool = False,
+    capture_stderr: bool = False,
     stdin_data: bytes | None = None,
-) -> bytes | None:
+) -> bytes | None | tuple[bytes | None, bytes]:
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdin=asyncio.subprocess.PIPE if stdin_data is not None else None,
@@ -39,4 +40,6 @@ async def run_and_capture(
         raise RuntimeError(
             f"{error_prefix} failed: {stderr.decode(errors='replace')}"
         )
+    if capture_stderr:
+        return (stdout if capture_stdout else None), stderr
     return stdout if capture_stdout else None

@@ -2,7 +2,17 @@ import asyncio
 
 import pytest
 
-from app.worker.ffmpeg import ClipRenderer, _three_d_plan, build_seek_args, is_hdr_transfer, parse_timecode
+from app.worker.ffmpeg import (
+    ClipRenderer,
+    _crop_adjusted_dims,
+    _crop_box_or_none,
+    _crop_probe_window,
+    _three_d_plan,
+    build_seek_args,
+    is_hdr_transfer,
+    parse_cropdetect_output,
+    parse_timecode,
+)
 from app.worker.subtitle_render import STYLE_PRESETS
 from app.worker.subtitles import SubtitleEntry
 
@@ -204,6 +214,106 @@ def test_three_d_plan_squeezed_over_under_also_unsqueezes():
     prefix, eye_w, eye_h = _three_d_plan("over_under", 1920, 1080)
     assert prefix == "crop=iw:ih/2:0:0,scale=iw:ih*2,setsar=1"
     assert (eye_w, eye_h) == (1920, 1080)
+
+
+# Auto-crop (issue #14): baked-in letterbox/pillarbox bars in a source's
+# own pixel data (e.g. Dune (2021)'s 4K remux, mastered 16:9 with real
+# black bars around a 2.39:1 image) are detected via a cropdetect probe and
+# cropped out before scale/subtitles, the same filter-chain-insertion
+# pattern as the existing 3D eye-crop and HDR tonemap.
+
+
+@pytest.mark.parametrize(
+    "stderr_text,expected",
+    [
+        ("random ffmpeg banter\ncrop=3840:1604:0:278\nmore lines", (3840, 1604, 0, 278)),
+        # cropdetect converges over several frames and logs one line per
+        # frame — only the LAST reported value is the converged result.
+        ("crop=3840:2160:0:0\ncrop=3840:1700:0:230\ncrop=3840:1604:0:278", (3840, 1604, 0, 278)),
+        ("no crop lines here at all", None),
+        ("", None),
+    ],
+)
+def test_parse_cropdetect_output(stderr_text, expected):
+    assert parse_cropdetect_output(stderr_text) == expected
+
+
+@pytest.mark.parametrize(
+    "duration,expected",
+    [
+        # A typical feature: skip the first couple of minutes (studio
+        # logos/black intro cards) and sample a short window well inside
+        # the runtime — baked-in bars are a mastering-wide constant, not
+        # scene-dependent, so any non-edge sample is representative.
+        (7200.0, (1800.0, 5.0)),
+        # Duration unknown/short enough that the default window would run
+        # past the end of the file — never probe past the file's own end.
+        (100.0, (95.0, 5.0)),
+        # Shorter than the default window entirely — probe the whole thing.
+        (3.0, (0.0, 3.0)),
+        # No/zero duration (ffprobe failed) — fall back to probing from the
+        # start with the default window rather than crashing.
+        (0.0, (0.0, 5.0)),
+    ],
+)
+def test_crop_probe_window(duration, expected):
+    assert _crop_probe_window(duration) == expected
+
+
+@pytest.mark.parametrize(
+    "box,width,height,expected",
+    [
+        # A real detected crop, well inside the margin of error.
+        ((3840, 1604, 0, 278), 3840, 2160, (3840, 1604, 0, 278)),
+        # cropdetect reporting essentially the full frame (no bars) must be
+        # treated as "no crop needed", not an inert crop=iw:ih filter.
+        ((3840, 2160, 0, 0), 3840, 2160, None),
+        # Within rounding/margin of the full frame on all sides.
+        ((3838, 2158, 1, 1), 3840, 2160, None),
+    ],
+)
+def test_crop_box_or_none(box, width, height, expected):
+    assert _crop_box_or_none(box, width, height) == expected
+
+
+def test_scale_filter_has_no_crop_by_default():
+    renderer = ClipRenderer(fps=15, width=480)
+    filt = renderer._scale_and_subtitle_filter(480, None, None, crop_box=None)
+    assert "crop=" not in filt
+
+
+def test_scale_filter_inserts_content_crop_before_scale():
+    renderer = ClipRenderer(fps=15, width=480)
+    filt = renderer._scale_and_subtitle_filter(480, None, None, crop_box=(3840, 1604, 0, 278))
+    assert filt == "crop=3840:1604:0:278,scale=480:-2:flags=lanczos"
+
+
+def test_scale_filter_puts_content_crop_after_three_d_prefix_and_before_tonemap():
+    renderer = ClipRenderer(fps=15, width=480)
+    filt = renderer._scale_and_subtitle_filter(
+        480, None, "crop=iw/2:ih:0:0,setsar=1", is_hdr=True, crop_box=(1920, 800, 0, 140)
+    )
+    three_d_idx = filt.index("crop=iw/2")
+    content_crop_idx = filt.index("crop=1920:800:0:140")
+    tonemap_idx = filt.index("tonemap")
+    scale_idx = filt.index("scale=480")
+    assert three_d_idx < content_crop_idx < tonemap_idx < scale_idx
+
+
+# libass sizes burned-in text relative to PlayResX/PlayResY, which must
+# match the actual frame scale/subtitles will draw against — a content
+# crop shrinks that frame just like the 3D eye-crop already does, so it
+# must feed into the same dimensions _write_ass_file uses to compute
+# PlayResY (see the 3D squeeze bug this project already hit for why this
+# class of mismatch matters).
+
+
+def test_crop_adjusted_dims_is_a_noop_without_a_crop_box():
+    assert _crop_adjusted_dims(None, 1920, 1080) == (1920, 1080)
+
+
+def test_crop_adjusted_dims_uses_the_cropped_size():
+    assert _crop_adjusted_dims((1920, 800, 0, 140), 1920, 1080) == (1920, 800)
 
 
 def test_write_ass_file_applies_subtitle_overrides(tmp_path):

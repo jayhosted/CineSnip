@@ -429,6 +429,7 @@ def create_app(settings: Settings) -> FastAPI:
         fps=settings.render_defaults.fps,
         width=settings.render_defaults.width,
         timeout_seconds=settings.render_defaults.timeout_seconds,
+        crop_cache_db_path=settings.quote_index_db_path,
     )
 
     @app.get("/healthz")

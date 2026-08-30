@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 from pathlib import Path
 
+from app.worker.crop_cache import get_cached_crop, set_cached_crop
 from app.worker.subprocess_utils import SubprocessTimeoutError, run_and_capture
 from app.worker.subtitle_render import StylePreset, apply_overrides, build_ass_document, entries_in_window
 from app.worker.subtitles import SubtitleEntry
@@ -238,6 +240,133 @@ def is_hdr_transfer(color_transfer: str | None) -> bool:
     return color_transfer in _HDR_TRANSFERS
 
 
+# Auto-crop (issue #14): some sources bake real black letterbox/pillarbox
+# bars into their own pixel data (e.g. Dune (2021)'s 4K remux, mastered as
+# a 16:9 frame with a 2.39:1 image composited inside it) — a plain `scale`
+# renders them faithfully since they aren't a display artifact, unlike a
+# DAR flag. cropdetect's own default `limit` is already a bit-depth-aware
+# fraction (not an 8-bit absolute value), so it correctly finds these bars
+# on a raw 10-bit/HDR stream with no bit-depth/tonemap normalization first —
+# confirmed against this library's real Dune (2021), In Bruges, Snatch
+# (2000), and Magical Mystery Tour (pillarboxed, not letterboxed — same
+# code path, cropdetect reports the crop in whichever axis has the bars).
+# An earlier investigation's false negative on Dune came from passing an
+# explicit absolute `limit=24` (an 8-bit tutorial constant) against the
+# 10-bit source, not from anything HDR-specific about cropdetect itself.
+_CROPDETECT_PATTERN = re.compile(r"crop=(\d+):(\d+):(\d+):(\d+)")
+_CROPDETECT_PROBE_TIMEOUT_SECONDS = 30.0
+_CROPDETECT_PROBE_WINDOW_SECONDS = 5.0
+# Skip the first couple of minutes when possible — studio logos/black
+# intro cards are a poor sample for a mastering-wide bar that's otherwise
+# constant for the whole runtime.
+_CROPDETECT_PROBE_SKIP_INTRO_SECONDS = 120.0
+
+
+def parse_cropdetect_output(stderr_text: str) -> tuple[int, int, int, int] | None:
+    """Extracts the LAST `crop=W:H:X:Y` line from cropdetect's stderr —
+    cropdetect logs one (converging) line per decoded frame, so only the
+    final line is the settled result."""
+    matches = _CROPDETECT_PATTERN.findall(stderr_text)
+    if not matches:
+        return None
+    w, h, x, y = matches[-1]
+    return int(w), int(h), int(x), int(y)
+
+
+def _crop_probe_window(
+    duration: float, window: float = _CROPDETECT_PROBE_WINDOW_SECONDS
+) -> tuple[float, float]:
+    """Picks a representative (start, window) to sample for cropdetect.
+    Never probes past the end of the file, and falls back to probing the
+    whole thing (from the start) when the file is shorter than the default
+    window or its duration couldn't be determined."""
+    if duration <= window:
+        return 0.0, duration if duration > 0 else window
+    offset = min(max(duration * 0.25, _CROPDETECT_PROBE_SKIP_INTRO_SECONDS), duration - window)
+    return offset, window
+
+
+def _crop_box_or_none(
+    box: tuple[int, int, int, int], width: int, height: int, margin: int = 2
+) -> tuple[int, int, int, int] | None:
+    """None when the detected box is materially the full frame (within a
+    small rounding margin on every side) — cropdetect finding no bars must
+    be treated as "no crop needed", not an inert crop=iw:ih filter."""
+    w, h, x, y = box
+    if x <= margin and y <= margin and (width - (x + w)) <= margin and (height - (y + h)) <= margin:
+        return None
+    return box
+
+
+def _crop_adjusted_dims(
+    crop_box: tuple[int, int, int, int] | None, width: int, height: int
+) -> tuple[int, int]:
+    """The actual pre-scale frame size scale/subtitles will draw against,
+    accounting for a content crop the same way _three_d_plan's eye
+    dimensions already account for a 3D crop — libass sizes burned-in text
+    relative to this, so a mismatch here is the same class of bug as the
+    3D squeeze issue (see build notes)."""
+    if crop_box is None:
+        return width, height
+    return crop_box[0], crop_box[1]
+
+
+async def probe_video_duration_seconds(input_path: str) -> float:
+    stdout = await run_and_capture(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "json",
+            input_path,
+        ],
+        _PROBE_TIMEOUT_SECONDS,
+        error_prefix="ffprobe duration",
+        capture_stdout=True,
+    )
+    data = json.loads(stdout or b"{}")
+    duration = data.get("format", {}).get("duration")
+    return float(duration) if duration is not None else 0.0
+
+
+async def probe_crop(
+    input_path: str, three_d_prefix: str | None = None
+) -> tuple[int, int, int, int] | None:
+    """Runs a cropdetect probe over a short, representative window of the
+    file and returns the raw detected box (not yet checked against the
+    full-frame margin — see _crop_box_or_none), or None if the probe
+    couldn't determine one (timeout, failure, or no crop lines emitted).
+    Any failure here degrades to "no crop", never blocks a render — same
+    style as a style preset degrading to a plain render when no usable
+    subtitles exist for the clip's window."""
+    duration = await probe_video_duration_seconds(input_path)
+    offset, window = _crop_probe_window(duration)
+    crop_filter = f"{three_d_prefix},cropdetect=round=2" if three_d_prefix else "cropdetect=round=2"
+    try:
+        _, stderr = await run_and_capture(
+            [
+                "ffmpeg",
+                *build_seek_args(offset, window),
+                "-i",
+                input_path,
+                "-vf",
+                crop_filter,
+                "-f",
+                "null",
+                "-",
+            ],
+            _CROPDETECT_PROBE_TIMEOUT_SECONDS,
+            error_prefix="ffmpeg cropdetect probe",
+            capture_stderr=True,
+        )
+    except (SubprocessTimeoutError, RuntimeError):
+        return None
+    return parse_cropdetect_output(stderr.decode(errors="replace"))
+
+
 async def probe_video_dimensions(input_path: str) -> tuple[int, int]:
     stdout = await run_and_capture(
         [
@@ -270,10 +399,22 @@ def _escape_filter_path(path: Path) -> str:
 
 
 class ClipRenderer:
-    def __init__(self, fps: int, width: int, timeout_seconds: float = 60.0):
+    def __init__(
+        self,
+        fps: int,
+        width: int,
+        timeout_seconds: float = 60.0,
+        crop_cache_db_path: Path | None = None,
+    ):
         self._fps = fps
         self._width = width
         self._timeout_seconds = timeout_seconds
+        # None disables auto-crop entirely (used by tests that construct a
+        # ClipRenderer directly) — the real app always passes
+        # Settings.quote_index_db_path, so auto-crop is unconditionally on
+        # in production (CLAUDE.md: no per-library/config gate for this,
+        # unlike 3D — it doesn't change extraction semantics).
+        self._crop_cache_db_path = crop_cache_db_path
 
     async def render_clip(
         self,
@@ -319,24 +460,65 @@ class ClipRenderer:
         # and there's no equivalent per-library signal to gate it on.
         is_hdr = is_hdr_transfer(await probe_color_transfer(input_path))
 
+        # Same "every source" treatment as HDR above — a baked-in
+        # letterbox/pillarbox bar (issue #14) is unrelated to 3D and has no
+        # per-library signal to gate on either.
+        crop_box = await self._get_crop_box(input_path, three_d_prefix, eye_width, eye_height)
+        # _crop_adjusted_dims ignores eye_width/eye_height entirely when
+        # crop_box is set, so this is safe even for a flat (non-3D) source
+        # where they're still None here — it falls through to crop_box's
+        # own dimensions rather than losing the crop.
+        frame_width, frame_height = _crop_adjusted_dims(crop_box, eye_width, eye_height)
+
         ass_path: Path | None = None
         if subtitle_entries and style is not None:
             ass_path = await self._write_ass_file(
                 input_path, start, duration, subtitle_entries, style, scratch_dir,
-                width, eye_width, eye_height, subtitle_overrides=subtitle_overrides,
+                width, frame_width, frame_height, subtitle_overrides=subtitle_overrides,
             )
 
         try:
             if fmt == "gif":
                 return await self._render_gif(
-                    input_path, start, duration, scratch_dir, fps, width, ass_path, three_d_prefix, is_hdr
+                    input_path, start, duration, scratch_dir, fps, width, ass_path,
+                    three_d_prefix, is_hdr, crop_box,
                 )
             return await self._render_video(
-                input_path, start, duration, scratch_dir, fmt, fps, width, ass_path, three_d_prefix, is_hdr
+                input_path, start, duration, scratch_dir, fmt, fps, width, ass_path,
+                three_d_prefix, is_hdr, crop_box,
             )
         finally:
             if ass_path is not None:
                 ass_path.unlink(missing_ok=True)
+
+    async def _get_crop_box(
+        self,
+        input_path: str,
+        three_d_prefix: str | None,
+        eye_width: int | None,
+        eye_height: int | None,
+    ) -> tuple[int, int, int, int] | None:
+        if self._crop_cache_db_path is None:
+            return None
+        try:
+            stat = os.stat(input_path)
+        except OSError:
+            return None
+        fingerprint = (stat.st_mtime, stat.st_size)
+
+        cached = get_cached_crop(self._crop_cache_db_path, input_path, fingerprint)
+        if cached is not None:
+            return cached.crop_box
+
+        frame_width, frame_height = eye_width, eye_height
+        if frame_width is None or frame_height is None:
+            frame_width, frame_height = await probe_video_dimensions(input_path)
+
+        detected = await probe_crop(input_path, three_d_prefix)
+        crop_box = _crop_box_or_none(detected, frame_width, frame_height) if detected else None
+
+        set_cached_crop(self._crop_cache_db_path, input_path, crop_box, fingerprint)
+        return crop_box
 
     async def _write_ass_file(
         self,
@@ -380,6 +562,7 @@ class ClipRenderer:
         ass_path: Path | None,
         three_d_prefix: str | None = None,
         is_hdr: bool = False,
+        crop_box: tuple[int, int, int, int] | None = None,
     ) -> str:
         # -2 (not -1) guarantees an even output height, matching the
         # rounding _write_ass_file uses to compute PlayResY — a mismatch
@@ -388,6 +571,9 @@ class ClipRenderer:
         filters = []
         if three_d_prefix:
             filters.append(three_d_prefix)
+        if crop_box is not None:
+            w, h, x, y = crop_box
+            filters.append(f"crop={w}:{h}:{x}:{y}")
         if is_hdr:
             filters.append(_HDR_TONEMAP_FILTER)
         filters.append(f"scale={width}:-2:flags=lanczos")
@@ -406,10 +592,11 @@ class ClipRenderer:
         ass_path: Path | None = None,
         three_d_prefix: str | None = None,
         is_hdr: bool = False,
+        crop_box: tuple[int, int, int, int] | None = None,
     ) -> bytes:
         scratch_dir.mkdir(parents=True, exist_ok=True)
         palette_path = scratch_dir / f"palette-{uuid.uuid4().hex}.png"
-        scale_filter = self._scale_and_subtitle_filter(width, ass_path, three_d_prefix, is_hdr)
+        scale_filter = self._scale_and_subtitle_filter(width, ass_path, three_d_prefix, is_hdr, crop_box)
 
         try:
             await self._run(
@@ -463,10 +650,11 @@ class ClipRenderer:
         ass_path: Path | None = None,
         three_d_prefix: str | None = None,
         is_hdr: bool = False,
+        crop_box: tuple[int, int, int, int] | None = None,
     ) -> bytes:
         scratch_dir.mkdir(parents=True, exist_ok=True)
         out_path = scratch_dir / f"clip-{uuid.uuid4().hex}.{fmt}"
-        scale_filter = self._scale_and_subtitle_filter(width, ass_path, three_d_prefix, is_hdr)
+        scale_filter = self._scale_and_subtitle_filter(width, ass_path, three_d_prefix, is_hdr, crop_box)
 
         try:
             await self._run(
