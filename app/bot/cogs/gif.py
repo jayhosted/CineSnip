@@ -1297,12 +1297,29 @@ class RandomResultView(discord.ui.View):
         self._pointer = 0
         self._seen_entry_ids: set[int] = {initial_pick.entry_id}
 
+        # Built manually (not @discord.ui.button) so add order — and so
+        # left-to-right layout — is fully under our control: Previous only
+        # exists from the first shuffle onward, and always belongs left of
+        # Shuffle, with Post always last regardless of what else is on the
+        # row (matches every other result view's convention).
         self._previous_button = discord.ui.Button(
             label="◀ Previous", style=discord.ButtonStyle.secondary, row=0
         )
         self._previous_button.callback = self._on_previous
 
+        self.shuffle = discord.ui.Button(
+            label="🔀 Shuffle", style=discord.ButtonStyle.secondary, row=0
+        )
+        self.shuffle.callback = self._on_shuffle
         self.shuffle.disabled = initial_pick.pool_size <= 1
+
+        self.post = discord.ui.Button(
+            label="Post to channel", style=discord.ButtonStyle.primary, row=0
+        )
+        self.post.callback = self._on_post
+
+        self.add_item(self.shuffle)
+        self.add_item(self.post)
 
     @property
     def _current(self) -> _RandomHistoryEntry:
@@ -1312,10 +1329,7 @@ class RandomResultView(discord.ui.View):
         note = " *(seen every match — starting over)*" if exhausted else ""
         return f"**{pick.title}** — {pick.timecode}{note}"
 
-    @discord.ui.button(label="🔀 Shuffle", style=discord.ButtonStyle.secondary, row=0)
-    async def shuffle(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def _on_shuffle(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         most_recent = self._current.pick.entry_id
         try:
@@ -1352,7 +1366,14 @@ class RandomResultView(discord.ui.View):
         self._pointer += 1
 
         if self._previous_button not in self.children:
+            # First shuffle: insert Previous to the LEFT of Shuffle/Post.
+            # add_item() only ever appends, so getting Previous into the
+            # middle-not-last position means clearing and re-adding
+            # everything in the order we actually want, once.
+            self.clear_items()
             self.add_item(self._previous_button)
+            self.add_item(self.shuffle)
+            self.add_item(self.post)
         self._previous_button.disabled = self._pointer == 0
         self.shuffle.disabled = picked.pool_size <= 1
 
@@ -1375,10 +1396,7 @@ class RandomResultView(discord.ui.View):
             content=self._render_content(entry.pick), attachments=[file], view=self
         )
 
-    @discord.ui.button(label="Post to channel", style=discord.ButtonStyle.primary, row=0)
-    async def post(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def _on_post(self, interaction: discord.Interaction) -> None:
         # See ClipResultView.post — same defer-before-send fix.
         await interaction.response.defer()
         entry = self._current
@@ -1393,7 +1411,7 @@ class RandomResultView(discord.ui.View):
                 content=f"Couldn't post that clip: {_error_detail_from_discord(exc)}"
             )
             return
-        button.disabled = True
+        self.post.disabled = True
         await interaction.edit_original_response(view=self)
 
 

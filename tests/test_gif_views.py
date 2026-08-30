@@ -418,6 +418,21 @@ def test_random_result_view_enables_shuffle_when_pool_has_more_than_one():
     assert view.shuffle.disabled is False
 
 
+def test_random_result_view_button_order_previous_shuffle_post():
+    worker = _FakeWorker()
+    fetch = _FakeFetch([_random_pick(entry_id=2, text="Second", pool_size=5)])
+    view = RandomResultView(worker, fetch, _random_pick(entry_id=1, text="First", pool_size=5), b"x", "clip.gif")
+
+    # Before the first shuffle, Previous doesn't exist yet — Shuffle then
+    # Post, with Post last.
+    assert [item.label for item in view.children] == ["🔀 Shuffle", "Post to channel"]
+
+    asyncio.run(view.shuffle.callback(_fake_interaction()))
+
+    # Previous belongs on the left, Post always stays last.
+    assert [item.label for item in view.children] == ["◀ Previous", "🔀 Shuffle", "Post to channel"]
+
+
 def test_random_result_view_shuffle_adds_previous_button_and_passes_exclusion():
     worker = _FakeWorker()
     fetch = _FakeFetch([_random_pick(entry_id=2, text="Second", pool_size=5)])
