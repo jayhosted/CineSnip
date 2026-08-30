@@ -1,5 +1,23 @@
 FROM mwader/static-ffmpeg:7.1 AS ffmpeg
 
+# gifsicle 1.96 built from source — Debian/Ubuntu's apt package is stuck on
+# 1.94 (2021), which lacks the --gamma option the GIF compression ladder
+# depends on (app/worker/gif_optimize.py). Unlike the ffmpeg swap above,
+# this isn't a dependency-bloat problem: gifsicle links only against libc/
+# libm (confirmed via ldd against a source build during development), so
+# apt's package was never large — it's purely a version problem. Built from
+# the official dist tarball (ships a pregenerated ./configure, unlike the
+# bare GitHub tag archive which needs autoconf/automake to regenerate one).
+FROM debian:bookworm-slim AS gifsicle-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -sL -o /tmp/gifsicle.tar.gz https://www.lcdf.org/gifsicle/gifsicle-1.96.tar.gz \
+    && tar xzf /tmp/gifsicle.tar.gz -C /tmp \
+    && cd /tmp/gifsicle-1.96 \
+    && ./configure --disable-gifview \
+    && make -j"$(nproc)"
+
 FROM python:3.12-slim-bookworm
 
 # fonts-liberation ships Liberation Sans/Serif/Mono — metric-compatible
@@ -24,6 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends fonts-liberatio
 # build succeeding proves nothing about the actual output).
 COPY --from=ffmpeg /ffmpeg /usr/local/bin/ffmpeg
 COPY --from=ffmpeg /ffprobe /usr/local/bin/ffprobe
+COPY --from=gifsicle-builder /tmp/gifsicle-1.96/src/gifsicle /usr/local/bin/gifsicle
 
 WORKDIR /app
 
