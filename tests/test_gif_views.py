@@ -189,6 +189,33 @@ def _library_match(i: int, score: float = 60.0) -> LibraryQuoteMatchResult:
     )
 
 
+def test_quote_match_view_uses_fixed_title_when_given():
+    matches = [_quote_match(i) for i in range(3)]
+    view = QuoteMatchView("Fixed Title", matches, min_score=50.0, confident_score=85.0)
+
+    assert view.embed().title == "Fixed Title"
+
+
+def test_quote_match_view_uses_per_match_title_when_title_is_none():
+    # /snip tv's whole-show search (issue #7 follow-up): candidates can come
+    # from different episodes, so there's no single fixed title to show —
+    # title=None means "read it off whichever match is currently selected".
+    matches = [_library_match(i) for i in range(3)]
+    view = QuoteMatchView(None, matches, min_score=50.0, confident_score=85.0)
+
+    assert view.embed().title == matches[0].title
+
+
+def test_quote_match_view_per_match_title_follows_selection():
+    matches = [_library_match(i) for i in range(3)]
+    view = QuoteMatchView(None, matches, min_score=50.0, confident_score=85.0)
+
+    view._select._values = ["2"]
+    asyncio.run(view._on_select(_fake_interaction()))
+
+    assert view.embed().title == matches[2].title
+
+
 class _FakeCog:
     async def _run_library_search(self, interaction, quote):
         raise AssertionError("not exercised by these tests")

@@ -87,12 +87,21 @@ class QuoteMatchView(discord.ui.View):
     regardless of how confident the top match is: true pagination makes
     browsing cheap, so hiding it behind a "Show other matches" button (an
     earlier design, before this class could page) just adds a click.
+
+    `title` is normally a fixed string — every candidate line comes from
+    the same already-known film/episode (/snip movie, /snip tv with a
+    specific episode). Pass `title=None` when candidates can come from
+    DIFFERENT titles instead (/snip tv's whole-show search, whose matches
+    are `LibraryQuoteMatchResult`s each carrying their own `.title`/
+    `.rating_key`) — the embed then reads the title off whichever match
+    is currently selected, and the caller reads `.selected.rating_key`
+    after Confirm instead of already knowing it up front.
     """
 
     def __init__(
         self,
-        title: str,
-        matches: list[QuoteMatchResult],
+        title: str | None,
+        matches: list[QuoteMatchResult] | list[LibraryQuoteMatchResult],
         min_score: float,
         confident_score: float,
         initial_index: int = 0,
@@ -125,15 +134,16 @@ class QuoteMatchView(discord.ui.View):
                 self._add_page_buttons()
 
     @property
-    def selected(self) -> QuoteMatchResult:
+    def selected(self) -> QuoteMatchResult | LibraryQuoteMatchResult:
         return self.matches[self.index]
 
     def _total_pages(self) -> int:
         return max(1, (len(self.matches) + _PAGE_SIZE - 1) // _PAGE_SIZE)
 
     def embed(self) -> discord.Embed:
+        title = self._title if self._title is not None else self.selected.title
         return _match_embed(
-            self._title,
+            title,
             self.selected,
             self.min_score,
             self.confident_score,
@@ -1712,7 +1722,33 @@ class GifCog(commands.Cog):
             )
 
         render_end_timecode = end_timecode if not quote else None
+        await self._render_and_respond(
+            interaction,
+            rating_key,
+            resolved.title,
+            render_timecode,
+            render_duration,
+            render_end_timecode,
+            format,
+            default_style,
+        )
 
+    async def _render_and_respond(
+        self,
+        interaction: discord.Interaction,
+        rating_key: int,
+        title: str,
+        render_timecode: str,
+        render_duration: float | None,
+        render_end_timecode: str | None,
+        format: str | None,
+        default_style: str,
+    ) -> None:
+        # Shared by _generate (movie / a single known episode) and
+        # snip_tv's whole-show search (each candidate can resolve to a
+        # DIFFERENT episode's rating_key, only known once QuoteMatchView's
+        # Confirm step picks one) — everything past "what to render and
+        # what to call it" is identical either way.
         try:
             render_result = await self.bot.worker.render(
                 rating_key,
@@ -1733,7 +1769,7 @@ class GifCog(commands.Cog):
         result_view = ClipEditView(
             self.bot.worker,
             rating_key,
-            resolved.title,
+            title,
             render_timecode,
             render_duration,
             render_end_timecode,
@@ -2053,14 +2089,49 @@ class GifCog(commands.Cog):
             )
             return
 
-        view = LibrarySearchView(
-            self,
-            quote,
+        # Unlike /snip search (genuinely cross-title, kept as a scannable
+        # list via LibrarySearchView), a whole-show search's candidates are
+        # all episodes of the SAME show a user already picked — matching
+        # /snip movie's UX (drop straight into the confirm screen, with its
+        # picker/paging) reads better than an extra "pick an episode" list
+        # step first. title=None: LibraryQuoteMatchResult carries its own
+        # per-episode title, unlike a single already-known film.
+        match_view = QuoteMatchView(
+            None,
             result.matches,
-            description="Pick an episode below to generate a clip from that line.",
+            result.min_score,
+            result.confident_score,
             truncated=result.truncated,
         )
         await interaction.edit_original_response(
-            embed=view.embed(),
-            view=view,
+            content=None, embed=match_view.embed(), view=match_view
+        )
+        await match_view.wait()
+
+        if match_view.value is None:
+            await interaction.edit_original_response(
+                content="Timed out.", embed=None, view=None
+            )
+            return
+        if match_view.value is False:
+            await interaction.edit_original_response(
+                content="Cancelled.", embed=None, view=None
+            )
+            return
+
+        selected = match_view.selected
+        await interaction.edit_original_response(content="Generating…", embed=None, view=None)
+        await self._render_and_respond(
+            interaction,
+            selected.rating_key,
+            selected.title,
+            str(selected.start),
+            selected.end - selected.start,
+            None,
+            format,
+            # A quote match came from real subtitle text, so burn-in has
+            # something to show by default (CLAUDE.md Section 7: "subtitles
+            # on when triggered by a quote search") — same default _generate
+            # uses for its own quote-match path.
+            "classic",
         )
