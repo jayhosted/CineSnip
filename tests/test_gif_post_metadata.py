@@ -1,6 +1,13 @@
+from types import SimpleNamespace
+
 import pytest
 
-from app.bot.cogs.gif import _format_unit_timecode, _post_metadata_line, _slugify
+from app.bot.cogs.gif import (
+    _error_detail_from_discord,
+    _format_unit_timecode,
+    _post_metadata_line,
+    _slugify,
+)
 
 
 @pytest.mark.parametrize(
@@ -41,3 +48,15 @@ def test_post_metadata_line_tv_episode():
         "Partridge — S02E03 — Bouncy", start=559, end=568, posted_by="Jay"
     )
     assert line == "-# partridge-s02e03@9m19s-9m28s posted by Jay"
+
+
+def test_error_detail_from_discord_gives_a_clear_message_for_payload_too_large():
+    exc = SimpleNamespace(code=40005, text="Request entity too large")
+    detail = _error_detail_from_discord(exc)
+    assert "too large" in detail
+    assert "shorter span" in detail
+
+
+def test_error_detail_from_discord_falls_back_to_raw_text_for_other_errors():
+    exc = SimpleNamespace(code=50013, text="Missing Permissions")
+    assert _error_detail_from_discord(exc) == "Missing Permissions"

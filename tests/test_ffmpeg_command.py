@@ -97,15 +97,22 @@ def test_seek_and_duration_are_input_options_before_the_video_input():
 
 def test_scale_filter_has_no_prefix_for_flat_video():
     renderer = ClipRenderer(fps=15, width=480)
-    assert renderer._scale_and_subtitle_filter(None, None) == "scale=480:-2:flags=lanczos"
+    assert renderer._scale_and_subtitle_filter(480, None, None) == "scale=480:-2:flags=lanczos"
 
 
 def test_scale_filter_puts_three_d_prefix_before_scale_and_subtitles():
     from pathlib import Path
 
     renderer = ClipRenderer(fps=15, width=480)
-    filt = renderer._scale_and_subtitle_filter(Path("/tmp/subs.ass"), "crop=iw:ih/2:0:0,setsar=1")
+    filt = renderer._scale_and_subtitle_filter(
+        480, Path("/tmp/subs.ass"), "crop=iw:ih/2:0:0,setsar=1"
+    )
     assert filt == "crop=iw:ih/2:0:0,setsar=1,scale=480:-2:flags=lanczos,subtitles='/tmp/subs.ass'"
+
+
+def test_scale_filter_uses_the_given_width_not_the_renderer_default():
+    renderer = ClipRenderer(fps=15, width=480)
+    assert renderer._scale_and_subtitle_filter(240, None, None) == "scale=240:-2:flags=lanczos"
 
 
 # _three_d_plan: distinguishes "full" 3D packs (each eye at native
@@ -167,6 +174,7 @@ def test_write_ass_file_applies_subtitle_overrides(tmp_path):
             entries=entries,
             style=STYLE_PRESETS["classic"],
             scratch_dir=tmp_path,
+            width=480,
             eye_width=480,
             eye_height=270,
             subtitle_overrides={1: "edited one", 2: None},

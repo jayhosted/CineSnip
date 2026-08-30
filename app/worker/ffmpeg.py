@@ -243,7 +243,16 @@ class ClipRenderer:
         style: StylePreset | None = None,
         three_d_format: str = "none",
         subtitle_overrides: dict[int, str | None] | None = None,
+        fps: int | None = None,
+        width: int | None = None,
     ) -> bytes:
+        # fps/width default to this renderer's configured values but can be
+        # overridden per call — used by /render's size-downscale retry loop
+        # (app/worker/api.py) to re-encode at progressively smaller
+        # settings without needing a second ClipRenderer instance.
+        fps = fps if fps is not None else self._fps
+        width = width if width is not None else self._width
+
         # Only probe files in a library that's configured as 3D at all —
         # avoids an extra ffprobe call on every render for the (much more
         # common) normal flat-video libraries. When a file *is* tagged,
@@ -266,16 +275,16 @@ class ClipRenderer:
         if subtitle_entries and style is not None:
             ass_path = await self._write_ass_file(
                 input_path, start, duration, subtitle_entries, style, scratch_dir,
-                eye_width, eye_height, subtitle_overrides=subtitle_overrides,
+                width, eye_width, eye_height, subtitle_overrides=subtitle_overrides,
             )
 
         try:
             if fmt == "gif":
                 return await self._render_gif(
-                    input_path, start, duration, scratch_dir, ass_path, three_d_prefix
+                    input_path, start, duration, scratch_dir, fps, width, ass_path, three_d_prefix
                 )
             return await self._render_video(
-                input_path, start, duration, scratch_dir, fmt, ass_path, three_d_prefix
+                input_path, start, duration, scratch_dir, fmt, fps, width, ass_path, three_d_prefix
             )
         finally:
             if ass_path is not None:
@@ -289,6 +298,7 @@ class ClipRenderer:
         entries: list[SubtitleEntry],
         style: StylePreset,
         scratch_dir: Path,
+        width: int,
         eye_width: int | None = None,
         eye_height: int | None = None,
         subtitle_overrides: dict[int, str | None] | None = None,
@@ -302,7 +312,7 @@ class ClipRenderer:
         # pre-computed dimensions, so probe directly.
         if eye_width is None or eye_height is None:
             eye_width, eye_height = await probe_video_dimensions(input_path)
-        out_width = self._width
+        out_width = width
         out_height = round(out_width * eye_height / eye_width)
         out_height -= out_height % 2  # matches the -2 (even-height) scale filter below
 
@@ -317,7 +327,7 @@ class ClipRenderer:
         return ass_path
 
     def _scale_and_subtitle_filter(
-        self, ass_path: Path | None, three_d_prefix: str | None = None
+        self, width: int, ass_path: Path | None, three_d_prefix: str | None = None
     ) -> str:
         # -2 (not -1) guarantees an even output height, matching the
         # rounding _write_ass_file uses to compute PlayResY — a mismatch
@@ -326,7 +336,7 @@ class ClipRenderer:
         filters = []
         if three_d_prefix:
             filters.append(three_d_prefix)
-        filters.append(f"scale={self._width}:-2:flags=lanczos")
+        filters.append(f"scale={width}:-2:flags=lanczos")
         if ass_path is not None:
             filters.append(f"subtitles={_escape_filter_path(ass_path)}")
         return ",".join(filters)
@@ -337,12 +347,14 @@ class ClipRenderer:
         start: float,
         duration: float,
         scratch_dir: Path,
+        fps: int,
+        width: int,
         ass_path: Path | None = None,
         three_d_prefix: str | None = None,
     ) -> bytes:
         scratch_dir.mkdir(parents=True, exist_ok=True)
         palette_path = scratch_dir / f"palette-{uuid.uuid4().hex}.png"
-        scale_filter = self._scale_and_subtitle_filter(ass_path, three_d_prefix)
+        scale_filter = self._scale_and_subtitle_filter(width, ass_path, three_d_prefix)
 
         try:
             await self._run(
@@ -353,7 +365,7 @@ class ClipRenderer:
                     "-i",
                     input_path,
                     "-vf",
-                    f"fps={self._fps},{scale_filter},palettegen",
+                    f"fps={fps},{scale_filter},palettegen",
                     # image2 muxer needs this to write one still image
                     # rather than expecting a %d sequence pattern.
                     "-update",
@@ -372,7 +384,7 @@ class ClipRenderer:
                     "-i",
                     str(palette_path),
                     "-lavfi",
-                    f"fps={self._fps},{scale_filter}[x];[x][1:v]paletteuse",
+                    f"fps={fps},{scale_filter}[x];[x][1:v]paletteuse",
                     "-f",
                     "gif",
                     "pipe:1",
@@ -391,12 +403,14 @@ class ClipRenderer:
         duration: float,
         scratch_dir: Path,
         fmt: str,
+        fps: int,
+        width: int,
         ass_path: Path | None = None,
         three_d_prefix: str | None = None,
     ) -> bytes:
         scratch_dir.mkdir(parents=True, exist_ok=True)
         out_path = scratch_dir / f"clip-{uuid.uuid4().hex}.{fmt}"
-        scale_filter = self._scale_and_subtitle_filter(ass_path, three_d_prefix)
+        scale_filter = self._scale_and_subtitle_filter(width, ass_path, three_d_prefix)
 
         try:
             await self._run(
@@ -425,7 +439,7 @@ class ClipRenderer:
                     "-map_metadata",
                     "-1",
                     "-vf",
-                    f"fps={self._fps},{scale_filter}",
+                    f"fps={fps},{scale_filter}",
                     "-an",
                     *_VIDEO_CODEC_ARGS[fmt],
                     str(out_path),

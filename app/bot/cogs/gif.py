@@ -199,6 +199,35 @@ def _slugify(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
 
 
+def _format_clip_position(seconds: float) -> str:
+    """Like _format_unit_timecode, but keeps one decimal place on the
+    seconds component instead of rounding to a whole second — used only by
+    _clip_span_line, where start/end/duration are shown together and must
+    stay arithmetically consistent (start + duration == end exactly, not
+    just after independent rounding). _format_unit_timecode's whole-second
+    rounding is intentional and unchanged for its own callers (e.g. the
+    posted-message metadata line), where sub-second precision isn't
+    useful."""
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    hours, minutes = int(hours), int(minutes)
+    if hours:
+        return f"{hours}h{minutes:02d}m{secs:04.1f}s"
+    if minutes:
+        return f"{minutes}m{secs:04.1f}s"
+    return f"{secs:.1f}s"
+
+
+def _clip_span_line(start: float, duration: float) -> str:
+    """One-line confirmation of the clip's current span within the source
+    film — shown after every ClipEditView edit action (nudge/merge/custom/
+    subtitle edit/style change) so a change registers even when the new
+    frame looks visually similar to the old one (e.g. a <1s nudge, or a
+    merge onto an adjacent line with a similar dark shot)."""
+    end = start + duration
+    return f"⏱ {_format_clip_position(start)} – {_format_clip_position(end)} ({duration:.1f}s)"
+
+
 def _format_unit_timecode(seconds: float) -> str:
     total = round(seconds)
     hours, remainder = divmod(total, 3600)
@@ -289,7 +318,10 @@ def _find_merge_previous(
     entries: list[SubtitleEntryResult], clip_start: float
 ) -> SubtitleEntryResult | None:
     """The entry immediately before the clip's current start, if any — its
-    own end becomes the new clip start when "Merge Previous" is pressed."""
+    own *start* becomes the new clip start when "Merge Previous" is
+    pressed (not its end: entries_in_window()'s strict overlap check would
+    exclude an entry whose end lands exactly on the new clip_start, so the
+    merged-in line's text would never actually render)."""
     candidates = [e for e in entries if e.end <= clip_start]
     if not candidates:
         return None
@@ -300,11 +332,104 @@ def _find_merge_next(
     entries: list[SubtitleEntryResult], clip_end: float
 ) -> SubtitleEntryResult | None:
     """The entry immediately after the clip's current end, if any — its own
-    start becomes the new clip end when "Merge Next" is pressed."""
+    *end* becomes the new clip end when "Merge Next" is pressed (not its
+    start, for the same exclusion reason as _find_merge_previous)."""
     candidates = [e for e in entries if e.start >= clip_end]
     if not candidates:
         return None
     return min(candidates, key=lambda e: e.start)
+
+
+def _find_unmerge_previous(
+    entries: list[SubtitleEntryResult], clip_start: float, clip_end: float
+) -> SubtitleEntryResult | None:
+    """The trim counterpart to Merge Previous: the second-earliest entry
+    currently in the clip's window, if there are at least two — its own
+    start becomes the new clip start when "Unmerge Previous" is pressed,
+    dropping whichever line is currently first (however it got there,
+    whether from an earlier Merge Previous or the clip's own original
+    span)."""
+    window = _entries_in_window(entries, clip_start, clip_end)
+    if len(window) < 2:
+        return None
+    return window[1]
+
+
+def _find_unmerge_next(
+    entries: list[SubtitleEntryResult], clip_start: float, clip_end: float
+) -> SubtitleEntryResult | None:
+    """The trim counterpart to Merge Next: the second-latest entry
+    currently in the clip's window, if there are at least two — its own
+    end becomes the new clip end when "Unmerge Next" is pressed, dropping
+    whichever line is currently last."""
+    window = _entries_in_window(entries, clip_start, clip_end)
+    if len(window) < 2:
+        return None
+    return window[-2]
+
+
+def _merge_previous_n(
+    entries: list[SubtitleEntryResult], clip_start: float, count: int
+) -> float | None:
+    """Repeat _find_merge_previous's single-line jump `count` times,
+    walking further back one line at a time (each step's new boundary
+    becomes the next step's search point) — the underlying operation for
+    a multi-line merge (_MergeCountModal). Stops early if fewer than
+    `count` lines exist before clip_start; returns None if none exist at
+    all (0 lines walked), otherwise the resulting new clip_start."""
+    current = clip_start
+    result = None
+    for _ in range(count):
+        entry = _find_merge_previous(entries, current)
+        if entry is None:
+            break
+        current = entry.start
+        result = entry.start
+    return result
+
+
+def _merge_next_n(
+    entries: list[SubtitleEntryResult], clip_end: float, count: int
+) -> float | None:
+    """_merge_previous_n's mirror for the end boundary."""
+    current = clip_end
+    result = None
+    for _ in range(count):
+        entry = _find_merge_next(entries, current)
+        if entry is None:
+            break
+        current = entry.end
+        result = entry.end
+    return result
+
+
+def _merge_context_block(
+    entries: list[SubtitleEntryResult],
+    clip_start: float,
+    clip_end: float,
+    context: int = 2,
+) -> str:
+    """A short readout of the lines just outside (and inside) the clip's
+    current window, each with its own duration, so picking Merge Previous/
+    Next or a specific merge count isn't a guess about what's actually
+    there. Rendered into the result embed's footer (see ClipEditView's
+    _build_merge_embed), not the message's plain content — Discord never
+    markdown-parses embed footer text, so this doesn't need a code fence
+    to protect against subtitle text's own dashes/punctuation being
+    reinterpreted as blockquotes/bullet lists the way plain content would.
+    Returns "" if there's nothing to show (no entries at all)."""
+    before = sorted((e for e in entries if e.end <= clip_start), key=lambda e: e.start)
+    after = sorted((e for e in entries if e.start >= clip_end), key=lambda e: e.start)
+    window = _entries_in_window(entries, clip_start, clip_end)
+
+    def _line(e: SubtitleEntryResult, marker: str) -> str:
+        text = e.text.replace("\n", " ")
+        return f"{marker} {text} ({e.end - e.start:.1f}s)"
+
+    lines = [_line(e, ">") for e in before[-context:]]
+    lines += [_line(e, "»") for e in window]
+    lines += [_line(e, ">") for e in after[:context]]
+    return "\n".join(lines)
 
 
 class ClipResultView(discord.ui.View):
@@ -419,6 +544,14 @@ class ClipResultView(discord.ui.View):
     async def post(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
+        # Deferred before the send: interaction.channel.send() can fail
+        # (Discord's own upload size cap, a channel permission change,
+        # etc.) — with no prior response, that exception would leave the
+        # interaction never acknowledged at all, surfacing to the user as
+        # Discord's generic "didn't respond in time" with no explanation
+        # and the Post button still (wrongly) enabled for a retry that
+        # would just fail the same way.
+        await interaction.response.defer()
         file = discord.File(io.BytesIO(self._content), filename=self._filename)
         content = _post_metadata_line(
             self._title,
@@ -426,9 +559,15 @@ class ClipResultView(discord.ui.View):
             self._clip_start + self._clip_duration,
             interaction.user.display_name,
         )
-        await interaction.channel.send(content=content, file=file)
+        try:
+            await interaction.channel.send(content=content, file=file)
+        except discord.HTTPException as exc:
+            await interaction.edit_original_response(
+                content=f"Couldn't post that clip: {_error_detail_from_discord(exc)}"
+            )
+            return
         button.disabled = True
-        await interaction.response.edit_message(view=self)
+        await interaction.edit_original_response(view=self)
 
 
 class _CustomDurationModal(discord.ui.Modal, title="Custom duration"):
@@ -452,6 +591,53 @@ class _CustomDurationModal(discord.ui.Modal, title="Custom duration"):
         await self._view._re_render_timecode(
             interaction, str(self.start_input.value), str(self.end_input.value)
         )
+
+
+class _MergeCountModal(discord.ui.Modal, title="Merge N lines"):
+    # "Previous lines" / "Next lines" are totals from the clip's original
+    # (pre-edit) span, not "add N more from here" — prefilled with
+    # whatever was last submitted so lowering the number (e.g. 2 -> 0)
+    # actually shrinks the clip back down, undoing earlier merges from
+    # this same modal, rather than only ever being able to add more.
+    previous_input = discord.ui.TextInput(label="Previous lines", default="0", required=True, max_length=3)
+    next_input = discord.ui.TextInput(label="Next lines", default="0", required=True, max_length=3)
+
+    def __init__(self, view: "ClipEditView") -> None:
+        super().__init__()
+        self._view = view
+        self.previous_input.default = str(view._last_merge_previous_count)
+        self.next_input.default = str(view._last_merge_next_count)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            previous_count = int(str(self.previous_input.value))
+            next_count = int(str(self.next_input.value))
+        except ValueError:
+            await interaction.response.send_message(
+                "Previous/Next lines must be whole numbers.", ephemeral=True
+            )
+            return
+        if previous_count < 0 or next_count < 0:
+            await interaction.response.send_message(
+                "Previous/Next lines can't be negative.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer()
+        entries = await self._view._ensure_entries()
+        new_start = self._view._merge_origin_start
+        if previous_count:
+            result = _merge_previous_n(entries, self._view._merge_origin_start, previous_count)
+            if result is not None:
+                new_start = result
+        new_end = self._view._merge_origin_end
+        if next_count:
+            result = _merge_next_n(entries, self._view._merge_origin_end, next_count)
+            if result is not None:
+                new_end = result
+        self._view._last_merge_previous_count = previous_count
+        self._view._last_merge_next_count = next_count
+        await self._view._re_render(interaction, new_start, new_end)
 
 
 class _EditSubsModal(discord.ui.Modal, title="Edit subtitles"):
@@ -478,21 +664,48 @@ class _EditSubsModal(discord.ui.Modal, title="Edit subtitles"):
 
 class ClipEditView(ClipResultView):
     """ClipResultView plus in-place duration/merge/subtitle editing controls
-    (issue #5): two collapsible category rows (⏱ Duration, 💬 Subtitles)
-    between the existing Style select and Post button. Edit state (current
+    (issue #5): three collapsible category toggles (⏱ Duration, 💬
+    Subtitles, 🔀 Merge Subs) between the existing Style select and Post button.
+    Merge is its own top-level toggle rather than nested under Duration —
+    moved there after real-world testing showed Merge Previous/Next were
+    easy to miss when buried in a second category. Edit state (current
     span, per-line text overrides) lives only on this view instance, the
     same approach QuoteMatchView already uses. Row layout is fixed
     regardless of which category (if any) is open, so Post never moves:
-    row 0 Style select, row 1 category toggles, rows 2-3 the open
-    category's controls, row 4 Post — always last.
+    row 0 Style select, row 1 category toggles, row 2 the open category's
+    controls, row 4 Post — always last.
     """
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        # ClipResultView's 300s (5 min) timeout fits its own one-shot
+        # style-pick-then-post flow, but an editing session genuinely
+        # takes longer — several nudge/merge/subtitle-edit round trips,
+        # each with real thinking time in between. Past the timeout,
+        # discord.py silently stops routing clicks on this message to any
+        # callback, so the next click just fails with Discord's own
+        # generic "didn't respond in time" — extending it here is the fix
+        # for that, not a render-performance issue.
+        self.timeout = 1800
         self.overrides: dict[int, str | None] = {}
         self._all_entries: list[SubtitleEntryResult] | None = None
         self._open_category: str | None = None
         self._category_buttons: list[discord.ui.Button] = []
+        # Surrounding-lines readout for the Merge Subs screen (issue #5
+        # follow-up) — recomputed by _open_merge() each time that category
+        # opens or a render happens while it's open, so Merge/Unmerge/
+        # Merge Count aren't a guess about what's actually adjacent.
+        self._merge_context_text: str = ""
+        # Fixed anchor for _MergeCountModal: the clip's span as first
+        # rendered, before any edit. _MergeCountModal's counts are always
+        # "N lines from here", not "N more from wherever the clip currently
+        # is" — that's what lets typing a smaller number than last time
+        # actually shrink the clip back down (e.g. 2 -> 0 undoes both),
+        # rather than only ever being able to add more.
+        self._merge_origin_start: float = self._clip_start
+        self._merge_origin_end: float = self._clip_end
+        self._last_merge_previous_count: int = 0
+        self._last_merge_next_count: int = 0
         self._add_category_toggles()
 
     def _add_category_toggles(self) -> None:
@@ -504,8 +717,18 @@ class ClipEditView(ClipResultView):
             label="💬 Subtitles", style=discord.ButtonStyle.secondary, row=1
         )
         subtitles_button.callback = self._on_toggle_subtitles
+        # Its own always-visible toggle (not nested under Duration) per
+        # real-world testing feedback: Merge Previous/Next were easy to
+        # miss buried inside the Duration category, and users expect a
+        # snap-to-adjacent-line action to be as prominent as the category
+        # toggles themselves.
+        merge_button = discord.ui.Button(
+            label="🔀 Merge Subs", style=discord.ButtonStyle.secondary, row=1
+        )
+        merge_button.callback = self._on_toggle_merge
         self.add_item(duration_button)
         self.add_item(subtitles_button)
+        self.add_item(merge_button)
 
     async def _on_style_change(self, interaction: discord.Interaction) -> None:
         # Overrides ClipResultView._on_style_change: the parent re-renders
@@ -535,15 +758,18 @@ class ClipEditView(ClipResultView):
         # bare-timecode clip) can be the first request that actually needs
         # this title's subtitles — same cold-extraction risk as a fresh
         # quote search, just reached via a different route (CLAUDE.md
-        # Section 2's upfront slow-extraction warning).
+        # Section 2's upfront slow-extraction warning). Folded into
+        # _re_render's status_message rather than a separate edit here, so
+        # there's still exactly one place showing pre-render status text.
         slow_warning = await _slow_subtitle_warning(self._worker, self._rating_key)
-        if slow_warning:
-            await interaction.edit_original_response(
-                content=f"Regenerating with a new style…{slow_warning}"
-            )
+        status_message = (
+            f"Regenerating with a new style…{slow_warning}" if slow_warning else "Generating…"
+        )
         self.style = new_style
         self._add_select()
-        await self._re_render(interaction, self._clip_start, self._clip_end)
+        await self._re_render(
+            interaction, self._clip_start, self._clip_end, status_message=status_message
+        )
 
     async def _ensure_entries(self) -> list[SubtitleEntryResult]:
         if self._all_entries is None:
@@ -568,30 +794,33 @@ class ClipEditView(ClipResultView):
     async def _open_duration(self) -> None:
         self._clear_category_rows()
         self._open_category = "duration"
-        entries = await self._ensure_entries()
 
         # Full two-sided control (spec requirement): each boundary (start,
         # end) must be nudgeable in BOTH directions, not just one — the
         # tvgif-style one-directional-extend limitation this feature is
         # explicitly meant to fix. That's 2 boundaries x 2 directions = 4
         # nudge buttons per magnitude. The spec lists three magnitudes
-        # (0.5s/1s/5s), but a Discord view caps out at 5 buttons/row and
-        # this category has a fixed 2-row (10-slot) budget shared with
-        # Custom + Merge Previous + Merge Next (3 more mandatory buttons):
-        # 3 magnitudes x 4 = 12, +3 = 15 — nowhere close. Even 2 magnitudes
-        # (8 nudges + 3 = 11) is one over the 10-slot budget. Per the
-        # review ruling, both-directions-per-boundary outranks magnitude
-        # count, and partial/asymmetric magnitudes aren't an option (that
-        # would silently reintroduce the one-directional bug for whichever
-        # combo got dropped) — so this keeps a single magnitude (1s, the
-        # spec's middle value) with full symmetry, dropping 0.5s and 5s
-        # entirely rather than compromising symmetry. Custom (free-text
-        # modal) remains available for any other span.
+        # (0.5s/1s/5s), but a Discord view row caps out at 5 buttons; with
+        # Merge Previous/Next now living in their own category (moved out
+        # per real-world testing feedback) this row only needs to fit the
+        # 4 nudges + Custom, so a single magnitude (1s, the spec's middle
+        # value) with full symmetry is what fits — dropping 0.5s and 5s
+        # entirely rather than compromising symmetry, per the earlier
+        # review ruling that both-directions-per-boundary outranks
+        # magnitude count. Custom (free-text modal) remains available for
+        # any other span.
+        # Arrows show which way the boundary moves along the timeline
+        # (← earlier, → later), not the sign of the delta applied to its
+        # timestamp — "Start +1s" reads as "extend the clip" but actually
+        # moves the start point later (shortening the clip), which testing
+        # showed was genuinely confusing. The arrow direction matches the
+        # visible effect directly: ← always makes more of the source appear,
+        # → always trims it, regardless of which boundary it's attached to.
         nudges = [
-            ("Start -1s", -1.0, "start"),
-            ("Start +1s", 1.0, "start"),
-            ("End -1s", -1.0, "end"),
-            ("End +1s", 1.0, "end"),
+            ("Start ← 1s", -1.0, "start"),
+            ("Start → 1s", 1.0, "start"),
+            ("End ← 1s", -1.0, "end"),
+            ("End → 1s", 1.0, "end"),
         ]
         for label, delta, side in nudges:
             button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, row=2)
@@ -604,9 +833,30 @@ class ClipEditView(ClipResultView):
         self._category_buttons.append(custom_button)
         self.add_item(custom_button)
 
+    def _build_merge_embed(self, filename: str, description: str | None) -> discord.Embed:
+        """Discord's message layout is fixed — content, then embeds, then
+        the attached file — so plain content can never appear below the
+        attached gif. Used only while Merge Subs is open: the embed's
+        image slot shows the gif, and its footer (always rendered below
+        the image, right above the button rows) carries the
+        surrounding-lines readout — moved here after real-world feedback
+        that it made more sense next to the merge buttons than above the
+        gif with the rest of the info text."""
+        embed = discord.Embed(description=description) if description else discord.Embed()
+        embed.set_image(url=f"attachment://{filename}")
+        if self._merge_context_text:
+            embed.set_footer(text=self._merge_context_text[:2048])
+        return embed
+
+    async def _open_merge(self) -> None:
+        self._clear_category_rows()
+        self._open_category = "merge"
+        entries = await self._ensure_entries()
+        self._merge_context_text = _merge_context_block(entries, self._clip_start, self._clip_end)
+
         prev_entry = _find_merge_previous(entries, self._clip_start)
         prev_button = discord.ui.Button(
-            label="Merge Previous", style=discord.ButtonStyle.secondary, row=3,
+            label="Merge Previous", style=discord.ButtonStyle.secondary, row=2,
             disabled=prev_entry is None,
         )
         prev_button.callback = self._on_merge_previous
@@ -615,12 +865,38 @@ class ClipEditView(ClipResultView):
 
         next_entry = _find_merge_next(entries, self._clip_end)
         next_button = discord.ui.Button(
-            label="Merge Next", style=discord.ButtonStyle.secondary, row=3,
+            label="Merge Next", style=discord.ButtonStyle.secondary, row=2,
             disabled=next_entry is None,
         )
         next_button.callback = self._on_merge_next
         self._category_buttons.append(next_button)
         self.add_item(next_button)
+
+        unmerge_prev_entry = _find_unmerge_previous(entries, self._clip_start, self._clip_end)
+        unmerge_prev_button = discord.ui.Button(
+            label="Unmerge Previous", style=discord.ButtonStyle.secondary, row=2,
+            disabled=unmerge_prev_entry is None,
+        )
+        unmerge_prev_button.callback = self._on_unmerge_previous
+        self._category_buttons.append(unmerge_prev_button)
+        self.add_item(unmerge_prev_button)
+
+        unmerge_next_entry = _find_unmerge_next(entries, self._clip_start, self._clip_end)
+        unmerge_next_button = discord.ui.Button(
+            label="Unmerge Next", style=discord.ButtonStyle.secondary, row=2,
+            disabled=unmerge_next_entry is None,
+        )
+        unmerge_next_button.callback = self._on_unmerge_next
+        self._category_buttons.append(unmerge_next_button)
+        self.add_item(unmerge_next_button)
+
+        count_button = discord.ui.Button(
+            label="Merge Count…", style=discord.ButtonStyle.secondary, row=2,
+            disabled=prev_entry is None and next_entry is None,
+        )
+        count_button.callback = self._on_merge_count
+        self._category_buttons.append(count_button)
+        self.add_item(count_button)
 
     async def _open_subtitles(self) -> None:
         self._clear_category_rows()
@@ -651,10 +927,12 @@ class ClipEditView(ClipResultView):
         slow_warning = await _slow_subtitle_warning(self._worker, self._rating_key)
         if slow_warning:
             await interaction.edit_original_response(
-                content=f"Loading duration controls…{slow_warning}"
+                content=f"Loading duration controls…{slow_warning}", embed=None
             )
         await self._open_duration()
-        await interaction.edit_original_response(content=None, view=self)
+        # embed=None clears a Merge Subs embed left over from switching
+        # straight from that category into this one.
+        await interaction.edit_original_response(content=None, embed=None, view=self)
 
     async def _on_toggle_subtitles(self, interaction: discord.Interaction) -> None:
         # See _on_toggle_duration — same defer-before-possibly-slow-fetch
@@ -669,10 +947,34 @@ class ClipEditView(ClipResultView):
         slow_warning = await _slow_subtitle_warning(self._worker, self._rating_key)
         if slow_warning:
             await interaction.edit_original_response(
-                content=f"Loading subtitle controls…{slow_warning}"
+                content=f"Loading subtitle controls…{slow_warning}", embed=None
             )
         await self._open_subtitles()
-        await interaction.edit_original_response(content=None, view=self)
+        # embed=None clears a Merge Subs embed left over from switching
+        # straight from that category into this one.
+        await interaction.edit_original_response(content=None, embed=None, view=self)
+
+    async def _on_toggle_merge(self, interaction: discord.Interaction) -> None:
+        # See _on_toggle_duration — same defer-before-possibly-slow-fetch
+        # shape, mirroring _on_style_change's existing warning pattern.
+        await interaction.response.defer()
+        if self._open_category == "merge":
+            self._clear_category_rows()
+            self._open_category = None
+            # Collapsing Merge Subs means going back to the plain
+            # content-only layout — clear the embed that carried the gif
+            # and readout while it was open.
+            await interaction.edit_original_response(content=None, embed=None, view=self)
+            return
+
+        slow_warning = await _slow_subtitle_warning(self._worker, self._rating_key)
+        if slow_warning:
+            await interaction.edit_original_response(
+                content=f"Loading merge options…{slow_warning}", embed=None
+            )
+        await self._open_merge()
+        embed = self._build_merge_embed(self._filename, description=None)
+        await interaction.edit_original_response(content=None, embed=embed, view=self)
 
     def _make_nudge_callback(self, delta: float, side: str):
         async def _callback(interaction: discord.Interaction) -> None:
@@ -688,7 +990,7 @@ class ClipEditView(ClipResultView):
         entry = _find_merge_previous(entries, self._clip_start)
         if entry is None:
             return
-        await self._re_render(interaction, entry.end, self._clip_end)
+        await self._re_render(interaction, entry.start, self._clip_end)
 
     async def _on_merge_next(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
@@ -696,7 +998,26 @@ class ClipEditView(ClipResultView):
         entry = _find_merge_next(entries, self._clip_end)
         if entry is None:
             return
-        await self._re_render(interaction, self._clip_start, entry.start)
+        await self._re_render(interaction, self._clip_start, entry.end)
+
+    async def _on_unmerge_previous(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        entries = await self._ensure_entries()
+        entry = _find_unmerge_previous(entries, self._clip_start, self._clip_end)
+        if entry is None:
+            return
+        await self._re_render(interaction, entry.start, self._clip_end)
+
+    async def _on_unmerge_next(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        entries = await self._ensure_entries()
+        entry = _find_unmerge_next(entries, self._clip_start, self._clip_end)
+        if entry is None:
+            return
+        await self._re_render(interaction, self._clip_start, entry.end)
+
+    async def _on_merge_count(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(_MergeCountModal(self))
 
     async def _on_custom_duration(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(_CustomDurationModal(self))
@@ -710,7 +1031,20 @@ class ClipEditView(ClipResultView):
     def _clip_end(self) -> float:
         return self._clip_start + self._clip_duration
 
-    async def _re_render(self, interaction: discord.Interaction, start: float, end: float) -> None:
+    async def _re_render(
+        self,
+        interaction: discord.Interaction,
+        start: float,
+        end: float,
+        status_message: str = "Generating…",
+    ) -> None:
+        # Shown immediately (the interaction is already deferred by every
+        # caller before this runs) rather than leaving the message
+        # unchanged until the worker responds — a nudge/merge/style-change
+        # can take a few real seconds (re-encode, sometimes a subtitle
+        # extraction), which read as an unresponsive click with no
+        # feedback in between.
+        await interaction.edit_original_response(content=status_message, view=self)
         requested_style = self.style
         try:
             render_result = await self._worker.render(
@@ -727,7 +1061,11 @@ class ClipEditView(ClipResultView):
         await self._apply_render_result(interaction, requested_style, render_result)
 
     async def _re_render_timecode(
-        self, interaction: discord.Interaction, timecode: str, end_timecode: str
+        self,
+        interaction: discord.Interaction,
+        timecode: str,
+        end_timecode: str,
+        status_message: str = "Generating…",
     ) -> None:
         # Same as _re_render, but for _CustomDurationModal's raw timecode
         # strings — sent via /render's timecode/end_timecode fields (parsed
@@ -736,6 +1074,7 @@ class ClipEditView(ClipResultView):
         # comments (app/worker/api.py). Shares all post-render handling
         # with _re_render via _handle_render_error/_apply_render_result so
         # there's exactly one place doing that work.
+        await interaction.edit_original_response(content=status_message, view=self)
         requested_style = self.style
         try:
             render_result = await self._worker.render(
@@ -755,7 +1094,7 @@ class ClipEditView(ClipResultView):
         self, interaction: discord.Interaction, exc: httpx.HTTPError
     ) -> None:
         await interaction.edit_original_response(
-            content=f"Couldn't update the clip: {_error_detail(exc)}", view=self
+            content=f"Couldn't update the clip: {_error_detail(exc)}", embed=None, view=self
         )
 
     async def _apply_render_result(
@@ -768,12 +1107,25 @@ class ClipEditView(ClipResultView):
         self._clip_duration = render_result.duration
         await self._refresh_open_category()
 
+        span_line = f"✏️ Edited — {_clip_span_line(render_result.start, render_result.duration)}"
+        note = _no_subtitles_note(requested_style, render_result.style)
+        description = f"{span_line}\n{note}" if note else span_line
+
         file = discord.File(io.BytesIO(self._content), filename=self._filename)
-        await interaction.edit_original_response(
-            content=_no_subtitles_note(requested_style, render_result.style) or None,
-            attachments=[file],
-            view=self,
-        )
+        # _refresh_open_category() above already recomputed
+        # _merge_context_text against the just-updated span if Merge Subs
+        # is the open category — the embed path keeps it visible in the
+        # footer through edits, not just on first opening, so Merge/
+        # Unmerge/Merge Count stay informed.
+        if self._open_category == "merge":
+            embed = self._build_merge_embed(self._filename, description=description)
+            await interaction.edit_original_response(
+                content=None, embed=embed, attachments=[file], view=self
+            )
+        else:
+            await interaction.edit_original_response(
+                content=description, embed=None, attachments=[file], view=self
+            )
 
     async def _refresh_open_category(self) -> None:
         # Merge-button enabled state and the Edit Subs window depend on the
@@ -783,16 +1135,29 @@ class ClipEditView(ClipResultView):
             await self._open_duration()
         elif self._open_category == "subtitles":
             await self._open_subtitles()
+        elif self._open_category == "merge":
+            await self._open_merge()
 
     @discord.ui.button(label="Post to channel", style=discord.ButtonStyle.primary, row=4)
     async def post(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        # See ClipResultView.post — same defer-before-send fix, same
+        # reason (an unhandled send failure here previously left the
+        # interaction unacknowledged, surfacing as Discord's generic
+        # "didn't respond in time").
+        await interaction.response.defer()
         file = discord.File(io.BytesIO(self._content), filename=self._filename)
         content = _post_metadata_line(
             self._title, self._clip_start, self._clip_end, interaction.user.display_name,
         )
-        await interaction.channel.send(content=content, file=file)
+        try:
+            await interaction.channel.send(content=content, file=file)
+        except discord.HTTPException as exc:
+            await interaction.edit_original_response(
+                content=f"Couldn't post that clip: {_error_detail_from_discord(exc)}"
+            )
+            return
         button.disabled = True
-        await interaction.response.edit_message(view=self)
+        await interaction.edit_original_response(view=self)
 
 
 class RandomResultView(discord.ui.View):
@@ -864,10 +1229,18 @@ class RandomResultView(discord.ui.View):
     async def post(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
+        # See ClipResultView.post — same defer-before-send fix.
+        await interaction.response.defer()
         file = discord.File(io.BytesIO(self._content), filename=self._filename)
-        await interaction.channel.send(file=file)
+        try:
+            await interaction.channel.send(file=file)
+        except discord.HTTPException as exc:
+            await interaction.edit_original_response(
+                content=f"Couldn't post that clip: {_error_detail_from_discord(exc)}"
+            )
+            return
         button.disabled = True
-        await interaction.response.edit_message(view=self)
+        await interaction.edit_original_response(view=self)
 
 
 def _validate_quote_or_timecode(
@@ -913,6 +1286,19 @@ def _error_detail(exc: httpx.HTTPError) -> str:
         return exc.response.json().get("detail", exc.response.text)
     except Exception:
         return str(exc) or "the worker didn't respond in time"
+
+
+def _error_detail_from_discord(exc: discord.HTTPException) -> str:
+    # Error 40005 (HTTP 413) is by far the realistic failure mode for
+    # interaction.channel.send() here — the worker's own
+    # max_file_size_bytes downscale retry already tries to keep renders
+    # under a safe default, but a server with a lower effective upload
+    # cap (no boost) or an unusually long/high-motion clip can still slip
+    # past it. Give a clear, actionable message for that specific case
+    # rather than Discord's raw "Request entity too large".
+    if exc.code == 40005:
+        return "the clip file is too large for this server's upload limit — try a shorter span"
+    return exc.text or str(exc)
 
 
 def _library_results_embed(

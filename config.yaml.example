@@ -43,8 +43,15 @@ render_defaults:
   fps: 15
   width: 480
   min_duration_seconds: 1
-  max_duration_seconds: 15
+  max_duration_seconds: 30
   format: gif
+  # A render exceeding this gets retried at progressively smaller fps/
+  # width until it fits. 10MB is empirically confirmed (not just assumed)
+  # against a real non-boosted Discord guild — a raw 10MB upload
+  # succeeded, 10.5MB failed with a 413. If your server has a boost,
+  # Discord's cap is higher, but confirm it against a real upload before
+  # raising this rather than trusting a documented number at face value.
+  max_file_size_bytes: 10000000
 
 # Embedded-subtitle extraction has no fast seek — it reads sequentially
 # through the whole file. 300s gives real headroom for a large remux over a

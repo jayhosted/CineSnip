@@ -42,7 +42,28 @@ class RenderDefaults(BaseModel):
     # shouldn't produce an oversized render. duration_seconds itself is
     # also clamped to this range as a safety net against misconfiguration.
     min_duration_seconds: float = 1.0
-    max_duration_seconds: float = 15.0
+    # Raised from 15s to 30s once ClipEditView (issue #5) added Merge/
+    # Unmerge — deliberately pulling in several adjacent subtitle lines is
+    # now a normal, expected action, and 15s was tight enough to reject a
+    # 3-4 line merge outright.
+    max_duration_seconds: float = 30.0
+    # Empirically confirmed against this project's own dev Discord server
+    # (a real, non-boosted guild) by uploading raw test files of known
+    # sizes directly via Discord's REST API: 10MB (10,000,000 bytes)
+    # succeeded, 10.5MB failed with a 413 (error code 40005). That matches
+    # discord.py's Guild.filesize_limit for premium_tier 0 exactly
+    # (10,485,760 bytes) — do NOT trust web-search summaries claiming
+    # Discord raised this to 20MB "as of August 2026"; that claim was
+    # checked here and is wrong (or refers to something other than a
+    # regular bot/API channel upload), and briefly shipping with a 19MB
+    # threshold based on it caused real Post-to-channel failures. A render
+    # exceeding this gets retried at progressively smaller fps/width
+    # (ffmpeg.py's _DOWNSCALE_TIERS in api.py) rather than failing
+    # outright; raise this only if you've independently confirmed your own
+    # server's real upload cap is higher (e.g. via a boost) the same way —
+    # don't trust a documented number without testing it against a real
+    # upload on your own guild first.
+    max_file_size_bytes: int = 10_000_000
 
 
 class WorkerConfig(BaseModel):

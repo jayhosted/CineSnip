@@ -176,6 +176,72 @@ class RandomQuoteResponse(BaseModel):
     text: str
 
 
+# Tried in order, only once the configured-settings render already
+# exceeds render_defaults.max_file_size_bytes — each entry is (fps,
+# width), applied as a cap (min(configured, tier value), never upscaling
+# past what was actually requested). FPS drops before width: a moderate
+# frame-rate cut is usually less visually noticeable than shrinking the
+# frame itself, especially for the short dialogue-driven clips this
+# project generates, and a GIF's file size scales roughly with frame
+# count — cutting fps buys real size reduction before touching
+# resolution at all. Width only comes down once fps alone isn't enough,
+# and even then only as far as needed.
+_DOWNSCALE_TIERS: list[tuple[int, int]] = [
+    (12, 480),
+    (10, 400),
+    (8, 320),
+    (8, 240),
+]
+
+
+async def _render_within_size_limit(
+    renderer: ClipRenderer,
+    container_path: str,
+    start: float,
+    clip_duration: float,
+    scratch_dir: Path,
+    clip_format: str,
+    subtitle_entries,
+    style_preset,
+    three_d_format: str,
+    subtitle_overrides: dict[int, str | None] | None,
+    configured_fps: int,
+    configured_width: int,
+    max_bytes: int,
+) -> bytes:
+    """Renders at the configured fps/width first; only if the result
+    exceeds max_bytes does it retry at progressively smaller settings
+    from _DOWNSCALE_TIERS, stopping as soon as one fits. If every tier is
+    exhausted and still too large (a very long or high-motion clip), the
+    smallest attempt made is returned rather than erroring — a
+    still-oversized clip is more useful than none, and Discord's own
+    upload rejection (surfaced to the user as a clear error, not a raw
+    500) is the actual final backstop CLAUDE.md Section 7 falls back on."""
+    clip_bytes = await renderer.render_clip(
+        container_path, start, clip_duration, scratch_dir, clip_format,
+        subtitle_entries=subtitle_entries, style=style_preset,
+        three_d_format=three_d_format, subtitle_overrides=subtitle_overrides,
+    )
+    if len(clip_bytes) <= max_bytes:
+        return clip_bytes
+
+    smallest = clip_bytes
+    for tier_fps, tier_width in _DOWNSCALE_TIERS:
+        fps = min(configured_fps, tier_fps)
+        width = min(configured_width, tier_width)
+        attempt = await renderer.render_clip(
+            container_path, start, clip_duration, scratch_dir, clip_format,
+            subtitle_entries=subtitle_entries, style=style_preset,
+            three_d_format=three_d_format, subtitle_overrides=subtitle_overrides,
+            fps=fps, width=width,
+        )
+        if len(attempt) < len(smallest):
+            smallest = attempt
+        if len(attempt) <= max_bytes:
+            return attempt
+    return smallest
+
+
 def _format_display_timecode(seconds: float) -> str:
     total_seconds = int(seconds)
     hours, remainder = divmod(total_seconds, 3600)
@@ -506,16 +572,20 @@ def create_app(settings: Settings) -> FastAPI:
         resolved_style = requested_style if style_preset is not None else "none"
 
         try:
-            clip_bytes = await app.state.renderer.render_clip(
+            clip_bytes = await _render_within_size_limit(
+                app.state.renderer,
                 container_path,
                 start,
                 clip_duration,
                 settings.scratch_dir,
                 clip_format,
-                subtitle_entries=subtitle_entries,
-                style=style_preset,
-                three_d_format=settings.three_d_format_for(movie.library_name),
-                subtitle_overrides=subtitle_overrides or None,
+                subtitle_entries,
+                style_preset,
+                settings.three_d_format_for(movie.library_name),
+                subtitle_overrides or None,
+                settings.render_defaults.fps,
+                settings.render_defaults.width,
+                settings.render_defaults.max_file_size_bytes,
             )
         except RenderTimeoutError as exc:
             raise HTTPException(status_code=504, detail=str(exc)) from exc
