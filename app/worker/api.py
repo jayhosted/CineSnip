@@ -182,6 +182,17 @@ class RandomQuoteResponse(BaseModel):
     end: float
     timecode: str
     text: str
+    # Opaque per-pick identity the bot echoes back as exclude/most_recent on
+    # a reroll, so a shuffle journey never repeats a line already shown.
+    entry_id: int
+    # Size of the eligible candidate pool for this exact scope/filter,
+    # ignoring exclusion — lets the bot disable Shuffle and say so up front
+    # when there's only one match (CLAUDE.md's "Celina" fix), instead of a
+    # button that silently does nothing.
+    pool_size: int
+    # True if the pool had to reset (every candidate already excluded) to
+    # produce this pick.
+    exhausted: bool
 
 
 # Tried in order, only once the configured-settings render already
@@ -366,6 +377,25 @@ async def _movie_library_matches(
     )
     truncated = len(matches) > qm.fetch_limit
     return cached_titles, matches[: qm.fetch_limit], truncated
+
+
+def _random_quote_response(result) -> RandomQuoteResponse:
+    """Shared by /random-quote, /random-line, and /random-line-show — turns
+    a library_search.RandomPick into the wire response, echoing entry_id/
+    pool_size/exhausted so the bot can track a reroll journey's history."""
+    pick = result.pick
+    return RandomQuoteResponse(
+        rating_key=pick.rating_key,
+        title=pick.title,
+        library_name=pick.library_name,
+        start=pick.match.start,
+        end=pick.match.end,
+        timecode=_format_display_timecode(pick.match.start),
+        text=pick.match.text,
+        entry_id=pick.entry_id,
+        pool_size=result.pool_size,
+        exhausted=result.exhausted,
+    )
 
 
 def _library_search_payload(matches: list[LibraryQuoteMatch], qm, truncated: bool) -> dict:
@@ -786,7 +816,10 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/random-quote", response_model=RandomQuoteResponse)
     async def random_quote(
-        quote: str | None = None, media: Literal["movie", "tv", "all"] = "all"
+        quote: str | None = None,
+        media: Literal["movie", "tv", "all"] = "all",
+        exclude: list[int] = Query(default=[]),
+        most_recent: int | None = None,
     ) -> RandomQuoteResponse:
         # Tier 1 (already-cached titles) only, deliberately — no auto-extend,
         # same reasoning as elsewhere: extracting subtitles for random titles
@@ -805,19 +838,112 @@ def create_app(settings: Settings) -> FastAPI:
             for t in search_index.list_titles(settings.quote_index_db_path)
             if t.library_name in allowed_libraries
         ]
-        result = pick_random_quote(settings.quote_index_db_path, cached_titles, quote)
+        result = pick_random_quote(
+            settings.quote_index_db_path,
+            cached_titles,
+            quote,
+            exclude_entry_ids=frozenset(exclude),
+            most_recent_entry_id=most_recent,
+        )
         if result is None:
             raise HTTPException(status_code=404, detail="No matching cached line found.")
 
-        return RandomQuoteResponse(
-            rating_key=result.rating_key,
-            title=result.title,
-            library_name=result.library_name,
-            start=result.match.start,
-            end=result.match.end,
-            timecode=_format_display_timecode(result.match.start),
-            text=result.match.text,
+        return _random_quote_response(result)
+
+    @app.get("/random-line/{rating_key}", response_model=RandomQuoteResponse)
+    async def random_line(
+        rating_key: int,
+        exclude: list[int] = Query(default=[]),
+        most_recent: int | None = None,
+    ) -> RandomQuoteResponse:
+        # /snip movie with no quote/timecode given: a "filtered random" pick
+        # (min-word-count quality filter) scoped to just this one title,
+        # extracting on demand if not yet cached — mirrors /resolve-quote.
+        movie, result = await _load_subtitles(rating_key)
+
+        if result.source is SubtitleSource.NONE or not result.entries:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"No usable subtitles for '{movie.title}' (no sidecar .srt "
+                    "and no text subtitle stream). Random pick isn't available "
+                    "for this title — use timecode instead."
+                ),
+            )
+
+        cached_titles = [
+            CachedTitle(
+                guid=movie.guid,
+                rating_key=movie.rating_key,
+                title=movie.title,
+                library_name=movie.library_name,
+            )
+        ]
+        picked = pick_random_quote(
+            settings.quote_index_db_path,
+            cached_titles,
+            quote=None,
+            exclude_entry_ids=frozenset(exclude),
+            most_recent_entry_id=most_recent,
+            min_words=settings.quote_match.random_min_words,
         )
+        if picked is None:
+            raise HTTPException(status_code=404, detail="No usable line found for this title.")
+
+        return _random_quote_response(picked)
+
+    @app.get("/random-line-show/{show_rating_key}", response_model=RandomQuoteResponse)
+    async def random_line_show(
+        show_rating_key: int,
+        season: int | None = None,
+        episode: int | None = None,
+        exclude: list[int] = Query(default=[]),
+        most_recent: int | None = None,
+    ) -> RandomQuoteResponse:
+        # /snip tv with no quote/timecode given: whole-show scope by default
+        # (mirrors whole-show quote search), or a single episode when
+        # season+episode are both given.
+        if (season is None) != (episode is None):
+            raise HTTPException(
+                status_code=422, detail="season and episode must be given together or not at all."
+            )
+
+        if season is not None:
+            try:
+                ep = await asyncio.to_thread(
+                    app.state.plex.get_episode, show_rating_key, season, episode
+                )
+            except EpisodeNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            episodes = [ep]
+        else:
+            try:
+                episodes = await asyncio.to_thread(app.state.plex.list_episodes, show_rating_key)
+            except ShowNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        # Sequential, not gathered concurrently — same reasoning as
+        # /search-episodes-quote: avoids hammering ffmpeg/Plex with a
+        # dozen-plus simultaneous extractions for a never-touched show.
+        for ep in episodes:
+            await _ensure_episode_cached(ep)
+
+        cached_titles = [
+            CachedTitle(guid=ep.guid, rating_key=ep.rating_key, title=ep.title, library_name=ep.library_name)
+            for ep in episodes
+        ]
+        picked = pick_random_quote(
+            settings.quote_index_db_path,
+            cached_titles,
+            quote=None,
+            exclude_entry_ids=frozenset(exclude),
+            most_recent_entry_id=most_recent,
+            min_words=settings.quote_match.random_min_words,
+        )
+        if picked is None:
+            raise HTTPException(status_code=404, detail="No usable line found for this show.")
+
+        return _random_quote_response(picked)
 
     # Tier 2: extends /search-quote into not-yet-cached movie titles, gated
     # behind library_sync.enabled (CLAUDE.md Roadmap / issue #2 design spec) —

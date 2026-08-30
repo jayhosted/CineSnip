@@ -3,8 +3,8 @@ from unittest.mock import AsyncMock
 
 import discord
 
-from app.bot.cogs.gif import _PAGE_SIZE, QuoteMatchView
-from app.bot.worker_client import QuoteMatchResult
+from app.bot.cogs.gif import _PAGE_SIZE, QuoteMatchView, RandomResultView
+from app.bot.worker_client import QuoteMatchResult, RandomQuoteResult
 
 
 def _quote_match(i: int, score: float = 60.0) -> QuoteMatchResult:
@@ -369,3 +369,124 @@ def test_library_search_view_component_rows_stable_across_page_change():
     # Finding 3: the "Search N more" button must keep its own row after the
     # prev/next buttons are torn down and rebuilt on a page change.
     assert after == before
+
+
+def _random_pick(
+    rating_key=1, title="Film", start=0.0, end=2.0, text="Line",
+    entry_id=1, pool_size=5, exhausted=False,
+) -> RandomQuoteResult:
+    return RandomQuoteResult(
+        rating_key=rating_key, title=title, library_name="Movies",
+        start=start, end=end, timecode=f"0:{int(start):02d}", text=text,
+        entry_id=entry_id, pool_size=pool_size, exhausted=exhausted,
+    )
+
+
+class _FakeRenderResult:
+    def __init__(self, content: bytes = b"clip-bytes", format: str = "gif") -> None:
+        self.content = content
+        self.format = format
+
+
+class _FakeWorker:
+    def __init__(self) -> None:
+        self.render = AsyncMock(return_value=_FakeRenderResult())
+
+
+class _FakeFetch:
+    """Records every call's (exclude, most_recent) args and returns picks
+    from a preset queue, one per call."""
+
+    def __init__(self, picks: list[RandomQuoteResult]) -> None:
+        self._picks = list(picks)
+        self.calls: list[tuple[frozenset, int | None]] = []
+
+    async def __call__(self, exclude: frozenset[int], most_recent: int | None) -> RandomQuoteResult:
+        self.calls.append((exclude, most_recent))
+        return self._picks.pop(0)
+
+
+def test_random_result_view_disables_shuffle_when_pool_size_is_one():
+    view = RandomResultView(_FakeWorker(), _FakeFetch([]), _random_pick(pool_size=1), b"x", "clip.gif")
+
+    assert view.shuffle.disabled is True
+
+
+def test_random_result_view_enables_shuffle_when_pool_has_more_than_one():
+    view = RandomResultView(_FakeWorker(), _FakeFetch([]), _random_pick(pool_size=5), b"x", "clip.gif")
+
+    assert view.shuffle.disabled is False
+
+
+def test_random_result_view_shuffle_adds_previous_button_and_passes_exclusion():
+    worker = _FakeWorker()
+    fetch = _FakeFetch([_random_pick(entry_id=2, text="Second", pool_size=5)])
+    view = RandomResultView(worker, fetch, _random_pick(entry_id=1, text="First", pool_size=5), b"x", "clip.gif")
+    assert view._previous_button not in view.children
+
+    asyncio.run(view.shuffle.callback(_fake_interaction()))
+
+    assert fetch.calls == [(frozenset({1}), 1)]
+    assert view._previous_button in view.children
+    assert view._previous_button.disabled is False
+    assert view._current.pick.text == "Second"
+
+
+def test_random_result_view_previous_steps_back_without_refetching():
+    worker = _FakeWorker()
+    fetch = _FakeFetch([_random_pick(entry_id=2, text="Second", pool_size=5)])
+    view = RandomResultView(worker, fetch, _random_pick(entry_id=1, text="First", pool_size=5), b"x", "clip.gif")
+    asyncio.run(view.shuffle.callback(_fake_interaction()))
+
+    asyncio.run(view._on_previous(_fake_interaction()))
+
+    assert len(fetch.calls) == 1  # Previous must not call fetch again
+    assert view._current.pick.text == "First"
+    assert view._previous_button.disabled is True
+
+
+def test_random_result_view_shuffle_after_previous_discards_stale_forward_history():
+    worker = _FakeWorker()
+    fetch = _FakeFetch([
+        _random_pick(entry_id=2, text="Second", pool_size=5),
+        _random_pick(entry_id=3, text="Third", pool_size=5),
+    ])
+    view = RandomResultView(worker, fetch, _random_pick(entry_id=1, text="First", pool_size=5), b"x", "clip.gif")
+    asyncio.run(view.shuffle.callback(_fake_interaction()))  # -> Second
+    asyncio.run(view._on_previous(_fake_interaction()))  # back to First
+
+    asyncio.run(view.shuffle.callback(_fake_interaction()))  # branches to Third, not Second
+
+    assert view._current.pick.text == "Third"
+    assert len(view._history) == 2
+
+
+def test_random_result_view_accumulates_seen_entry_ids_across_shuffles():
+    worker = _FakeWorker()
+    fetch = _FakeFetch([
+        _random_pick(entry_id=2, text="Second", pool_size=5),
+        _random_pick(entry_id=3, text="Third", pool_size=5),
+    ])
+    view = RandomResultView(worker, fetch, _random_pick(entry_id=1, text="First", pool_size=5), b"x", "clip.gif")
+
+    asyncio.run(view.shuffle.callback(_fake_interaction()))
+    asyncio.run(view.shuffle.callback(_fake_interaction()))
+
+    assert fetch.calls[1] == (frozenset({1, 2}), 2)
+
+
+def test_random_result_view_exhausted_pick_resets_seen_set_to_just_the_new_pick():
+    worker = _FakeWorker()
+    fetch = _FakeFetch([
+        _random_pick(entry_id=2, text="Second", pool_size=2, exhausted=True),
+        _random_pick(entry_id=1, text="First again", pool_size=2),
+    ])
+    view = RandomResultView(worker, fetch, _random_pick(entry_id=1, text="First", pool_size=2), b"x", "clip.gif")
+
+    asyncio.run(view.shuffle.callback(_fake_interaction()))
+    asyncio.run(view.shuffle.callback(_fake_interaction()))
+
+    # Second call's exclude set must be reset to just {2} (the exhausted
+    # pick), not the ever-growing {1, 2} — otherwise a 2-line pool would
+    # force every subsequent pick to also come back exhausted.
+    assert fetch.calls[1] == (frozenset({2}), 2)

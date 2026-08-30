@@ -4,14 +4,19 @@ import asyncio
 import io
 import logging
 import re
-from typing import Literal
+from typing import Awaitable, Callable, Literal
 
 import discord
 import httpx
 from discord import app_commands
 from discord.ext import commands
 
-from app.bot.worker_client import LibraryQuoteMatchResult, QuoteMatchResult, SubtitleEntryResult
+from app.bot.worker_client import (
+    LibraryQuoteMatchResult,
+    QuoteMatchResult,
+    RandomQuoteResult,
+    SubtitleEntryResult,
+)
 
 logger = logging.getLogger("cinesnip.bot.gif")
 
@@ -1237,59 +1242,95 @@ class ClipEditView(ClipResultView):
         await interaction.edit_original_response(view=self)
 
 
+# Signature shared by every random-pick source /snip random, /snip movie,
+# and /snip tv can fetch from (library-wide, single-title, or whole-show
+# scope) — RandomResultView only ever talks to its caller through this,
+# never to a specific worker endpoint, so the Shuffle/Previous history
+# logic below is written once and reused by all three.
+RandomFetch = Callable[[frozenset[int], "int | None"], Awaitable[RandomQuoteResult]]
+
+
+class _RandomHistoryEntry:
+    __slots__ = ("pick", "content", "filename")
+
+    def __init__(self, pick: RandomQuoteResult, content: bytes, filename: str) -> None:
+        self.pick = pick
+        self.content = content
+        self.filename = filename
+
+
 class RandomResultView(discord.ui.View):
-    """Shown by /snip random: just Shuffle (re-roll + re-render in place,
-    same message-edit pattern as ClipResultView's style swap) and Post to
-    channel — no confirm-the-timestamp step (doesn't apply to a random
-    pick) and no style select (CLAUDE.md's random-command design keeps this
-    minimal)."""
+    """Shown by /snip random and by /snip movie's/tv's random-pick path (no
+    quote/timecode given): Shuffle (re-roll + re-render in place, same
+    message-edit pattern as ClipResultView's style swap), Previous (steps
+    back through this journey's history once it has more than one entry —
+    instant, no re-render, since each history entry keeps its own rendered
+    bytes), and Post to channel. No confirm-the-timestamp step (doesn't
+    apply to a random pick) and no style select (CLAUDE.md's random-command
+    design keeps this minimal).
+
+    Shuffle tracks every entry_id shown this journey and excludes them from
+    the next pick, so a small pool (e.g. a narrow quote match with only a
+    couple of hits) can't silently repeat the same line — CLAUDE.md's
+    "Celina" fix. Once every candidate has been shown, the worker resets
+    the pool (reported via RandomQuoteResult.exhausted) rather than
+    returning nothing, and this view's own tracking resets to match so the
+    next few shuffles don't immediately loop back to the same handful of
+    picks. Shuffle is disabled outright when pool_size <= 1 — nothing to
+    shuffle to — rather than left as a button that looks broken.
+    """
 
     def __init__(
         self,
         worker,
-        quote: str | None,
-        media: str,
-        rating_key: int,
-        title: str,
-        timecode: str,
-        duration: float,
+        fetch: RandomFetch,
+        initial_pick: RandomQuoteResult,
         content: bytes,
         filename: str,
     ) -> None:
         super().__init__(timeout=300)
         self._worker = worker
-        self._quote = quote
-        self._media = media
-        self._rating_key = rating_key
-        self._title = title
-        self._timecode = timecode
-        self._duration = duration
-        self._content = content
-        self._filename = filename
+        self._fetch = fetch
+        self._history: list[_RandomHistoryEntry] = [
+            _RandomHistoryEntry(initial_pick, content, filename)
+        ]
+        self._pointer = 0
+        self._seen_entry_ids: set[int] = {initial_pick.entry_id}
+
+        self._previous_button = discord.ui.Button(
+            label="◀ Previous", style=discord.ButtonStyle.secondary, row=0
+        )
+        self._previous_button.callback = self._on_previous
+
+        self.shuffle.disabled = initial_pick.pool_size <= 1
+
+    @property
+    def _current(self) -> _RandomHistoryEntry:
+        return self._history[self._pointer]
+
+    def _render_content(self, pick: RandomQuoteResult, exhausted: bool = False) -> str:
+        note = " *(seen every match — starting over)*" if exhausted else ""
+        return f"**{pick.title}** — {pick.timecode}{note}"
 
     @discord.ui.button(label="🔀 Shuffle", style=discord.ButtonStyle.secondary, row=0)
     async def shuffle(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         await interaction.response.defer()
+        most_recent = self._current.pick.entry_id
         try:
-            picked = await self._worker.random_quote(self._quote, self._media)
+            picked = await self._fetch(frozenset(self._seen_entry_ids), most_recent)
         except httpx.HTTPError as exc:
             await interaction.edit_original_response(
                 content=f"Couldn't find another match: {_error_detail(exc)}"
             )
             return
 
-        self._rating_key = picked.rating_key
-        self._title = picked.title
-        self._timecode = str(picked.start)
-        self._duration = picked.end - picked.start
-
         try:
             render_result = await self._worker.render(
-                self._rating_key,
-                self._timecode,
-                duration=self._duration,
+                picked.rating_key,
+                str(picked.start),
+                duration=picked.end - picked.start,
                 style="classic",
             )
         except httpx.HTTPError as exc:
@@ -1298,11 +1339,40 @@ class RandomResultView(discord.ui.View):
             )
             return
 
-        self._content = render_result.content
-        self._filename = f"clip.{render_result.format}"
-        file = discord.File(io.BytesIO(self._content), filename=self._filename)
+        content = render_result.content
+        filename = f"clip.{render_result.format}"
+
+        self._seen_entry_ids = (
+            {picked.entry_id} if picked.exhausted else self._seen_entry_ids | {picked.entry_id}
+        )
+        # Shuffling from a stepped-back point (via Previous) branches a new
+        # path rather than resurrecting whatever used to come next.
+        self._history = self._history[: self._pointer + 1]
+        self._history.append(_RandomHistoryEntry(picked, content, filename))
+        self._pointer += 1
+
+        if self._previous_button not in self.children:
+            self.add_item(self._previous_button)
+        self._previous_button.disabled = self._pointer == 0
+        self.shuffle.disabled = picked.pool_size <= 1
+
+        file = discord.File(io.BytesIO(content), filename=filename)
         await interaction.edit_original_response(
-            content=f"**{picked.title}** — {picked.timecode}", attachments=[file], view=self
+            content=self._render_content(picked, exhausted=picked.exhausted),
+            attachments=[file],
+            view=self,
+        )
+
+    async def _on_previous(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        self._pointer -= 1
+        entry = self._current
+        self._previous_button.disabled = self._pointer == 0
+        self.shuffle.disabled = entry.pick.pool_size <= 1
+
+        file = discord.File(io.BytesIO(entry.content), filename=entry.filename)
+        await interaction.edit_original_response(
+            content=self._render_content(entry.pick), attachments=[file], view=self
         )
 
     @discord.ui.button(label="Post to channel", style=discord.ButtonStyle.primary, row=0)
@@ -1311,12 +1381,10 @@ class RandomResultView(discord.ui.View):
     ) -> None:
         # See ClipResultView.post — same defer-before-send fix.
         await interaction.response.defer()
-        file = discord.File(io.BytesIO(self._content), filename=self._filename)
+        entry = self._current
+        file = discord.File(io.BytesIO(entry.content), filename=entry.filename)
         content = _post_metadata_line(
-            self._title,
-            float(self._timecode),
-            float(self._timecode) + self._duration,
-            interaction.user.display_name,
+            entry.pick.title, entry.pick.start, entry.pick.end, interaction.user.display_name,
         )
         try:
             await interaction.channel.send(content=content, file=file)
@@ -1336,9 +1404,10 @@ def _validate_quote_or_timecode(
     two commands — the exact class of bug CLAUDE.md's library-search
     preferred_start fix (Section 2) already hit once from duplicated logic.
     Returns an error message, or None if valid.
+
+    Giving neither quote nor timecode is valid — it means "pick a random
+    line from this title" (see _run_random_result), not an error.
     """
-    if not quote and not timecode:
-        return "Give either a `quote:` or a `timecode:`."
     if end_timecode and not timecode:
         return "`end_timecode` needs a `timecode` to start from."
     return None
@@ -1718,7 +1787,7 @@ class GifCog(commands.Cog):
             await interaction.edit_original_response(
                 content="Generating…", embed=None, view=None
             )
-        else:
+        elif timecode:
             render_timecode = timecode
             render_duration = None
             # A bare timecode has no known subtitle availability — default
@@ -1727,6 +1796,23 @@ class GifCog(commands.Cog):
             await interaction.edit_original_response(
                 content=f"Generating a clip from {resolved.title}{library_note}…"
             )
+        else:
+            # Neither quote nor timecode given: pick a random line from this
+            # title (CLAUDE.md's per-title random-pick design) — its own
+            # result view (Shuffle/Previous/Post), not the render pipeline
+            # below, since there's no confirm-the-timestamp step to make and
+            # no style select for a random pick (matches /snip random).
+            await interaction.edit_original_response(
+                content=f"Picking a random line from {resolved.title}{library_note}…"
+            )
+
+            async def fetch(exclude: frozenset[int], most_recent: int | None) -> RandomQuoteResult:
+                return await self.bot.worker.random_line(
+                    rating_key, exclude_entry_ids=exclude, most_recent_entry_id=most_recent
+                )
+
+            await self._run_random_result(interaction, fetch)
+            return
 
         render_end_timecode = end_timecode if not quote else None
         await self._render_and_respond(
@@ -1799,7 +1885,8 @@ class GifCog(commands.Cog):
     )
     @app_commands.describe(
         film="The film to search for",
-        quote="A line of dialogue to find (fuzzy — close is fine)",
+        quote="A line of dialogue to find (fuzzy — close is fine); omit both quote and "
+        "timecode for a random line",
         timecode="Timestamp, e.g. 1:23:45 or 1h23m45s",
         end_timecode="Custom clip end (timecode only, not quote) — same formats as timecode",
         format="Output format (default: gif — mp4/webm are smaller but do not autoplay in Discord)",
@@ -1945,6 +2032,46 @@ class GifCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         await self._run_library_search(interaction, quote)
 
+    async def _run_random_result(
+        self, interaction: discord.Interaction, fetch: RandomFetch
+    ) -> None:
+        # Shared by /snip random and by /snip movie's/tv's random-pick path
+        # (no quote/timecode given) — everything past "how to get the first
+        # pick" is identical, so RandomResultView (Shuffle/Previous/Post)
+        # only ever talks to `fetch`, never to a specific worker endpoint.
+        try:
+            picked = await fetch(frozenset(), None)
+        except httpx.HTTPError as exc:
+            await interaction.edit_original_response(
+                content=f"Couldn't find a match: {_error_detail(exc)}"
+            )
+            return
+
+        try:
+            render_result = await self.bot.worker.render(
+                picked.rating_key,
+                str(picked.start),
+                duration=picked.end - picked.start,
+                style="classic",
+            )
+        except httpx.HTTPError as exc:
+            await interaction.edit_original_response(
+                content=f"Couldn't generate the clip: {_error_detail(exc)}"
+            )
+            return
+
+        filename = f"clip.{render_result.format}"
+        file = discord.File(io.BytesIO(render_result.content), filename=filename)
+        view = RandomResultView(self.bot.worker, fetch, picked, render_result.content, filename)
+        # CLAUDE.md's "Celina" fix: a single-match pool must say so up
+        # front, not leave Shuffle looking broken when clicked.
+        note = " *(only match — nothing else to shuffle to)*" if picked.pool_size <= 1 else ""
+        await interaction.edit_original_response(
+            content=f"**{picked.title}** — {picked.timecode}{note}",
+            attachments=[file],
+            view=view,
+        )
+
     @snip_group.command(
         name="random",
         description="Pick a random line from your library, optionally matching a word/phrase.",
@@ -1962,48 +2089,12 @@ class GifCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         effective_media = media or "all"
 
-        try:
-            picked = await self.bot.worker.random_quote(quote, effective_media)
-        except httpx.HTTPError as exc:
-            await interaction.edit_original_response(
-                content=f"Couldn't find a match: {_error_detail(exc)}"
+        async def fetch(exclude: frozenset[int], most_recent: int | None) -> RandomQuoteResult:
+            return await self.bot.worker.random_quote(
+                quote, effective_media, exclude_entry_ids=exclude, most_recent_entry_id=most_recent
             )
-            return
 
-        render_timecode = str(picked.start)
-        render_duration = picked.end - picked.start
-
-        try:
-            render_result = await self.bot.worker.render(
-                picked.rating_key,
-                render_timecode,
-                duration=render_duration,
-                style="classic",
-            )
-        except httpx.HTTPError as exc:
-            await interaction.edit_original_response(
-                content=f"Couldn't generate the clip: {_error_detail(exc)}"
-            )
-            return
-
-        filename = f"clip.{render_result.format}"
-        file = discord.File(io.BytesIO(render_result.content), filename=filename)
-        view = RandomResultView(
-            self.bot.worker,
-            quote,
-            effective_media,
-            picked.rating_key,
-            picked.title,
-            render_timecode,
-            render_duration,
-            render_result.content,
-            filename,
-        )
-        await interaction.edit_original_response(
-            content=f"**{picked.title}** — {picked.timecode}",
-            attachments=[file],
-            view=view,
-        )
+        await self._run_random_result(interaction, fetch)
 
     @snip_group.command(
         name="tv",
@@ -2014,7 +2105,7 @@ class GifCog(commands.Cog):
         season="Season number (requires episode)",
         episode="Episode number within the season (requires season)",
         quote="A line of dialogue to find (fuzzy — close is fine); omit season/episode to "
-        "search the whole show",
+        "search the whole show; omit quote and timecode entirely for a random line",
         timecode="Timestamp, e.g. 1:23:45 or 1h23m45s — requires season/episode",
         end_timecode="Custom clip end (timecode only, not quote) — same formats as timecode",
         format="Output format (default: gif — mp4/webm are smaller but do not autoplay in Discord)",
@@ -2075,9 +2166,23 @@ class GifCog(commands.Cog):
             )
             return
 
-        # No episode given — quote is guaranteed at this point (a bare
-        # timecode with no episode was already rejected above, and quote
-        # XOR timecode was already validated).
+        # No episode given, and the "timecode needs an episode" check above
+        # already rejected a bare timecode here — so quote is either given
+        # (search the whole show) or genuinely absent (random line from any
+        # episode, CLAUDE.md's per-title/per-show random-pick design).
+        if quote is None:
+            await interaction.edit_original_response(
+                content="Picking a random line from the show…"
+            )
+
+            async def fetch(exclude: frozenset[int], most_recent: int | None) -> RandomQuoteResult:
+                return await self.bot.worker.random_line_show(
+                    show_rating_key, exclude_entry_ids=exclude, most_recent_entry_id=most_recent
+                )
+
+            await self._run_random_result(interaction, fetch)
+            return
+
         await interaction.edit_original_response(
             content=f'Searching every episode for "{quote}" — this can take a moment for '
             "episodes not seen before…"

@@ -9,6 +9,13 @@ from app.worker.quote_index import CachedTitle
 from app.worker.quotes import QuoteMatch, find_quote_matches, normalize_for_match, strip_markup
 from app.worker.subtitles import SubtitleEntry
 
+# Below this many words (after strip_markup), a line is excluded from a
+# "filtered random" pick (movie/tv random-with-no-quote) — keeps a random
+# pick from landing on filler like "Okay." or "Yeah.". Not applied to
+# /snip random's own pre-existing no-quote/with-quote paths (min_words=1
+# there), only to the new per-title/per-show random flow.
+_DEFAULT_RANDOM_MIN_WORDS = 1
+
 # Default number of entries either side of an FTS5 hit pulled into its
 # adjacent-cue slice before fuzzy-scoring — must be at least
 # context_lines + 1 (see _window_pad below) so find_quote_matches' own
@@ -27,6 +34,26 @@ class LibraryQuoteMatch:
     title: str
     library_name: str
     match: QuoteMatch
+    # The underlying entries.id primary key for this match's first cue —
+    # only populated by pick_random_quote (search_cached_library's ranked
+    # results have no use for it). Serves as an opaque per-pick identity a
+    # caller can echo back as exclude_entry_ids/most_recent_entry_id on a
+    # reroll, so a shuffle journey never repeats a line it's already shown.
+    entry_id: int | None = None
+
+
+@dataclass(frozen=True)
+class RandomPick:
+    pick: LibraryQuoteMatch
+    # Size of the eligible candidate pool for this exact query scope +
+    # quality filter, ignoring exclude_entry_ids — lets a caller detect a
+    # single-match pool up front (CLAUDE.md's "Celina" fix: disable Shuffle
+    # and say so, rather than leaving a button that looks broken).
+    pool_size: int
+    # True if every eligible candidate had already been excluded and the
+    # pool had to reset to produce this pick (still avoiding an immediate
+    # repeat of most_recent_entry_id where possible).
+    exhausted: bool
 
 
 def _window_pad(context_lines: int) -> int:
@@ -252,18 +279,52 @@ def search_cached_library(
     return _diversify_and_rank(per_title_matches, result_limit)
 
 
+def _resolve_pool_pick(
+    pool: list[LibraryQuoteMatch],
+    exclude_entry_ids: frozenset[int],
+    most_recent_entry_id: int | None,
+) -> RandomPick | None:
+    """Shared exclusion/exhaustion-reset logic for both pick_random_quote
+    branches, once each has materialized its candidate pool as a list of
+    LibraryQuoteMatch (each carrying its own entry_id). Fixes the "Celina"
+    bug: a narrow pool must not repeat an entry already shown this
+    reroll journey, and once every candidate has been excluded, the pool
+    resets (still dodging an immediate repeat of most_recent_entry_id)
+    rather than returning nothing.
+    """
+    if not pool:
+        return None
+
+    pool_size = len(pool)
+    eligible = [m for m in pool if m.entry_id not in exclude_entry_ids]
+    exhausted = False
+    if not eligible:
+        exhausted = True
+        eligible = [m for m in pool if m.entry_id != most_recent_entry_id]
+        if not eligible:
+            eligible = pool
+
+    return RandomPick(pick=random.choice(eligible), pool_size=pool_size, exhausted=exhausted)
+
+
 def pick_random_quote(
     db_path: Path,
     cached_titles: list[CachedTitle],
     quote: str | None,
+    exclude_entry_ids: frozenset[int] = frozenset(),
+    most_recent_entry_id: int | None = None,
+    min_words: int = _DEFAULT_RANDOM_MIN_WORDS,
     max_window_gap_seconds: float = 3.0,
     context_lines: int = 1,
-) -> LibraryQuoteMatch | None:
+) -> RandomPick | None:
     """Pick one random cached line, scoped to `cached_titles` (the caller's
     already-resolved media-type filter, same convention as
-    search_cached_library above). Used by /snip random.
+    search_cached_library above). Used by /snip random and by the
+    per-title/per-show random flow (/snip movie, /snip tv with no
+    quote/timecode given).
 
-    Without a quote, picks a genuinely random cached entry.
+    Without a quote, picks a genuinely random cached entry (optionally
+    filtered by min_words — see _DEFAULT_RANDOM_MIN_WORDS).
 
     With a quote, restricts to WHOLE-WORD matches only (find_quote_matches'
     literal-substring tier, which is force-scored to exactly 100.0 — see
@@ -271,6 +332,9 @@ def pick_random_quote(
     those literal hits instead of returning the top-ranked one. min_score=
     100.0 is what selects literal-only: the partial-word-overlap bonus tier
     tops out at 95.0, so it can never leak in here.
+
+    `exclude_entry_ids`/`most_recent_entry_id` let a caller track a reroll
+    journey's history — see _resolve_pool_pick.
     """
     if not cached_titles:
         return None
@@ -286,31 +350,85 @@ def pick_random_quote(
     scope_title_ids = list(title_id_to_cached.keys())
 
     if quote is None:
-        picked = search_index.pick_random_entry_id(db_path, scope_title_ids)
-        if picked is None:
-            return None
-        _entry_id, title_id, idx = picked
-        cached = title_id_to_cached[title_id]
-        windowed = search_index.fetch_entry_windows(db_path, [(title_id, idx, idx)])
-        windowed_entries = windowed.get(title_id)
-        if not windowed_entries:
-            return None
-        _, entry = windowed_entries[0]
-        match = QuoteMatch(
-            start=entry.start,
-            end=entry.end,
-            text=strip_markup(entry.text),
-            score=0.0,
-            entry_indices=(entry.index,),
-            context_before=(),
-            context_after=(),
-        )
-        return LibraryQuoteMatch(
-            rating_key=cached.rating_key,
-            title=cached.title,
-            library_name=cached.library_name,
-            match=match,
-        )
+        if min_words <= 1:
+            # Efficient SQL-only path — scales to a whole-library scope
+            # without fetching every candidate's text into Python.
+            pool_size = search_index.count_entries(db_path, scope_title_ids)
+            if pool_size == 0:
+                return None
+            picked = search_index.pick_random_entry_id(
+                db_path, scope_title_ids, exclude_entry_ids=exclude_entry_ids
+            )
+            exhausted = False
+            if picked is None:
+                exhausted = True
+                retry_exclude = (
+                    frozenset({most_recent_entry_id})
+                    if most_recent_entry_id is not None
+                    else frozenset()
+                )
+                picked = search_index.pick_random_entry_id(
+                    db_path, scope_title_ids, exclude_entry_ids=retry_exclude
+                )
+                if picked is None:
+                    picked = search_index.pick_random_entry_id(db_path, scope_title_ids)
+            if picked is None:
+                return None
+            entry_id, title_id, idx = picked
+            cached = title_id_to_cached[title_id]
+            windowed = search_index.fetch_entry_windows(db_path, [(title_id, idx, idx)])
+            windowed_entries = windowed.get(title_id)
+            if not windowed_entries:
+                return None
+            _, entry = windowed_entries[0]
+            match = QuoteMatch(
+                start=entry.start,
+                end=entry.end,
+                text=strip_markup(entry.text),
+                score=0.0,
+                entry_indices=(entry.index,),
+                context_before=(),
+                context_after=(),
+            )
+            pick = LibraryQuoteMatch(
+                rating_key=cached.rating_key,
+                title=cached.title,
+                library_name=cached.library_name,
+                match=match,
+                entry_id=entry_id,
+            )
+            return RandomPick(pick=pick, pool_size=pool_size, exhausted=exhausted)
+
+        # Quality-filtered path (movie/tv random): scope is always a single
+        # title or one show's episodes, small enough to fetch in full.
+        rows = search_index.list_entry_rows_for_titles(db_path, scope_title_ids)
+        pool = []
+        for entry_id, title_id, idx, start, end, display_text in rows:
+            text = strip_markup(display_text)
+            if len(text.split()) < min_words:
+                continue
+            cached = title_id_to_cached.get(title_id)
+            if cached is None:
+                continue
+            match = QuoteMatch(
+                start=start,
+                end=end,
+                text=text,
+                score=0.0,
+                entry_indices=(idx,),
+                context_before=(),
+                context_after=(),
+            )
+            pool.append(
+                LibraryQuoteMatch(
+                    rating_key=cached.rating_key,
+                    title=cached.title,
+                    library_name=cached.library_name,
+                    match=match,
+                    entry_id=entry_id,
+                )
+            )
+        return _resolve_pool_pick(pool, exclude_entry_ids, most_recent_entry_id)
 
     normalized_quote = normalize_for_match(quote)
     if not normalized_quote:
@@ -346,9 +464,15 @@ def pick_random_quote(
         if cached is None or not windowed_entries:
             continue
         for lo, hi in merged:
-            slice_entries = [entry for _, entry in windowed_entries if lo <= entry.index <= hi]
-            if not slice_entries:
+            # find_quote_matches' entry_indices are positions within
+            # whatever list it's given (slice_entries), NOT the absolute
+            # SubtitleEntry.index — so entry_id lookup must go through the
+            # parallel slice_entry_ids list, not windowed_entries directly.
+            slice_pairs = [(eid, entry) for eid, entry in windowed_entries if lo <= entry.index <= hi]
+            if not slice_pairs:
                 continue
+            slice_entry_ids = [eid for eid, _entry in slice_pairs]
+            slice_entries = [entry for _eid, entry in slice_pairs]
             literal_matches = find_quote_matches(
                 slice_entries,
                 quote,
@@ -364,9 +488,8 @@ def pick_random_quote(
                         title=cached.title,
                         library_name=cached.library_name,
                         match=match,
+                        entry_id=slice_entry_ids[match.entry_indices[0]],
                     )
                 )
 
-    if not pool:
-        return None
-    return random.choice(pool)
+    return _resolve_pool_pick(pool, exclude_entry_ids, most_recent_entry_id)

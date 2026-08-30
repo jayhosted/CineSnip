@@ -455,8 +455,10 @@ def test_pick_random_quote_without_quote_picks_a_cached_line(tmp_path):
     result = pick_random_quote(db_path, cached_titles, quote=None)
 
     assert result is not None
-    assert result.rating_key == 1
-    assert result.match.text == "Nobody expects the Spanish Inquisition!"
+    assert result.pick.rating_key == 1
+    assert result.pick.match.text == "Nobody expects the Spanish Inquisition!"
+    assert result.pool_size == 1
+    assert result.exhausted is False
 
 
 def test_pick_random_quote_with_quote_only_returns_whole_word_matches(tmp_path):
@@ -476,7 +478,7 @@ def test_pick_random_quote_with_quote_only_returns_whole_word_matches(tmp_path):
     for _ in range(10):
         result = pick_random_quote(db_path, cached_titles, quote="cat")
         assert result is not None
-        assert result.rating_key == 1
+        assert result.pick.rating_key == 1
 
 
 def test_pick_random_quote_with_quote_returns_none_when_no_whole_word_match(tmp_path):
@@ -486,3 +488,74 @@ def test_pick_random_quote_with_quote_returns_none_when_no_whole_word_match(tmp_
     cached_titles = [CachedTitle(guid="guid-1", rating_key=1, title="Unrelated Film", library_name="Movies")]
 
     assert pick_random_quote(db_path, cached_titles, quote="cat") is None
+
+
+def test_pick_random_quote_with_quote_excludes_already_seen_entries(tmp_path):
+    # The "Celina" bug: a narrow quote match with a small pool must not
+    # repeat an entry the caller has already marked as seen this journey.
+    db_path = _db_path(tmp_path)
+    _write_title(db_path, "guid-1", 1, "Film", "Movies", ["Celina waved.", "Celina laughed."])
+
+    cached_titles = [CachedTitle(guid="guid-1", rating_key=1, title="Film", library_name="Movies")]
+
+    first = pick_random_quote(db_path, cached_titles, quote="Celina")
+    assert first is not None
+    assert first.pool_size == 2
+
+    second = pick_random_quote(
+        db_path, cached_titles, quote="Celina", exclude_entry_ids=frozenset({first.pick.entry_id})
+    )
+    assert second is not None
+    assert second.pick.match.text != first.pick.match.text
+    assert second.exhausted is False
+
+
+def test_pick_random_quote_with_quote_resets_and_reports_exhausted_when_pool_used_up(tmp_path):
+    db_path = _db_path(tmp_path)
+    _write_title(db_path, "guid-1", 1, "Film", "Movies", ["Celina waved.", "Celina laughed."])
+    cached_titles = [CachedTitle(guid="guid-1", rating_key=1, title="Film", library_name="Movies")]
+
+    first = pick_random_quote(db_path, cached_titles, quote="Celina")
+    second = pick_random_quote(
+        db_path,
+        cached_titles,
+        quote="Celina",
+        exclude_entry_ids=frozenset({first.pick.entry_id}),
+    )
+    seen = frozenset({first.pick.entry_id, second.pick.entry_id})
+
+    result = pick_random_quote(
+        db_path,
+        cached_titles,
+        quote="Celina",
+        exclude_entry_ids=seen,
+        most_recent_entry_id=second.pick.entry_id,
+    )
+
+    assert result is not None
+    assert result.exhausted is True
+    # must never immediately repeat the just-shown line even on reset
+    assert result.pick.match.text != second.pick.match.text
+
+
+def test_pick_random_quote_with_quote_single_result_pool_reports_pool_size_one(tmp_path):
+    db_path = _db_path(tmp_path)
+    _write_title(db_path, "guid-1", 1, "Film", "Movies", ["Celina waved.", "Someone else spoke."])
+    cached_titles = [CachedTitle(guid="guid-1", rating_key=1, title="Film", library_name="Movies")]
+
+    result = pick_random_quote(db_path, cached_titles, quote="Celina")
+
+    assert result is not None
+    assert result.pool_size == 1
+
+
+def test_pick_random_quote_without_quote_applies_min_words_filter(tmp_path):
+    db_path = _db_path(tmp_path)
+    _write_title(db_path, "guid-1", 1, "Film", "Movies", ["Okay.", "This is a much longer line of dialogue."])
+    cached_titles = [CachedTitle(guid="guid-1", rating_key=1, title="Film", library_name="Movies")]
+
+    for _ in range(10):
+        result = pick_random_quote(db_path, cached_titles, quote=None, min_words=3)
+        assert result is not None
+        assert result.pick.match.text == "This is a much longer line of dialogue."
+        assert result.pool_size == 1

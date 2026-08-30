@@ -5,6 +5,7 @@ import time
 from app.worker.quote_index import CachedTitle
 from app.worker.search_index import (
     _connect,
+    count_entries,
     coverage_counts,
     fetch_entries_for_titles,
     fetch_entry_windows,
@@ -13,6 +14,7 @@ from app.worker.search_index import (
     get_title_ids_by_guid,
     has_title,
     iter_all_entries,
+    list_entry_rows_for_titles,
     list_titles,
     list_titles_for_library,
     pick_random_entry_id,
@@ -645,3 +647,76 @@ def test_pick_random_entry_id_only_returns_entries_from_scoped_titles(tmp_path):
         assert result is not None
         entry_id, title_id, idx = result
         assert title_id == scoped_title_id
+
+
+def test_pick_random_entry_id_excludes_given_ids(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    upsert_title(
+        db_path, guid="guid-1", rating_key=101, title="Film One", library_name="Movies",
+        source="sidecar", sidecar_path=None, stream_index=None,
+        entries=_entries("only", "other"), fingerprint=None,
+    )
+    title_id = get_title_ids_by_guid(db_path, ["guid-1"])["guid-1"]
+    first = pick_random_entry_id(db_path, title_ids=[title_id])
+    assert first is not None
+    first_entry_id = first[0]
+
+    # Excluding the only remaining entry must leave nothing to pick.
+    all_entry_ids = {
+        row[0]
+        for row in list_entry_rows_for_titles(db_path, [title_id])
+    }
+    other_entry_id = next(iter(all_entry_ids - {first_entry_id}))
+
+    result = pick_random_entry_id(
+        db_path, title_ids=[title_id], exclude_entry_ids=frozenset({first_entry_id, other_entry_id})
+    )
+    assert result is None
+
+    # Excluding just one must always yield the other one.
+    for _ in range(5):
+        result = pick_random_entry_id(
+            db_path, title_ids=[title_id], exclude_entry_ids=frozenset({first_entry_id})
+        )
+        assert result is not None
+        assert result[0] == other_entry_id
+
+
+def test_count_entries_scoped_to_title_ids(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    _populate_small_corpus(db_path)
+    title_id_1 = get_title_ids_by_guid(db_path, ["guid-1"])["guid-1"]
+    title_id_2 = get_title_ids_by_guid(db_path, ["guid-2"])["guid-2"]
+
+    assert count_entries(db_path, [title_id_1]) == 2
+    assert count_entries(db_path, [title_id_1, title_id_2]) == 4
+
+
+def test_count_entries_empty_scope_or_missing_db(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    _populate_small_corpus(db_path)
+    assert count_entries(db_path, []) == 0
+    assert count_entries(tmp_path / "does-not-exist.db", [1]) == 0
+
+
+def test_list_entry_rows_for_titles(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    _populate_small_corpus(db_path)
+    title_id_1 = get_title_ids_by_guid(db_path, ["guid-1"])["guid-1"]
+
+    rows = list_entry_rows_for_titles(db_path, [title_id_1])
+
+    assert len(rows) == 2
+    texts = sorted(text for _entry_id, _title_id, _idx, _start, _end, text in rows)
+    assert texts == ["jumps over the lazy dog", "the quick brown fox"]
+    for entry_id, title_id, idx, start, end, _text in rows:
+        assert isinstance(entry_id, int)
+        assert title_id == title_id_1
+        assert isinstance(start, float)
+        assert isinstance(end, float)
+
+
+def test_list_entry_rows_for_titles_empty_scope(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    _populate_small_corpus(db_path)
+    assert list_entry_rows_for_titles(db_path, []) == []

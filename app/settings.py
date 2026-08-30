@@ -129,6 +129,11 @@ class QuoteMatchDefaults(BaseModel):
     # remaining_uncached for a possible follow-up "search N more" call —
     # keeps one request bounded in time regardless of library size.
     library_extend_cap: int = 25
+    # /snip movie and /snip tv's random-pick path (no quote/timecode given):
+    # a line under this many words is excluded from the pick, so a random
+    # clip doesn't land on filler like "Okay." or "Yeah." Not applied to
+    # /snip random's own library-wide random pick.
+    random_min_words: int = 3
 
 
 class LibrarySyncDefaults(BaseModel):
