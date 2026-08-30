@@ -211,7 +211,7 @@ form.htmx-request [type="submit"] .btn-label-idle { display: none; }
 .btn-add-row:hover { color: var(--accent-strong); }
 .btn-remove-row {
   flex-shrink: 0; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
-  background: none; border: none; color: var(--text-tertiary); font-size: 17px; line-height: 1; cursor: pointer;
+  background: none; border: none; color: var(--text-tertiary); font-size: 16px; line-height: 1; cursor: pointer;
   border-radius: 6px; transition: color 0.15s ease, background-color 0.15s ease;
 }
 .btn-remove-row:hover { color: var(--danger); background: var(--danger-soft); }
@@ -467,7 +467,7 @@ input[type="text"]:disabled { opacity: 0.6; cursor: not-allowed; }
 .stat-card {
   background: var(--surface);
   border: 1px solid var(--border-subtle);
-  border-radius: 12px;
+  border-radius: 14px;
   padding: 20px;
 }
 .stat-label { font-size: 12px; color: var(--text-tertiary); font-weight: 500; margin-bottom: 10px; }
@@ -479,7 +479,7 @@ input[type="text"]:disabled { opacity: 0.6; cursor: not-allowed; }
 .stat-bar-label { margin-top: 7px; font-size: 12px; color: var(--accent); }
 .stat-note { margin-top: 12px; font-size: 12px; color: var(--text-secondary); }
 
-.coverage-card { margin-top: 20px; padding: 22px 24px; }
+.coverage-card { margin-top: 20px; padding: 22px 24px; max-width: none; }
 .coverage-header { font-size: 13.5px; font-weight: 600; margin-bottom: 14px; }
 .coverage-bar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--surface-2); }
 .coverage-seg-sidecar { background: var(--accent); }
@@ -492,7 +492,7 @@ input[type="text"]:disabled { opacity: 0.6; cursor: not-allowed; }
 .dot-embedded { background: var(--neutral-fill); }
 .dot-none { background: var(--border); }
 
-.sync-card { margin-top: 20px; padding: 24px; }
+.sync-card { margin-top: 20px; padding: 24px; max-width: none; }
 .sync-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; flex-wrap: wrap; gap: 12px; }
 .sync-title { font-size: 15px; font-weight: 600; margin-bottom: 3px; }
 .sync-subtitle { font-size: 12.5px; color: var(--text-tertiary); }

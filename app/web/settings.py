@@ -164,7 +164,15 @@ def register_settings_routes(
 
     @app.get("/settings/discord", response_class=HTMLResponse)
     async def settings_discord(request: Request):
-        return render_tab(request, "discord", "panel_settings_discord.html")
+        from app.web.app import _verify_discord_token, discord_invite_url
+
+        settings = settings_holder.settings
+        invite_url = None
+        if settings.discord_token:
+            ok, _msg, payload = await _verify_discord_token(settings.discord_token)
+            if ok and payload and payload.get("id"):
+                invite_url = discord_invite_url(payload["id"])
+        return render_tab(request, "discord", "panel_settings_discord.html", invite_url=invite_url)
 
     @app.get("/settings/plex", response_class=HTMLResponse)
     async def settings_plex(request: Request):
