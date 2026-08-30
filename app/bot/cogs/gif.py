@@ -15,6 +15,13 @@ from app.bot.worker_client import LibraryQuoteMatchResult, QuoteMatchResult, Sub
 
 logger = logging.getLogger("cinesnip.bot.gif")
 
+# Discord select menus cap at 25 options; the worker now fetches up to
+# quote_match.fetch_limit candidates (default 50, app/settings.py) per
+# search — QuoteMatchView and LibrarySearchView below hold that full batch
+# and page through it in place _PAGE_SIZE at a time (CineSnip issue #7),
+# rather than truncating to what one select/embed can show.
+_PAGE_SIZE = 8
+
 
 def _confidence_label(score: float, min_score: float, confident_score: float) -> str:
     if score >= confident_score:
@@ -53,6 +60,12 @@ class QuoteMatchView(discord.ui.View):
     """Confirm/cancel a quote match, with an optional select menu to browse
     alternatives. Per CLAUDE.md decision #4, browsing alternatives never
     stops the view or re-asks the film step — only Confirm/Cancel does.
+
+    Holds the FULL fetched batch (up to quote_match.fetch_limit candidates,
+    already ranked by the worker) and pages through it in place with
+    Next/Previous buttons, _PAGE_SIZE at a time, once alternatives are
+    shown — Discord's own 25-option select cap means each page's select
+    mirrors only that page's slice, never the whole batch (issue #7).
     """
 
     def __init__(
@@ -74,8 +87,15 @@ class QuoteMatchView(discord.ui.View):
         # LibrarySearchView, re-running this search for a line already
         # picked by its exact text) can pre-select it instead.
         self.index = initial_index
+        # Land on the page containing the pre-selected index, so opening
+        # "show other matches" on a LibrarySearchView-driven re-search
+        # reveals the right page instead of always page 0.
+        self._page = initial_index // _PAGE_SIZE
 
         self._show_others_button: discord.ui.Button | None = None
+        self._select: discord.ui.Select | None = None
+        self._prev_button: discord.ui.Button | None = None
+        self._next_button: discord.ui.Button | None = None
 
         if len(matches) > 1:
             if matches[self.index].score >= confident_score:
@@ -83,7 +103,7 @@ class QuoteMatchView(discord.ui.View):
             else:
                 # Borderline top match: open straight to the alternatives
                 # menu rather than hiding it behind a button.
-                self._add_select()
+                self._show_alternatives()
 
     @property
     def selected(self) -> QuoteMatchResult:
@@ -107,19 +127,65 @@ class QuoteMatchView(discord.ui.View):
         self._show_others_button = button
         self.add_item(button)
 
+    def _show_alternatives(self) -> None:
+        self._add_select()
+        if len(self.matches) > _PAGE_SIZE:
+            self._add_page_buttons()
+
     def _add_select(self) -> None:
+        start = self._page * _PAGE_SIZE
         options = [
             discord.SelectOption(
                 label=(m.text if len(m.text) <= 100 else m.text[:97] + "..."),
                 description=f"{m.timecode} · {m.score:.0f}%",
-                value=str(i),
-                default=(i == self.index),
+                value=str(start + offset),
+                default=(start + offset == self.index),
             )
-            for i, m in enumerate(self.matches)
+            for offset, m in enumerate(self.matches[start : start + _PAGE_SIZE])
         ]
         select = discord.ui.Select(placeholder="Choose a match", options=options)
         select.callback = self._on_select
+        self._select = select
         self.add_item(select)
+
+    def _add_page_buttons(self) -> None:
+        total_pages = (len(self.matches) + _PAGE_SIZE - 1) // _PAGE_SIZE
+        prev_button = discord.ui.Button(
+            label="◀ Previous", style=discord.ButtonStyle.secondary, disabled=self._page == 0
+        )
+        prev_button.callback = self._on_previous
+        self._prev_button = prev_button
+        self.add_item(prev_button)
+
+        next_button = discord.ui.Button(
+            label="Next ▶",
+            style=discord.ButtonStyle.secondary,
+            disabled=self._page >= total_pages - 1,
+        )
+        next_button.callback = self._on_next
+        self._next_button = next_button
+        self.add_item(next_button)
+
+    async def _change_page(self, interaction: discord.Interaction, delta: int) -> None:
+        self._page += delta
+        if self._select is not None:
+            self.remove_item(self._select)
+            self._select = None
+        if self._prev_button is not None:
+            self.remove_item(self._prev_button)
+            self._prev_button = None
+        if self._next_button is not None:
+            self.remove_item(self._next_button)
+            self._next_button = None
+        self._add_select()
+        self._add_page_buttons()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    async def _on_previous(self, interaction: discord.Interaction) -> None:
+        await self._change_page(interaction, -1)
+
+    async def _on_next(self, interaction: discord.Interaction) -> None:
+        await self._change_page(interaction, 1)
 
     async def _on_show_others(self, interaction: discord.Interaction) -> None:
         if self._show_others_button is None:
@@ -131,26 +197,21 @@ class QuoteMatchView(discord.ui.View):
             return
         self.remove_item(self._show_others_button)
         self._show_others_button = None
-        self._add_select()
+        self._show_alternatives()
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
     async def _on_select(self, interaction: discord.Interaction) -> None:
-        # The Select item we just added is the only select on the view
-        # besides the Confirm/Cancel buttons, so find it by type rather
-        # than keeping a separate reference.
-        for item in list(self.children):
-            if isinstance(item, discord.ui.Select):
-                self.index = int(item.values[0])
-                # SelectOption.default is baked in at construction time and
-                # never updates on its own — leaving the old select attached
-                # would keep showing the FIRST-ever-picked option as
-                # "selected" regardless of self.index, and re-picking an
-                # option Discord still thinks is already the selected one
-                # doesn't reliably register as a new choice. Rebuild the
-                # select from scratch so its default always matches reality.
-                self.remove_item(item)
-                self._add_select()
-                break
+        if self._select is None:
+            return
+        self.index = int(self._select.values[0])
+        # SelectOption.default is baked in at construction time and never
+        # updates on its own — leaving the old select attached would keep
+        # showing the FIRST-ever-picked option as "selected" regardless of
+        # self.index. Rebuild the select from scratch (same page) so its
+        # default always matches reality.
+        self.remove_item(self._select)
+        self._select = None
+        self._add_select()
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
