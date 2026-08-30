@@ -17,6 +17,7 @@ from plexapi.exceptions import Unauthorized
 from plexapi.myplex import MyPlexPinLogin
 from plexapi.server import PlexServer
 
+from app import __version__
 from app.runtime import SettingsHolder
 from app.settings import (
     LibrarySyncDefaults,
@@ -319,6 +320,7 @@ def create_web_app(
     app = FastAPI(title="CineSnip")
     app.state.wizard = WizardState()
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+    templates.env.globals["app_version"] = __version__
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
     register_generate_routes(app, templates, settings_holder)
     register_settings_routes(app, templates, settings_holder, on_setup_complete)
