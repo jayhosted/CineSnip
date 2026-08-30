@@ -109,9 +109,11 @@ class QuoteMatchView(discord.ui.View):
     ) -> None:
         # 120s was calibrated for scanning a fixed 8 results — with up to
         # quote_match.fetch_limit (default 50) now possible across several
-        # pages, that timed out mid-browse (issue #7 follow-up). Matches
-        # the 300s already used by the post-render views below.
-        super().__init__(timeout=300)
+        # pages, that timed out mid-browse (issue #7 follow-up). This is an
+        # idle timeout, not a session cap — discord.py resets it on every
+        # click (see _scheduled_task in its View), so 10 minutes only
+        # matters if the user walks away entirely.
+        super().__init__(timeout=600)
         self._title = title
         self.matches = matches
         self.min_score = min_score
@@ -1441,7 +1443,7 @@ class LibrarySearchView(discord.ui.View):
         truncated: bool = False,
     ) -> None:
         # See QuoteMatchView's __init__ for why this isn't 120s anymore.
-        super().__init__(timeout=300)
+        super().__init__(timeout=600)
         self._cog = cog
         self._quote = quote
         self._matches = matches

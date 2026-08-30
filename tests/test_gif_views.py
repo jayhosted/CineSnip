@@ -33,7 +33,7 @@ def test_quote_match_view_timeout_gives_time_to_browse_multiple_pages():
     matches = [_quote_match(i) for i in range(20)]
     view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
 
-    assert view.timeout == 300
+    assert view.timeout == 600
 
 
 def test_quote_match_view_below_confident_score_opens_first_page_select():
@@ -238,7 +238,7 @@ def test_library_search_view_timeout_gives_time_to_browse_multiple_pages():
     matches = [_library_match(i) for i in range(20)]
     view = LibrarySearchView(_FakeCog(), "quote", matches)
 
-    assert view.timeout == 300
+    assert view.timeout == 600
 
 
 def test_library_search_view_first_page_has_eight_options_and_next_enabled():
