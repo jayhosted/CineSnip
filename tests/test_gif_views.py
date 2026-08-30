@@ -97,6 +97,40 @@ def test_quote_match_view_no_page_buttons_when_batch_fits_one_page():
     assert view._next_button is None
 
 
+def test_quote_match_view_next_past_last_page_is_a_noop():
+    matches = [_quote_match(i, score=60.0) for i in range(20)]  # 3 pages: 0,1,2
+    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+
+    asyncio.run(view._on_next(_fake_interaction()))
+    asyncio.run(view._on_next(_fake_interaction()))
+    assert view._page == 2
+    # Simulated raced double-click: a third Next past the last page.
+    asyncio.run(view._on_next(_fake_interaction()))
+    assert view._page == 2
+    assert len(view._select.options) > 0
+
+
+def test_quote_match_view_previous_before_first_page_is_a_noop():
+    matches = [_quote_match(i, score=60.0) for i in range(20)]
+    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+
+    asyncio.run(view._on_previous(_fake_interaction()))
+    assert view._page == 0
+    assert len(view._select.options) > 0
+
+
+def test_quote_match_view_component_rows_keep_pagination_off_cancel_row():
+    matches = [_quote_match(i, score=60.0) for i in range(20)]
+    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+
+    rows = {item.label: item.row for item in view.children if hasattr(item, "label")}
+    assert rows["Confirm"] == 0
+    assert rows["Cancel"] == 0
+    assert rows["◀ Previous"] == 2
+    assert rows["Next ▶"] == 2
+    assert view._select.row == 1
+
+
 from app.bot.cogs.gif import LibrarySearchView, _library_results_embed
 from app.bot.worker_client import LibraryQuoteMatchResult
 
@@ -185,3 +219,47 @@ def test_library_results_embed_footer_omitted_for_single_page():
     matches = [_library_match(i) for i in range(3)]
     embed = _library_results_embed("quote", matches)
     assert embed.footer.text is None
+
+
+def test_library_search_view_next_past_last_page_is_a_noop():
+    matches = [_library_match(i) for i in range(20)]
+    view = LibrarySearchView(_FakeCog(), "quote", matches)
+
+    asyncio.run(view._on_next(_fake_interaction()))
+    asyncio.run(view._on_next(_fake_interaction()))
+    asyncio.run(view._on_next(_fake_interaction()))
+    assert view._page == 2
+    assert len(view._select.options) > 0
+
+
+def test_library_search_view_previous_before_first_page_is_a_noop():
+    matches = [_library_match(i) for i in range(20)]
+    view = LibrarySearchView(_FakeCog(), "quote", matches)
+
+    asyncio.run(view._on_previous(_fake_interaction()))
+    assert view._page == 0
+    assert len(view._select.options) > 0
+
+
+def test_library_search_view_component_rows_stable_across_page_change():
+    matches = [_library_match(i) for i in range(20)]
+    view = LibrarySearchView(_FakeCog(), "quote", matches, remaining_uncached=5)
+
+    def rows():
+        return {
+            item.label if hasattr(item, "label") else "select": item.row
+            for item in view.children
+        }
+
+    before = rows()
+    assert before["select"] == 0
+    assert before["◀ Previous"] == 1
+    assert before["Next ▶"] == 1
+    assert before["🔍 Search 5 more"] == 2
+
+    asyncio.run(view._on_next(_fake_interaction()))
+
+    after = rows()
+    # Finding 3: the "Search N more" button must keep its own row after the
+    # prev/next buttons are torn down and rebuilt on a page change.
+    assert after == before

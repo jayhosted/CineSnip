@@ -119,9 +119,12 @@ class QuoteMatchView(discord.ui.View):
             len(self.matches),
         )
 
+    def _total_pages(self) -> int:
+        return max(1, (len(self.matches) + _PAGE_SIZE - 1) // _PAGE_SIZE)
+
     def _add_show_others_button(self) -> None:
         button = discord.ui.Button(
-            label="Show other matches", style=discord.ButtonStyle.secondary
+            label="Show other matches", style=discord.ButtonStyle.secondary, row=1
         )
         button.callback = self._on_show_others
         self._show_others_button = button
@@ -143,15 +146,18 @@ class QuoteMatchView(discord.ui.View):
             )
             for offset, m in enumerate(self.matches[start : start + _PAGE_SIZE])
         ]
-        select = discord.ui.Select(placeholder="Choose a match", options=options)
+        select = discord.ui.Select(placeholder="Choose a match", options=options, row=1)
         select.callback = self._on_select
         self._select = select
         self.add_item(select)
 
     def _add_page_buttons(self) -> None:
-        total_pages = (len(self.matches) + _PAGE_SIZE - 1) // _PAGE_SIZE
+        total_pages = self._total_pages()
         prev_button = discord.ui.Button(
-            label="◀ Previous", style=discord.ButtonStyle.secondary, disabled=self._page == 0
+            label="◀ Previous",
+            style=discord.ButtonStyle.secondary,
+            disabled=self._page == 0,
+            row=2,
         )
         prev_button.callback = self._on_previous
         self._prev_button = prev_button
@@ -161,13 +167,14 @@ class QuoteMatchView(discord.ui.View):
             label="Next ▶",
             style=discord.ButtonStyle.secondary,
             disabled=self._page >= total_pages - 1,
+            row=2,
         )
         next_button.callback = self._on_next
         self._next_button = next_button
         self.add_item(next_button)
 
     async def _change_page(self, interaction: discord.Interaction, delta: int) -> None:
-        self._page += delta
+        self._page = max(0, min(self._page + delta, self._total_pages() - 1))
         if self._select is not None:
             self.remove_item(self._select)
             self._select = None
@@ -214,7 +221,7 @@ class QuoteMatchView(discord.ui.View):
         self._add_select()
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
-    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, row=0)
     async def confirm(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
@@ -222,7 +229,7 @@ class QuoteMatchView(discord.ui.View):
         await interaction.response.defer()
         self.stop()
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=0)
     async def cancel(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
@@ -1443,6 +1450,7 @@ class LibrarySearchView(discord.ui.View):
             more_button = discord.ui.Button(
                 label=f"🔍 Search {remaining_uncached} more",
                 style=discord.ButtonStyle.secondary,
+                row=2,
             )
             more_button.callback = self._on_search_more
             self.add_item(more_button)
@@ -1476,7 +1484,7 @@ class LibrarySearchView(discord.ui.View):
             options.append(
                 discord.SelectOption(label=label, description=description, value=str(i))
             )
-        select = discord.ui.Select(placeholder="Choose a quote", options=options)
+        select = discord.ui.Select(placeholder="Choose a quote", options=options, row=0)
         select.callback = self._on_select
         self._select = select
         self.add_item(select)
@@ -1484,7 +1492,10 @@ class LibrarySearchView(discord.ui.View):
     def _add_page_buttons(self) -> None:
         total_pages = self._total_pages()
         prev_button = discord.ui.Button(
-            label="◀ Previous", style=discord.ButtonStyle.secondary, disabled=self._page == 0
+            label="◀ Previous",
+            style=discord.ButtonStyle.secondary,
+            disabled=self._page == 0,
+            row=1,
         )
         prev_button.callback = self._on_previous
         self._prev_button = prev_button
@@ -1494,13 +1505,14 @@ class LibrarySearchView(discord.ui.View):
             label="Next ▶",
             style=discord.ButtonStyle.secondary,
             disabled=self._page >= total_pages - 1,
+            row=1,
         )
         next_button.callback = self._on_next
         self._next_button = next_button
         self.add_item(next_button)
 
     async def _change_page(self, interaction: discord.Interaction, delta: int) -> None:
-        self._page += delta
+        self._page = max(0, min(self._page + delta, self._total_pages() - 1))
         if self._select is not None:
             self.remove_item(self._select)
             self._select = None
