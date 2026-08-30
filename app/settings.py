@@ -92,12 +92,16 @@ class SubtitleDefaults(BaseModel):
 
 
 class QuoteMatchDefaults(BaseModel):
-    # Top-N candidates returned. CLAUDE.md Section 5 originally specced
-    # "top 2-3", but real usage showed 3 too tight to browse — 8 still
-    # comfortably fits Discord's 25-option select limit alongside the
-    # Confirm/Cancel buttons, and match quality drops off fast past the
-    # top handful anyway.
-    candidate_limit: int = 8
+    # Top-N candidates the WORKER fetches/ranks per search — deliberately
+    # generous and decoupled from how many the bot shows at once. Issue #7:
+    # ranking cost is dominated by the FTS5 pre-filter (low hundreds of ms
+    # full-corpus, see docs/design/fts5-search-migration.md), not this
+    # truncation step, so 50 instead of the old cap of 8 is negligible
+    # extra cost. The bot's LibrarySearchView/QuoteMatchView (app/bot/cogs/
+    # gif.py) hold the full fetched batch and page through it 8 at a time
+    # with Next/Previous buttons — that page size is a bot-side constant
+    # (_PAGE_SIZE), not read from this setting.
+    fetch_limit: int = 50
     # Noise floor: rapidfuzz WRatio scores (0-100) below this are dropped
     # entirely rather than surfaced as a low-confidence result.
     min_score: float = 50.0
@@ -125,6 +129,11 @@ class QuoteMatchDefaults(BaseModel):
     # remaining_uncached for a possible follow-up "search N more" call —
     # keeps one request bounded in time regardless of library size.
     library_extend_cap: int = 25
+    # /snip movie and /snip tv's random-pick path (no quote/timecode given):
+    # a line under this many words is excluded from the pick, so a random
+    # clip doesn't land on filler like "Okay." or "Yeah." Not applied to
+    # /snip random's own library-wide random pick.
+    random_min_words: int = 3
 
 
 class LibrarySyncDefaults(BaseModel):

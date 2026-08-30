@@ -4,16 +4,28 @@ import asyncio
 import io
 import logging
 import re
-from typing import Literal
+from typing import Awaitable, Callable, Literal
 
 import discord
 import httpx
 from discord import app_commands
 from discord.ext import commands
 
-from app.bot.worker_client import LibraryQuoteMatchResult, QuoteMatchResult, SubtitleEntryResult
+from app.bot.worker_client import (
+    LibraryQuoteMatchResult,
+    QuoteMatchResult,
+    RandomQuoteResult,
+    SubtitleEntryResult,
+)
 
 logger = logging.getLogger("cinesnip.bot.gif")
+
+# Discord select menus cap at 25 options; the worker now fetches up to
+# quote_match.fetch_limit candidates (default 50, app/settings.py) per
+# search — QuoteMatchView and LibrarySearchView below hold that full batch
+# and page through it in place _PAGE_SIZE at a time (CineSnip issue #7),
+# rather than truncating to what one select/embed can show.
+_PAGE_SIZE = 8
 
 
 def _confidence_label(score: float, min_score: float, confident_score: float) -> str:
@@ -29,13 +41,29 @@ def _confidence_label(score: float, min_score: float, confident_score: float) ->
     return "low"
 
 
+def _pagination_footer(page: int, total_pages: int, truncated: bool) -> str | None:
+    """Shared footer text for QuoteMatchView and LibrarySearchView/
+    _library_results_embed: "Page X of Y" once there's more than one page,
+    plus a short note on the LAST page only when the worker's fetch hit
+    quote_match.fetch_limit — so a user who paged all the way through
+    knows the list they just finished browsing might not be everything,
+    without repeating the note on every page (issue #7 follow-up)."""
+    parts = []
+    if total_pages > 1:
+        parts.append(f"Page {page} of {total_pages}")
+    if truncated and page == total_pages:
+        parts.append("more results may exist — try a more specific quote")
+    return " · ".join(parts) if parts else None
+
+
 def _match_embed(
     title: str,
     match: QuoteMatchResult,
     min_score: float,
     confident_score: float,
-    position: int,
-    total: int,
+    page: int,
+    total_pages: int,
+    truncated: bool,
 ) -> discord.Embed:
     lines = [f"> {line}" for line in match.context_before]
     lines.append(f"> **{match.text}**")
@@ -45,25 +73,52 @@ def _match_embed(
     label = _confidence_label(match.score, min_score, confident_score)
     embed.add_field(name="Timecode", value=match.timecode)
     embed.add_field(name="Confidence", value=f"{match.score:.0f}% ({label})")
-    embed.set_footer(text=f"Match {position} of {total}")
+    footer = _pagination_footer(page, total_pages, truncated)
+    if footer:
+        embed.set_footer(text=footer)
     return embed
 
 
 class QuoteMatchView(discord.ui.View):
-    """Confirm/cancel a quote match, with an optional select menu to browse
+    """Confirm/cancel a quote match, with a select menu to browse
     alternatives. Per CLAUDE.md decision #4, browsing alternatives never
     stops the view or re-asks the film step — only Confirm/Cancel does.
+
+    Holds the FULL fetched batch (up to quote_match.fetch_limit candidates,
+    already ranked by the worker) and pages through it in place with
+    Next/Previous buttons, _PAGE_SIZE at a time — Discord's own 25-option
+    select cap means each page's select mirrors only that page's slice,
+    never the whole batch (issue #7). The picker is shown immediately
+    regardless of how confident the top match is: true pagination makes
+    browsing cheap, so hiding it behind a "Show other matches" button (an
+    earlier design, before this class could page) just adds a click.
+
+    `title` is normally a fixed string — every candidate line comes from
+    the same already-known film/episode (/snip movie, /snip tv with a
+    specific episode). Pass `title=None` when candidates can come from
+    DIFFERENT titles instead (/snip tv's whole-show search, whose matches
+    are `LibraryQuoteMatchResult`s each carrying their own `.title`/
+    `.rating_key`) — the embed then reads the title off whichever match
+    is currently selected, and the caller reads `.selected.rating_key`
+    after Confirm instead of already knowing it up front.
     """
 
     def __init__(
         self,
-        title: str,
-        matches: list[QuoteMatchResult],
+        title: str | None,
+        matches: list[QuoteMatchResult] | list[LibraryQuoteMatchResult],
         min_score: float,
         confident_score: float,
         initial_index: int = 0,
+        truncated: bool = False,
     ) -> None:
-        super().__init__(timeout=120)
+        # 120s was calibrated for scanning a fixed 8 results — with up to
+        # quote_match.fetch_limit (default 50) now possible across several
+        # pages, that timed out mid-browse (issue #7 follow-up). This is an
+        # idle timeout, not a session cap — discord.py resets it on every
+        # click (see _scheduled_task in its View), so 10 minutes only
+        # matters if the user walks away entirely.
+        super().__init__(timeout=600)
         self._title = title
         self.matches = matches
         self.min_score = min_score
@@ -74,86 +129,114 @@ class QuoteMatchView(discord.ui.View):
         # LibrarySearchView, re-running this search for a line already
         # picked by its exact text) can pre-select it instead.
         self.index = initial_index
+        # Land on the page containing the pre-selected index, so a
+        # LibrarySearchView-driven re-search opens on the right page
+        # instead of always page 0.
+        self._page = initial_index // _PAGE_SIZE
+        self._truncated = truncated
 
-        self._show_others_button: discord.ui.Button | None = None
+        self._select: discord.ui.Select | None = None
+        self._prev_button: discord.ui.Button | None = None
+        self._next_button: discord.ui.Button | None = None
 
         if len(matches) > 1:
-            if matches[self.index].score >= confident_score:
-                self._add_show_others_button()
-            else:
-                # Borderline top match: open straight to the alternatives
-                # menu rather than hiding it behind a button.
-                self._add_select()
+            self._add_select()
+            if len(matches) > _PAGE_SIZE:
+                self._add_page_buttons()
 
     @property
-    def selected(self) -> QuoteMatchResult:
+    def selected(self) -> QuoteMatchResult | LibraryQuoteMatchResult:
         return self.matches[self.index]
 
+    def _total_pages(self) -> int:
+        return max(1, (len(self.matches) + _PAGE_SIZE - 1) // _PAGE_SIZE)
+
     def embed(self) -> discord.Embed:
+        title = self._title if self._title is not None else self.selected.title
         return _match_embed(
-            self._title,
+            title,
             self.selected,
             self.min_score,
             self.confident_score,
-            self.index + 1,
-            len(self.matches),
+            self._page + 1,
+            self._total_pages(),
+            self._truncated,
         )
-
-    def _add_show_others_button(self) -> None:
-        button = discord.ui.Button(
-            label="Show other matches", style=discord.ButtonStyle.secondary
-        )
-        button.callback = self._on_show_others
-        self._show_others_button = button
-        self.add_item(button)
 
     def _add_select(self) -> None:
+        start = self._page * _PAGE_SIZE
         options = [
             discord.SelectOption(
                 label=(m.text if len(m.text) <= 100 else m.text[:97] + "..."),
                 description=f"{m.timecode} · {m.score:.0f}%",
-                value=str(i),
-                default=(i == self.index),
+                value=str(start + offset),
+                default=(start + offset == self.index),
             )
-            for i, m in enumerate(self.matches)
+            for offset, m in enumerate(self.matches[start : start + _PAGE_SIZE])
         ]
-        select = discord.ui.Select(placeholder="Choose a match", options=options)
+        select = discord.ui.Select(placeholder="Choose a match", options=options, row=1)
         select.callback = self._on_select
+        self._select = select
         self.add_item(select)
 
-    async def _on_show_others(self, interaction: discord.Interaction) -> None:
-        if self._show_others_button is None:
-            # A select is already showing — e.g. a fast double-click sent
-            # two interactions for this button before the first one's
-            # edit_message() landed. Ignore the second one rather than
-            # adding a duplicate discord.ui.Select.
-            await interaction.response.defer()
+    def _add_page_buttons(self) -> None:
+        total_pages = self._total_pages()
+        prev_button = discord.ui.Button(
+            label="◀ Previous",
+            style=discord.ButtonStyle.secondary,
+            disabled=self._page == 0,
+            row=2,
+        )
+        prev_button.callback = self._on_previous
+        self._prev_button = prev_button
+        self.add_item(prev_button)
+
+        next_button = discord.ui.Button(
+            label="Next ▶",
+            style=discord.ButtonStyle.secondary,
+            disabled=self._page >= total_pages - 1,
+            row=2,
+        )
+        next_button.callback = self._on_next
+        self._next_button = next_button
+        self.add_item(next_button)
+
+    async def _change_page(self, interaction: discord.Interaction, delta: int) -> None:
+        self._page = max(0, min(self._page + delta, self._total_pages() - 1))
+        if self._select is not None:
+            self.remove_item(self._select)
+            self._select = None
+        if self._prev_button is not None:
+            self.remove_item(self._prev_button)
+            self._prev_button = None
+        if self._next_button is not None:
+            self.remove_item(self._next_button)
+            self._next_button = None
+        self._add_select()
+        self._add_page_buttons()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    async def _on_previous(self, interaction: discord.Interaction) -> None:
+        await self._change_page(interaction, -1)
+
+    async def _on_next(self, interaction: discord.Interaction) -> None:
+        await self._change_page(interaction, 1)
+
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        if self._select is None:
             return
-        self.remove_item(self._show_others_button)
-        self._show_others_button = None
+        self.index = int(self._select.values[0])
+        # SelectOption.default is baked in at construction time and never
+        # updates on its own — leaving the old select attached would keep
+        # showing the FIRST-ever-picked option as "selected" regardless of
+        # self.index. Rebuild the select from scratch (same page) so its
+        # default always matches reality.
+        self.remove_item(self._select)
+        self._select = None
         self._add_select()
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
-    async def _on_select(self, interaction: discord.Interaction) -> None:
-        # The Select item we just added is the only select on the view
-        # besides the Confirm/Cancel buttons, so find it by type rather
-        # than keeping a separate reference.
-        for item in list(self.children):
-            if isinstance(item, discord.ui.Select):
-                self.index = int(item.values[0])
-                # SelectOption.default is baked in at construction time and
-                # never updates on its own — leaving the old select attached
-                # would keep showing the FIRST-ever-picked option as
-                # "selected" regardless of self.index, and re-picking an
-                # option Discord still thinks is already the selected one
-                # doesn't reliably register as a new choice. Rebuild the
-                # select from scratch so its default always matches reality.
-                self.remove_item(item)
-                self._add_select()
-                break
-        await interaction.response.edit_message(embed=self.embed(), view=self)
-
-    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, row=0)
     async def confirm(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
@@ -161,7 +244,7 @@ class QuoteMatchView(discord.ui.View):
         await interaction.response.defer()
         self.stop()
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=0)
     async def cancel(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
@@ -1159,59 +1242,109 @@ class ClipEditView(ClipResultView):
         await interaction.edit_original_response(view=self)
 
 
+# Signature shared by every random-pick source /snip random, /snip movie,
+# and /snip tv can fetch from (library-wide, single-title, or whole-show
+# scope) — RandomResultView only ever talks to its caller through this,
+# never to a specific worker endpoint, so the Shuffle/Previous history
+# logic below is written once and reused by all three.
+RandomFetch = Callable[[frozenset[int], "int | None"], Awaitable[RandomQuoteResult]]
+
+
+class _RandomHistoryEntry:
+    __slots__ = ("pick", "content", "filename")
+
+    def __init__(self, pick: RandomQuoteResult, content: bytes, filename: str) -> None:
+        self.pick = pick
+        self.content = content
+        self.filename = filename
+
+
 class RandomResultView(discord.ui.View):
-    """Shown by /snip random: just Shuffle (re-roll + re-render in place,
-    same message-edit pattern as ClipResultView's style swap) and Post to
-    channel — no confirm-the-timestamp step (doesn't apply to a random
-    pick) and no style select (CLAUDE.md's random-command design keeps this
-    minimal)."""
+    """Shown by /snip random and by /snip movie's/tv's random-pick path (no
+    quote/timecode given): Shuffle (re-roll + re-render in place, same
+    message-edit pattern as ClipResultView's style swap), Previous (steps
+    back through this journey's history once it has more than one entry —
+    instant, no re-render, since each history entry keeps its own rendered
+    bytes), and Post to channel. No confirm-the-timestamp step (doesn't
+    apply to a random pick) and no style select (CLAUDE.md's random-command
+    design keeps this minimal).
+
+    Shuffle tracks every entry_id shown this journey and excludes them from
+    the next pick, so a small pool (e.g. a narrow quote match with only a
+    couple of hits) can't silently repeat the same line — CLAUDE.md's
+    "Celina" fix. Once every candidate has been shown, the worker resets
+    the pool (reported via RandomQuoteResult.exhausted) rather than
+    returning nothing, and this view's own tracking resets to match so the
+    next few shuffles don't immediately loop back to the same handful of
+    picks. Shuffle is disabled outright when pool_size <= 1 — nothing to
+    shuffle to — rather than left as a button that looks broken.
+    """
 
     def __init__(
         self,
         worker,
-        quote: str | None,
-        media: str,
-        rating_key: int,
-        title: str,
-        timecode: str,
-        duration: float,
+        fetch: RandomFetch,
+        initial_pick: RandomQuoteResult,
         content: bytes,
         filename: str,
     ) -> None:
         super().__init__(timeout=300)
         self._worker = worker
-        self._quote = quote
-        self._media = media
-        self._rating_key = rating_key
-        self._title = title
-        self._timecode = timecode
-        self._duration = duration
-        self._content = content
-        self._filename = filename
+        self._fetch = fetch
+        self._history: list[_RandomHistoryEntry] = [
+            _RandomHistoryEntry(initial_pick, content, filename)
+        ]
+        self._pointer = 0
+        self._seen_entry_ids: set[int] = {initial_pick.entry_id}
 
-    @discord.ui.button(label="🔀 Shuffle", style=discord.ButtonStyle.secondary, row=0)
-    async def shuffle(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+        # Built manually (not @discord.ui.button) so add order — and so
+        # left-to-right layout — is fully under our control: Previous only
+        # exists from the first shuffle onward, and always belongs left of
+        # Shuffle, with Post always last regardless of what else is on the
+        # row (matches every other result view's convention).
+        self._previous_button = discord.ui.Button(
+            label="◀ Previous", style=discord.ButtonStyle.secondary, row=0
+        )
+        self._previous_button.callback = self._on_previous
+
+        self.shuffle = discord.ui.Button(
+            label="🔀 Shuffle", style=discord.ButtonStyle.secondary, row=0
+        )
+        self.shuffle.callback = self._on_shuffle
+        self.shuffle.disabled = initial_pick.pool_size <= 1
+
+        self.post = discord.ui.Button(
+            label="Post to channel", style=discord.ButtonStyle.primary, row=0
+        )
+        self.post.callback = self._on_post
+
+        self.add_item(self.shuffle)
+        self.add_item(self.post)
+
+    @property
+    def _current(self) -> _RandomHistoryEntry:
+        return self._history[self._pointer]
+
+    def _render_content(self, pick: RandomQuoteResult, exhausted: bool = False) -> str:
+        note = " *(seen every match — starting over)*" if exhausted else ""
+        return f"**{pick.title}** — {pick.timecode}{note}"
+
+    async def _on_shuffle(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
+        most_recent = self._current.pick.entry_id
         try:
-            picked = await self._worker.random_quote(self._quote, self._media)
+            picked = await self._fetch(frozenset(self._seen_entry_ids), most_recent)
         except httpx.HTTPError as exc:
             await interaction.edit_original_response(
                 content=f"Couldn't find another match: {_error_detail(exc)}"
             )
             return
 
-        self._rating_key = picked.rating_key
-        self._title = picked.title
-        self._timecode = str(picked.start)
-        self._duration = picked.end - picked.start
-
         try:
             render_result = await self._worker.render(
-                self._rating_key,
-                self._timecode,
-                duration=self._duration,
+                picked.rating_key,
+                str(picked.start),
+                duration=picked.end - picked.start,
                 style="classic",
             )
         except httpx.HTTPError as exc:
@@ -1220,25 +1353,56 @@ class RandomResultView(discord.ui.View):
             )
             return
 
-        self._content = render_result.content
-        self._filename = f"clip.{render_result.format}"
-        file = discord.File(io.BytesIO(self._content), filename=self._filename)
+        content = render_result.content
+        filename = f"clip.{render_result.format}"
+
+        self._seen_entry_ids = (
+            {picked.entry_id} if picked.exhausted else self._seen_entry_ids | {picked.entry_id}
+        )
+        # Shuffling from a stepped-back point (via Previous) branches a new
+        # path rather than resurrecting whatever used to come next.
+        self._history = self._history[: self._pointer + 1]
+        self._history.append(_RandomHistoryEntry(picked, content, filename))
+        self._pointer += 1
+
+        if self._previous_button not in self.children:
+            # First shuffle: insert Previous to the LEFT of Shuffle/Post.
+            # add_item() only ever appends, so getting Previous into the
+            # middle-not-last position means clearing and re-adding
+            # everything in the order we actually want, once.
+            self.clear_items()
+            self.add_item(self._previous_button)
+            self.add_item(self.shuffle)
+            self.add_item(self.post)
+        self._previous_button.disabled = self._pointer == 0
+        self.shuffle.disabled = picked.pool_size <= 1
+
+        file = discord.File(io.BytesIO(content), filename=filename)
         await interaction.edit_original_response(
-            content=f"**{picked.title}** — {picked.timecode}", attachments=[file], view=self
+            content=self._render_content(picked, exhausted=picked.exhausted),
+            attachments=[file],
+            view=self,
         )
 
-    @discord.ui.button(label="Post to channel", style=discord.ButtonStyle.primary, row=0)
-    async def post(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def _on_previous(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        self._pointer -= 1
+        entry = self._current
+        self._previous_button.disabled = self._pointer == 0
+        self.shuffle.disabled = entry.pick.pool_size <= 1
+
+        file = discord.File(io.BytesIO(entry.content), filename=entry.filename)
+        await interaction.edit_original_response(
+            content=self._render_content(entry.pick), attachments=[file], view=self
+        )
+
+    async def _on_post(self, interaction: discord.Interaction) -> None:
         # See ClipResultView.post — same defer-before-send fix.
         await interaction.response.defer()
-        file = discord.File(io.BytesIO(self._content), filename=self._filename)
+        entry = self._current
+        file = discord.File(io.BytesIO(entry.content), filename=entry.filename)
         content = _post_metadata_line(
-            self._title,
-            float(self._timecode),
-            float(self._timecode) + self._duration,
-            interaction.user.display_name,
+            entry.pick.title, entry.pick.start, entry.pick.end, interaction.user.display_name,
         )
         try:
             await interaction.channel.send(content=content, file=file)
@@ -1247,7 +1411,7 @@ class RandomResultView(discord.ui.View):
                 content=f"Couldn't post that clip: {_error_detail_from_discord(exc)}"
             )
             return
-        button.disabled = True
+        self.post.disabled = True
         await interaction.edit_original_response(view=self)
 
 
@@ -1258,9 +1422,10 @@ def _validate_quote_or_timecode(
     two commands — the exact class of bug CLAUDE.md's library-search
     preferred_start fix (Section 2) already hit once from duplicated logic.
     Returns an error message, or None if valid.
+
+    Giving neither quote nor timecode is valid — it means "pick a random
+    line from this title" (see _run_random_result), not an error.
     """
-    if not quote and not timecode:
-        return "Give either a `quote:` or a `timecode:`."
     if end_timecode and not timecode:
         return "`end_timecode` needs a `timecode` to start from."
     return None
@@ -1313,15 +1478,29 @@ def _library_results_embed(
     quote: str,
     matches: list[LibraryQuoteMatchResult],
     description: str = "Pick a film below to generate a clip from that line.",
+    start_index: int = 1,
+    page: int | None = None,
+    total_pages: int | None = None,
+    truncated: bool = False,
 ) -> discord.Embed:
+    """`matches` is the slice to render (one page's worth once a
+    LibrarySearchView exists — see its own embed() method), not the full
+    fetched batch; `start_index` is what the first rendered item is
+    numbered as, so a later page's items keep counting up from where the
+    previous page left off rather than restarting at 1. Footer text is
+    shared with QuoteMatchView via _pagination_footer()."""
     embed = discord.Embed(title=f'Results for "{quote}"', description=description)
-    for i, m in enumerate(matches, start=1):
+    for offset, m in enumerate(matches):
+        i = start_index + offset
         snippet = m.text if len(m.text) <= 200 else m.text[:197] + "..."
         embed.add_field(
             name=f"{i}. {m.title} — {m.library_name}",
             value=f"> {snippet}\n{m.timecode} · {m.score:.0f}%",
             inline=False,
         )
+    footer = _pagination_footer(page or 1, total_pages or 1, truncated)
+    if footer:
+        embed.set_footer(text=footer)
     return embed
 
 
@@ -1333,6 +1512,12 @@ class LibrarySearchView(discord.ui.View):
     UI") via GifCog._generate. Reused as-is for episodes — an episode's
     MovieResult.title already reads as "Show — S02E01 — Title", so no
     TV-specific formatting is needed here.
+
+    Holds the FULL fetched batch (up to quote_match.fetch_limit matches,
+    already diversity-ranked by the worker) and pages through it in place
+    with Next/Previous buttons, _PAGE_SIZE at a time — Discord's own
+    25-option select cap means each page's select mirrors only that page's
+    slice, never the whole batch (issue #7).
     """
 
     def __init__(
@@ -1341,24 +1526,24 @@ class LibrarySearchView(discord.ui.View):
         quote: str,
         matches: list[LibraryQuoteMatchResult],
         remaining_uncached: int | None = None,
+        description: str = "Pick a film below to generate a clip from that line.",
+        truncated: bool = False,
     ) -> None:
-        super().__init__(timeout=120)
+        # See QuoteMatchView's __init__ for why this isn't 120s anymore.
+        super().__init__(timeout=600)
         self._cog = cog
         self._quote = quote
         self._matches = matches
+        self._description = description
+        self._truncated = truncated
+        self._page = 0
+        self._select: discord.ui.Select | None = None
+        self._prev_button: discord.ui.Button | None = None
+        self._next_button: discord.ui.Button | None = None
 
-        options = []
-        for i, m in enumerate(matches):
-            label = m.text if len(m.text) <= 100 else m.text[:97] + "..."
-            description = f"{m.title} — {m.library_name} · {m.timecode} · {m.score:.0f}%"
-            if len(description) > 100:
-                description = description[:97] + "..."
-            options.append(
-                discord.SelectOption(label=label, description=description, value=str(i))
-            )
-        select = discord.ui.Select(placeholder="Choose a quote", options=options)
-        select.callback = self._on_select
-        self.add_item(select)
+        self._add_select()
+        if len(matches) > _PAGE_SIZE:
+            self._add_page_buttons()
 
         # remaining_uncached is only ever a real int when Tier 2 (extend)
         # actually ran and hit its cap — None (extend didn't run, e.g.
@@ -1367,9 +1552,88 @@ class LibrarySearchView(discord.ui.View):
             more_button = discord.ui.Button(
                 label=f"🔍 Search {remaining_uncached} more",
                 style=discord.ButtonStyle.secondary,
+                row=2,
             )
             more_button.callback = self._on_search_more
             self.add_item(more_button)
+
+    def _total_pages(self) -> int:
+        return max(1, (len(self._matches) + _PAGE_SIZE - 1) // _PAGE_SIZE)
+
+    def _page_slice(self) -> list[LibraryQuoteMatchResult]:
+        start = self._page * _PAGE_SIZE
+        return self._matches[start : start + _PAGE_SIZE]
+
+    def embed(self) -> discord.Embed:
+        return _library_results_embed(
+            self._quote,
+            self._page_slice(),
+            description=self._description,
+            start_index=self._page * _PAGE_SIZE + 1,
+            page=self._page + 1,
+            total_pages=self._total_pages(),
+            truncated=self._truncated,
+        )
+
+    def _add_select(self) -> None:
+        start = self._page * _PAGE_SIZE
+        options = []
+        for offset, m in enumerate(self._page_slice()):
+            i = start + offset
+            label = m.text if len(m.text) <= 100 else m.text[:97] + "..."
+            description = f"{m.title} — {m.library_name} · {m.timecode} · {m.score:.0f}%"
+            if len(description) > 100:
+                description = description[:97] + "..."
+            options.append(
+                discord.SelectOption(label=label, description=description, value=str(i))
+            )
+        select = discord.ui.Select(placeholder="Choose a quote", options=options, row=0)
+        select.callback = self._on_select
+        self._select = select
+        self.add_item(select)
+
+    def _add_page_buttons(self) -> None:
+        total_pages = self._total_pages()
+        prev_button = discord.ui.Button(
+            label="◀ Previous",
+            style=discord.ButtonStyle.secondary,
+            disabled=self._page == 0,
+            row=1,
+        )
+        prev_button.callback = self._on_previous
+        self._prev_button = prev_button
+        self.add_item(prev_button)
+
+        next_button = discord.ui.Button(
+            label="Next ▶",
+            style=discord.ButtonStyle.secondary,
+            disabled=self._page >= total_pages - 1,
+            row=1,
+        )
+        next_button.callback = self._on_next
+        self._next_button = next_button
+        self.add_item(next_button)
+
+    async def _change_page(self, interaction: discord.Interaction, delta: int) -> None:
+        self._page = max(0, min(self._page + delta, self._total_pages() - 1))
+        if self._select is not None:
+            self.remove_item(self._select)
+            self._select = None
+        if self._prev_button is not None:
+            self.remove_item(self._prev_button)
+            self._prev_button = None
+        if self._next_button is not None:
+            self.remove_item(self._next_button)
+            self._next_button = None
+        self._add_select()
+        self._add_page_buttons()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    async def _on_previous(self, interaction: discord.Interaction) -> None:
+        await self._change_page(interaction, -1)
+
+    async def _on_next(self, interaction: discord.Interaction) -> None:
+        await self._change_page(interaction, 1)
 
     async def _on_search_more(self, interaction: discord.Interaction) -> None:
         self.stop()
@@ -1377,12 +1641,9 @@ class LibrarySearchView(discord.ui.View):
         await self._cog._run_library_search(interaction, self._quote)
 
     async def _on_select(self, interaction: discord.Interaction) -> None:
-        for item in list(self.children):
-            if isinstance(item, discord.ui.Select):
-                match = self._matches[int(item.values[0])]
-                break
-        else:
+        if self._select is None:
             return
+        match = self._matches[int(self._select.values[0])]
 
         self.stop()
         await self._cog._generate(
@@ -1516,6 +1777,7 @@ class GifCog(commands.Cog):
                 resolved_quote.min_score,
                 resolved_quote.confident_score,
                 initial_index=initial_index,
+                truncated=resolved_quote.truncated,
             )
             await interaction.edit_original_response(
                 content=None, embed=match_view.embed(), view=match_view
@@ -1543,7 +1805,7 @@ class GifCog(commands.Cog):
             await interaction.edit_original_response(
                 content="Generating…", embed=None, view=None
             )
-        else:
+        elif timecode:
             render_timecode = timecode
             render_duration = None
             # A bare timecode has no known subtitle availability — default
@@ -1552,9 +1814,52 @@ class GifCog(commands.Cog):
             await interaction.edit_original_response(
                 content=f"Generating a clip from {resolved.title}{library_note}…"
             )
+        else:
+            # Neither quote nor timecode given: pick a random line from this
+            # title (CLAUDE.md's per-title random-pick design) — its own
+            # result view (Shuffle/Previous/Post), not the render pipeline
+            # below, since there's no confirm-the-timestamp step to make and
+            # no style select for a random pick (matches /snip random).
+            await interaction.edit_original_response(
+                content=f"Picking a random line from {resolved.title}{library_note}…"
+            )
+
+            async def fetch(exclude: frozenset[int], most_recent: int | None) -> RandomQuoteResult:
+                return await self.bot.worker.random_line(
+                    rating_key, exclude_entry_ids=exclude, most_recent_entry_id=most_recent
+                )
+
+            await self._run_random_result(interaction, fetch)
+            return
 
         render_end_timecode = end_timecode if not quote else None
+        await self._render_and_respond(
+            interaction,
+            rating_key,
+            resolved.title,
+            render_timecode,
+            render_duration,
+            render_end_timecode,
+            format,
+            default_style,
+        )
 
+    async def _render_and_respond(
+        self,
+        interaction: discord.Interaction,
+        rating_key: int,
+        title: str,
+        render_timecode: str,
+        render_duration: float | None,
+        render_end_timecode: str | None,
+        format: str | None,
+        default_style: str,
+    ) -> None:
+        # Shared by _generate (movie / a single known episode) and
+        # snip_tv's whole-show search (each candidate can resolve to a
+        # DIFFERENT episode's rating_key, only known once QuoteMatchView's
+        # Confirm step picks one) — everything past "what to render and
+        # what to call it" is identical either way.
         try:
             render_result = await self.bot.worker.render(
                 rating_key,
@@ -1575,7 +1880,7 @@ class GifCog(commands.Cog):
         result_view = ClipEditView(
             self.bot.worker,
             rating_key,
-            resolved.title,
+            title,
             render_timecode,
             render_duration,
             render_end_timecode,
@@ -1598,7 +1903,8 @@ class GifCog(commands.Cog):
     )
     @app_commands.describe(
         film="The film to search for",
-        quote="A line of dialogue to find (fuzzy — close is fine)",
+        quote="A line of dialogue to find (fuzzy — close is fine); omit both quote and "
+        "timecode for a random line",
         timecode="Timestamp, e.g. 1:23:45 or 1h23m45s",
         end_timecode="Custom clip end (timecode only, not quote) — same formats as timecode",
         format="Output format (default: gif — mp4/webm are smaller but do not autoplay in Discord)",
@@ -1622,6 +1928,7 @@ class GifCog(commands.Cog):
         # component interaction), both already deferred by their caller.
         last_progress_edit = 0.0
         cached_matches: list[LibraryQuoteMatchResult] = []
+        cached_truncated = False
         final_event = None
         interaction_dead = False
 
@@ -1650,6 +1957,7 @@ class GifCog(commands.Cog):
             async for event in self.bot.worker.search_quote_extend(quote):
                 if event.type == "cached":
                     cached_matches = event.matches or []
+                    cached_truncated = event.truncated or False
                     if cached_matches:
                         # The "still searching" status lives in `content`
                         # (above the embed), not buried in the embed's own
@@ -1660,7 +1968,7 @@ class GifCog(commands.Cog):
                         ok = await _safe_edit(
                             content="🔍 **Still searching the rest of the library...** 🔍 Results below will update.",
                             embed=_library_results_embed(
-                                quote, cached_matches,
+                                quote, cached_matches[:_PAGE_SIZE],
                                 description="Results so far — the picker below appears once the search finishes.",
                             ),
                             view=None,
@@ -1716,10 +2024,17 @@ class GifCog(commands.Cog):
             return
 
         remaining_uncached = final_event.remaining_uncached if final_event else None
-        view = LibrarySearchView(self, quote, final_matches, remaining_uncached=remaining_uncached)
+        final_truncated = (final_event.truncated if final_event else cached_truncated) or False
+        view = LibrarySearchView(
+            self,
+            quote,
+            final_matches,
+            remaining_uncached=remaining_uncached,
+            truncated=final_truncated,
+        )
         await _safe_edit(
             content=None,
-            embed=_library_results_embed(quote, final_matches),
+            embed=view.embed(),
             view=view,
         )
 
@@ -1734,6 +2049,46 @@ class GifCog(commands.Cog):
     async def snip_search(self, interaction: discord.Interaction, quote: str) -> None:
         await interaction.response.defer(ephemeral=True)
         await self._run_library_search(interaction, quote)
+
+    async def _run_random_result(
+        self, interaction: discord.Interaction, fetch: RandomFetch
+    ) -> None:
+        # Shared by /snip random and by /snip movie's/tv's random-pick path
+        # (no quote/timecode given) — everything past "how to get the first
+        # pick" is identical, so RandomResultView (Shuffle/Previous/Post)
+        # only ever talks to `fetch`, never to a specific worker endpoint.
+        try:
+            picked = await fetch(frozenset(), None)
+        except httpx.HTTPError as exc:
+            await interaction.edit_original_response(
+                content=f"Couldn't find a match: {_error_detail(exc)}"
+            )
+            return
+
+        try:
+            render_result = await self.bot.worker.render(
+                picked.rating_key,
+                str(picked.start),
+                duration=picked.end - picked.start,
+                style="classic",
+            )
+        except httpx.HTTPError as exc:
+            await interaction.edit_original_response(
+                content=f"Couldn't generate the clip: {_error_detail(exc)}"
+            )
+            return
+
+        filename = f"clip.{render_result.format}"
+        file = discord.File(io.BytesIO(render_result.content), filename=filename)
+        view = RandomResultView(self.bot.worker, fetch, picked, render_result.content, filename)
+        # CLAUDE.md's "Celina" fix: a single-match pool must say so up
+        # front, not leave Shuffle looking broken when clicked.
+        note = " *(only match — nothing else to shuffle to)*" if picked.pool_size <= 1 else ""
+        await interaction.edit_original_response(
+            content=f"**{picked.title}** — {picked.timecode}{note}",
+            attachments=[file],
+            view=view,
+        )
 
     @snip_group.command(
         name="random",
@@ -1752,48 +2107,12 @@ class GifCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         effective_media = media or "all"
 
-        try:
-            picked = await self.bot.worker.random_quote(quote, effective_media)
-        except httpx.HTTPError as exc:
-            await interaction.edit_original_response(
-                content=f"Couldn't find a match: {_error_detail(exc)}"
+        async def fetch(exclude: frozenset[int], most_recent: int | None) -> RandomQuoteResult:
+            return await self.bot.worker.random_quote(
+                quote, effective_media, exclude_entry_ids=exclude, most_recent_entry_id=most_recent
             )
-            return
 
-        render_timecode = str(picked.start)
-        render_duration = picked.end - picked.start
-
-        try:
-            render_result = await self.bot.worker.render(
-                picked.rating_key,
-                render_timecode,
-                duration=render_duration,
-                style="classic",
-            )
-        except httpx.HTTPError as exc:
-            await interaction.edit_original_response(
-                content=f"Couldn't generate the clip: {_error_detail(exc)}"
-            )
-            return
-
-        filename = f"clip.{render_result.format}"
-        file = discord.File(io.BytesIO(render_result.content), filename=filename)
-        view = RandomResultView(
-            self.bot.worker,
-            quote,
-            effective_media,
-            picked.rating_key,
-            picked.title,
-            render_timecode,
-            render_duration,
-            render_result.content,
-            filename,
-        )
-        await interaction.edit_original_response(
-            content=f"**{picked.title}** — {picked.timecode}",
-            attachments=[file],
-            view=view,
-        )
+        await self._run_random_result(interaction, fetch)
 
     @snip_group.command(
         name="tv",
@@ -1804,7 +2123,7 @@ class GifCog(commands.Cog):
         season="Season number (requires episode)",
         episode="Episode number within the season (requires season)",
         quote="A line of dialogue to find (fuzzy — close is fine); omit season/episode to "
-        "search the whole show",
+        "search the whole show; omit quote and timecode entirely for a random line",
         timecode="Timestamp, e.g. 1:23:45 or 1h23m45s — requires season/episode",
         end_timecode="Custom clip end (timecode only, not quote) — same formats as timecode",
         format="Output format (default: gif — mp4/webm are smaller but do not autoplay in Discord)",
@@ -1865,9 +2184,23 @@ class GifCog(commands.Cog):
             )
             return
 
-        # No episode given — quote is guaranteed at this point (a bare
-        # timecode with no episode was already rejected above, and quote
-        # XOR timecode was already validated).
+        # No episode given, and the "timecode needs an episode" check above
+        # already rejected a bare timecode here — so quote is either given
+        # (search the whole show) or genuinely absent (random line from any
+        # episode, CLAUDE.md's per-title/per-show random-pick design).
+        if quote is None:
+            await interaction.edit_original_response(
+                content="Picking a random line from the show…"
+            )
+
+            async def fetch(exclude: frozenset[int], most_recent: int | None) -> RandomQuoteResult:
+                return await self.bot.worker.random_line_show(
+                    show_rating_key, exclude_entry_ids=exclude, most_recent_entry_id=most_recent
+                )
+
+            await self._run_random_result(interaction, fetch)
+            return
+
         await interaction.edit_original_response(
             content=f'Searching every episode for "{quote}" — this can take a moment for '
             "episodes not seen before…"
@@ -1886,12 +2219,49 @@ class GifCog(commands.Cog):
             )
             return
 
-        view = LibrarySearchView(self, quote, result.matches)
+        # Unlike /snip search (genuinely cross-title, kept as a scannable
+        # list via LibrarySearchView), a whole-show search's candidates are
+        # all episodes of the SAME show a user already picked — matching
+        # /snip movie's UX (drop straight into the confirm screen, with its
+        # picker/paging) reads better than an extra "pick an episode" list
+        # step first. title=None: LibraryQuoteMatchResult carries its own
+        # per-episode title, unlike a single already-known film.
+        match_view = QuoteMatchView(
+            None,
+            result.matches,
+            result.min_score,
+            result.confident_score,
+            truncated=result.truncated,
+        )
         await interaction.edit_original_response(
-            embed=_library_results_embed(
-                quote,
-                result.matches,
-                description="Pick an episode below to generate a clip from that line.",
-            ),
-            view=view,
+            content=None, embed=match_view.embed(), view=match_view
+        )
+        await match_view.wait()
+
+        if match_view.value is None:
+            await interaction.edit_original_response(
+                content="Timed out.", embed=None, view=None
+            )
+            return
+        if match_view.value is False:
+            await interaction.edit_original_response(
+                content="Cancelled.", embed=None, view=None
+            )
+            return
+
+        selected = match_view.selected
+        await interaction.edit_original_response(content="Generating…", embed=None, view=None)
+        await self._render_and_respond(
+            interaction,
+            selected.rating_key,
+            selected.title,
+            str(selected.start),
+            selected.end - selected.start,
+            None,
+            format,
+            # A quote match came from real subtitle text, so burn-in has
+            # something to show by default (CLAUDE.md Section 7: "subtitles
+            # on when triggered by a quote search") — same default _generate
+            # uses for its own quote-match path.
+            "classic",
         )

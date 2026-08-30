@@ -44,6 +44,14 @@ SEARCH_EPISODES_TIMEOUT_SECONDS = 900.0
 # to the whole request, so this only needs to cover one title's worst case.
 SEARCH_QUOTE_EXTEND_TIMEOUT_SECONDS = 480.0
 
+# /random-line/{rating_key} (/snip movie's random-pick path) can trigger the
+# same cold-cache single-title extraction as /resolve-quote.
+RANDOM_LINE_TIMEOUT_SECONDS = 480.0
+
+# /random-line-show/{show_rating_key} (/snip tv's whole-show random-pick
+# path) mirrors /search-episodes-quote's serial per-episode extraction.
+RANDOM_LINE_SHOW_TIMEOUT_SECONDS = 900.0
+
 
 @dataclass
 class MovieResult:
@@ -98,6 +106,10 @@ class ResolveQuoteResult:
     subtitle_source: str
     confident_score: float
     min_score: float
+    # True when the worker's fetch hit quote_match.fetch_limit and this
+    # result was cut off there — see ResolveQuoteResponse.truncated
+    # (app/worker/api.py) for how it's computed.
+    truncated: bool
     matches: list[QuoteMatchResult]
 
 
@@ -129,6 +141,8 @@ class LibrarySearchResult:
     matches: list[LibraryQuoteMatchResult]
     confident_score: float
     min_score: float
+    # Same truncation signal as ResolveQuoteResult.truncated, see there.
+    truncated: bool
 
 
 @dataclass
@@ -140,6 +154,9 @@ class RandomQuoteResult:
     end: float
     timecode: str
     text: str
+    entry_id: int
+    pool_size: int
+    exhausted: bool
 
 
 @dataclass
@@ -152,6 +169,10 @@ class LibrarySearchExtendEvent:
     total: int | None = None
     title: str | None = None
     remaining_uncached: int | None = None
+    # Present (True/False) alongside matches on "cached"/"final" events;
+    # absent on "scanning"/"progress" events, same as confident_score/
+    # min_score above.
+    truncated: bool | None = None
 
 
 class WorkerClient:
@@ -233,11 +254,57 @@ class WorkerClient:
         payload["matches"] = [LibraryQuoteMatchResult(**m) for m in payload["matches"]]
         return LibrarySearchResult(**payload)
 
-    async def random_quote(self, quote: str | None, media: str) -> RandomQuoteResult:
-        params: dict[str, str] = {"media": media}
+    async def random_quote(
+        self,
+        quote: str | None,
+        media: str,
+        exclude_entry_ids: frozenset[int] = frozenset(),
+        most_recent_entry_id: int | None = None,
+    ) -> RandomQuoteResult:
+        params: dict[str, object] = {"media": media, "exclude": list(exclude_entry_ids)}
         if quote is not None:
             params["quote"] = quote
+        if most_recent_entry_id is not None:
+            params["most_recent"] = most_recent_entry_id
         response = await self._client.get("/random-quote", params=params)
+        response.raise_for_status()
+        return RandomQuoteResult(**response.json())
+
+    async def random_line(
+        self,
+        rating_key: int,
+        exclude_entry_ids: frozenset[int] = frozenset(),
+        most_recent_entry_id: int | None = None,
+    ) -> RandomQuoteResult:
+        params: dict[str, object] = {"exclude": list(exclude_entry_ids)}
+        if most_recent_entry_id is not None:
+            params["most_recent"] = most_recent_entry_id
+        response = await self._client.get(
+            f"/random-line/{rating_key}", params=params, timeout=RANDOM_LINE_TIMEOUT_SECONDS
+        )
+        response.raise_for_status()
+        return RandomQuoteResult(**response.json())
+
+    async def random_line_show(
+        self,
+        show_rating_key: int,
+        season: int | None = None,
+        episode: int | None = None,
+        exclude_entry_ids: frozenset[int] = frozenset(),
+        most_recent_entry_id: int | None = None,
+    ) -> RandomQuoteResult:
+        params: dict[str, object] = {"exclude": list(exclude_entry_ids)}
+        if season is not None:
+            params["season"] = season
+        if episode is not None:
+            params["episode"] = episode
+        if most_recent_entry_id is not None:
+            params["most_recent"] = most_recent_entry_id
+        response = await self._client.get(
+            f"/random-line-show/{show_rating_key}",
+            params=params,
+            timeout=RANDOM_LINE_SHOW_TIMEOUT_SECONDS,
+        )
         response.raise_for_status()
         return RandomQuoteResult(**response.json())
 

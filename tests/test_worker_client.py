@@ -88,6 +88,7 @@ def test_random_quote_sends_quote_and_media_params_and_parses_result():
     body = {
         "rating_key": 101, "title": "Monty Python", "library_name": "Movies",
         "start": 1.0, "end": 2.0, "timecode": "0:00:01", "text": "Nobody expects it.",
+        "entry_id": 5, "pool_size": 3, "exhausted": False,
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -103,12 +104,16 @@ def test_random_quote_sends_quote_and_media_params_and_parses_result():
     assert isinstance(result, RandomQuoteResult)
     assert result.rating_key == 101
     assert result.text == "Nobody expects it."
+    assert result.entry_id == 5
+    assert result.pool_size == 3
+    assert result.exhausted is False
 
 
 def test_random_quote_omits_quote_param_when_none():
     body = {
         "rating_key": 202, "title": "Some Show", "library_name": "TV Shows",
         "start": 1.0, "end": 2.0, "timecode": "0:00:01", "text": "Anything.",
+        "entry_id": 9, "pool_size": 1, "exhausted": False,
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -121,6 +126,84 @@ def test_random_quote_omits_quote_param_when_none():
     result = asyncio.run(client.random_quote(None, "all"))
 
     assert result.rating_key == 202
+
+
+def test_random_quote_sends_exclude_and_most_recent_params():
+    body = {
+        "rating_key": 202, "title": "Some Show", "library_name": "TV Shows",
+        "start": 1.0, "end": 2.0, "timecode": "0:00:01", "text": "Anything.",
+        "entry_id": 9, "pool_size": 3, "exhausted": True,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get_list("exclude") == ["3", "7"]
+        assert request.url.params["most_recent"] == "7"
+        return httpx.Response(200, json=body)
+
+    client = _client_with_mock(handler)
+
+    result = asyncio.run(
+        client.random_quote(None, "all", exclude_entry_ids=frozenset({3, 7}), most_recent_entry_id=7)
+    )
+
+    assert result.exhausted is True
+
+
+def test_random_line_hits_rating_key_scoped_endpoint():
+    body = {
+        "rating_key": 101, "title": "Monty Python", "library_name": "Movies",
+        "start": 1.0, "end": 2.0, "timecode": "0:00:01", "text": "Nobody expects it.",
+        "entry_id": 5, "pool_size": 3, "exhausted": False,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/random-line/101"
+        return httpx.Response(200, json=body)
+
+    client = _client_with_mock(handler)
+
+    result = asyncio.run(client.random_line(101))
+
+    assert result.rating_key == 101
+
+
+def test_random_line_show_sends_season_and_episode_when_given():
+    body = {
+        "rating_key": 501, "title": "The Office — S01E01 — Pilot", "library_name": "TV Shows",
+        "start": 1.0, "end": 2.0, "timecode": "0:00:01", "text": "Line.",
+        "entry_id": 1, "pool_size": 1, "exhausted": False,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/random-line-show/900"
+        assert request.url.params["season"] == "1"
+        assert request.url.params["episode"] == "1"
+        return httpx.Response(200, json=body)
+
+    client = _client_with_mock(handler)
+
+    result = asyncio.run(client.random_line_show(900, season=1, episode=1))
+
+    assert result.rating_key == 501
+
+
+def test_random_line_show_omits_season_episode_when_whole_show():
+    body = {
+        "rating_key": 501, "title": "The Office — S01E01 — Pilot", "library_name": "TV Shows",
+        "start": 1.0, "end": 2.0, "timecode": "0:00:01", "text": "Line.",
+        "entry_id": 1, "pool_size": 1, "exhausted": False,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "season" not in request.url.params
+        assert "episode" not in request.url.params
+        return httpx.Response(200, json=body)
+
+    client = _client_with_mock(handler)
+
+    result = asyncio.run(client.random_line_show(900))
+
+    assert result.rating_key == 501
 
 
 def test_subtitles_parses_entries():

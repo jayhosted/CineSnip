@@ -66,7 +66,10 @@ subtitle_defaults:
 # only controls whether the Discord UI treats the top match as good enough
 # to lead with, or opens straight to "show other matches".
 quote_match:
-  candidate_limit: 8
+  # How many top candidates the worker fetches/ranks per search — the bot
+  # pages through the result in place 8 at a time (Next/Previous buttons),
+  # so this should stay generous rather than matching what's shown at once.
+  fetch_limit: 50
   min_score: 50
   confident_score: 85
   max_window_gap_seconds: 3
@@ -75,6 +78,10 @@ quote_match:
   # extracts up to this many not-yet-cached movie titles per request before
   # stopping (a "search N more" follow-up covers the rest).
   library_extend_cap: 25
+  # /snip movie and /snip tv's random-pick path (no quote/timecode given):
+  # a line under this many words is excluded from the pick, so a random
+  # clip doesn't land on filler like "Okay." or "Yeah."
+  random_min_words: 3
 
 worker:
   port: 8000

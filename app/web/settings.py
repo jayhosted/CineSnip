@@ -109,7 +109,7 @@ def register_settings_routes(
                 max_duration_seconds=float(form["max_duration_seconds"]),
             )
             quote_match = QuoteMatchDefaults(
-                candidate_limit=int(form["candidate_limit"]),
+                fetch_limit=int(form["fetch_limit"]),
                 min_score=float(form["min_score"]),
                 confident_score=float(form["confident_score"]),
                 max_window_gap_seconds=float(form["max_window_gap_seconds"]),

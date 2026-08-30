@@ -343,28 +343,80 @@ def search_entry_ids(
 
 
 def pick_random_entry_id(
-    db_path: Path, title_ids: list[int]
+    db_path: Path,
+    title_ids: list[int],
+    exclude_entry_ids: frozenset[int] = frozenset(),
 ) -> tuple[int, int, int] | None:
     """Pick one uniformly-random entry row, scoped to `title_ids`, as
     (entry_id, title_id, idx) — same tuple shape as search_entry_ids' rows,
     so callers can feed it straight into fetch_entry_windows. Used by
     /snip random's no-quote path (a genuinely random cached line), scoped
     to whatever media-type filter the caller already resolved to title_ids.
+
+    `exclude_entry_ids` lets a reroll journey avoid repeating a line
+    already shown this session (CLAUDE.md's /snip random shuffle-history
+    fix) — returns None once every scoped entry has been excluded.
     """
     if not db_path.exists():
         return None
     if not title_ids:
         return None
     placeholders = ",".join("?" for _ in title_ids)
+    params: list[int] = list(title_ids)
+    exclude_clause = ""
+    if exclude_entry_ids:
+        exclude_placeholders = ",".join("?" for _ in exclude_entry_ids)
+        exclude_clause = f" AND id NOT IN ({exclude_placeholders})"
+        params.extend(exclude_entry_ids)
     with _connect(db_path) as conn:
         row = conn.execute(
             f"SELECT id, title_id, idx FROM entries "
-            f"WHERE title_id IN ({placeholders}) ORDER BY RANDOM() LIMIT 1",
-            title_ids,
+            f"WHERE title_id IN ({placeholders}){exclude_clause} "
+            f"ORDER BY RANDOM() LIMIT 1",
+            params,
         ).fetchone()
     if row is None:
         return None
     return (row[0], row[1], row[2])
+
+
+def count_entries(db_path: Path, title_ids: list[int]) -> int:
+    """Total entry rows scoped to `title_ids` — used to report/detect a
+    random-pick pool's size (e.g. "only 1 match" for a narrow quote filter,
+    or when a reroll journey has exhausted every candidate)."""
+    if not db_path.exists():
+        return 0
+    if not title_ids:
+        return 0
+    placeholders = ",".join("?" for _ in title_ids)
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM entries WHERE title_id IN ({placeholders})",
+            title_ids,
+        ).fetchone()
+    return row[0] if row else 0
+
+
+def list_entry_rows_for_titles(
+    db_path: Path, title_ids: list[int]
+) -> list[tuple[int, int, int, float, float, str]]:
+    """(entry_id, title_id, idx, start, end, display_text) for every entry
+    scoped to title_ids. Used by the "filtered random" pick (min-word-count
+    quality filter) where the pool is small enough — a single title or one
+    show's episodes — to fetch and filter in Python rather than needing a
+    SQL word-count approximation, and without an N+1 fetch per candidate."""
+    if not title_ids:
+        return []
+    if not db_path.exists():
+        return []
+    placeholders = ",".join("?" for _ in title_ids)
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT id, title_id, idx, start, end, display_text FROM entries "
+            f"WHERE title_id IN ({placeholders})",
+            title_ids,
+        ).fetchall()
+    return [(r[0], r[1], r[2], r[3], r[4], r[5]) for r in rows]
 
 
 def fetch_entries_for_titles(db_path: Path, title_ids: list[int]) -> dict[int, list[SubtitleEntry]]:

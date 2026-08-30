@@ -30,9 +30,32 @@ class _FakePlexClient:
         self.show_library_names = frozenset({"TV Shows"})
         self._episodes_by_show: dict[int, list[MovieResult]] = {}
         self._movie_items = movie_items or []
+        self._movies_by_rating_key: dict[int, MovieResult] = {}
 
     def list_episodes(self, show_rating_key: int) -> list[MovieResult]:
         return self._episodes_by_show.get(show_rating_key, [])
+
+    def get_movie(self, rating_key: int) -> MovieResult:
+        from app.worker.plex_client import MovieNotFoundError
+
+        movie = self._movies_by_rating_key.get(rating_key)
+        if movie is None:
+            raise MovieNotFoundError(f"No movie with rating_key {rating_key}")
+        return movie
+
+    def get_episode(self, show_rating_key: int, season: int, episode: int) -> MovieResult:
+        # MovieResult carries no season/episode fields of its own (Episode
+        # formatting bakes "S01E01" into .title instead — CLAUDE.md Section
+        # 4) — tests register exactly the one episode under test per show,
+        # so returning it unconditionally is enough to exercise this path.
+        from app.worker.plex_client import EpisodeNotFoundError
+
+        episodes = self._episodes_by_show.get(show_rating_key, [])
+        if not episodes:
+            raise EpisodeNotFoundError(
+                f"No S{season:02d}E{episode:02d} for show {show_rating_key}"
+            )
+        return episodes[0]
 
     def library_sections(self) -> list[tuple[str, object]]:
         return [("Movies", "movies-section")]
@@ -581,5 +604,197 @@ def test_random_quote_endpoint_returns_404_when_nothing_cached(tmp_path, monkeyp
     client = _client(settings, monkeypatch)
 
     resp = client.get("/random-quote", params={"media": "all"})
+
+    assert resp.status_code == 404
+
+
+def test_search_quote_endpoint_returns_more_than_eight_when_available(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    for i in range(12):
+        _write_title(
+            settings.quote_index_db_path,
+            f"guid-{i}", 100 + i, f"Title {i}", "Movies",
+            ["Nobody expects the Spanish Inquisition!"],
+        )
+
+    client = _client(settings, monkeypatch)
+    resp = client.get("/search-quote", params={"quote": "nobody expects the spanish inquisition"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # Old behavior (candidate_limit=8) would have truncated this to 8 —
+    # asserting >8 proves qm.fetch_limit (default 50), not the old cap,
+    # is what reaches search_cached_library's result_limit.
+    assert len(body["matches"]) == 12
+
+
+def test_search_quote_endpoint_reports_truncated_when_more_than_fetch_limit(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    settings.quote_match = QuoteMatchDefaults(fetch_limit=5)
+    for i in range(8):
+        _write_title(
+            settings.quote_index_db_path,
+            f"guid-{i}", 100 + i, f"Title {i}", "Movies",
+            ["Nobody expects the Spanish Inquisition!"],
+        )
+
+    client = _client(settings, monkeypatch)
+    resp = client.get("/search-quote", params={"quote": "nobody expects the spanish inquisition"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["matches"]) == 5
+    assert body["truncated"] is True
+
+
+def test_search_quote_endpoint_reports_not_truncated_when_within_fetch_limit(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    settings.quote_match = QuoteMatchDefaults(fetch_limit=5)
+    for i in range(3):
+        _write_title(
+            settings.quote_index_db_path,
+            f"guid-{i}", 100 + i, f"Title {i}", "Movies",
+            ["Nobody expects the Spanish Inquisition!"],
+        )
+
+    client = _client(settings, monkeypatch)
+    resp = client.get("/search-quote", params={"quote": "nobody expects the spanish inquisition"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["matches"]) == 3
+    assert body["truncated"] is False
+
+
+def test_search_episodes_quote_endpoint_reports_truncated_when_more_than_fetch_limit(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    settings.quote_match = QuoteMatchDefaults(fetch_limit=2)
+    episodes = []
+    for i in range(4):
+        episode = MovieResult(
+            rating_key=500 + i, title=f"The Office — S01E0{i} — Ep{i}", year=None,
+            duration_ms=1000, thumb_url=None, plex_path=f"D:\\TV\\office{i}.mkv",
+            guid=f"ep-guid-{i}", library_name="TV Shows",
+        )
+        episodes.append(episode)
+        _write_title(
+            settings.quote_index_db_path,
+            f"ep-guid-{i}", 500 + i, f"The Office — S01E0{i} — Ep{i}", "TV Shows",
+            ["That's what she said."],
+        )
+
+    fake_plex = _FakePlexClient(settings)
+    fake_plex._episodes_by_show[900] = episodes
+    client = _client(settings, monkeypatch, fake_plex)
+
+    resp = client.get("/search-episodes-quote/900", params={"quote": "that's what she said"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["matches"]) == 2
+    assert body["truncated"] is True
+
+
+def test_random_line_endpoint_filters_short_lines_and_returns_pool_info(tmp_path, monkeypatch):
+    mount_root = tmp_path / "media"
+    mount_root.mkdir()
+    (mount_root / "film.mkv").write_bytes(b"x")
+    settings = _settings_with_sync(tmp_path, enabled=False, mount_root=mount_root)
+    _write_title(
+        settings.quote_index_db_path,
+        "guid-1", 101, "Monty Python", "Movies",
+        ["Okay.", "Nobody expects the Spanish Inquisition!"],
+    )
+    fake_plex = _FakePlexClient(settings)
+    fake_plex._movies_by_rating_key[101] = _movie_item("guid-1", 101, "Monty Python")
+    client = _client(settings, monkeypatch, fake_plex)
+
+    resp = client.get("/random-line/101")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["rating_key"] == 101
+    # "Okay." is under the default random_min_words (3) and must never be
+    # picked — the only eligible line is the long one.
+    assert body["text"] == "Nobody expects the Spanish Inquisition!"
+    assert body["pool_size"] == 1
+    assert isinstance(body["entry_id"], int)
+
+
+def test_random_line_endpoint_404_when_rating_key_unknown(tmp_path, monkeypatch):
+    settings = _settings_with_sync(tmp_path, enabled=False)
+    fake_plex = _FakePlexClient(settings)
+    client = _client(settings, monkeypatch, fake_plex)
+
+    resp = client.get("/random-line/999")
+
+    assert resp.status_code == 404
+
+
+def test_random_line_show_endpoint_whole_show_picks_from_any_episode(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    episode = MovieResult(
+        rating_key=501, title="The Office — S01E01 — Pilot", year=None,
+        duration_ms=1000, thumb_url=None, plex_path="D:\\TV\\office.mkv",
+        guid="ep-guid-1", library_name="TV Shows",
+    )
+    _write_title(
+        settings.quote_index_db_path,
+        "ep-guid-1", 501, "The Office — S01E01 — Pilot", "TV Shows",
+        ["That's what she said."],
+    )
+    fake_plex = _FakePlexClient(settings)
+    fake_plex._episodes_by_show[900] = [episode]
+    client = _client(settings, monkeypatch, fake_plex)
+
+    resp = client.get("/random-line-show/900")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["rating_key"] == 501
+    assert body["text"] == "That's what she said."
+
+
+def test_random_line_show_endpoint_single_episode_scope(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    ep1 = MovieResult(
+        rating_key=501, title="The Office — S01E01 — Pilot", year=None,
+        duration_ms=1000, thumb_url=None, plex_path="D:\\TV\\office1.mkv",
+        guid="ep-guid-1", library_name="TV Shows",
+    )
+    _write_title(
+        settings.quote_index_db_path, "ep-guid-1", 501, ep1.title, "TV Shows", ["Line from episode one."],
+    )
+    fake_plex = _FakePlexClient(settings)
+    fake_plex._episodes_by_show[900] = [ep1]
+    client = _client(settings, monkeypatch, fake_plex)
+
+    resp = client.get("/random-line-show/900", params={"season": 1, "episode": 1})
+
+    assert resp.status_code == 200
+    assert resp.json()["rating_key"] == 501
+
+
+def test_random_line_show_endpoint_requires_both_season_and_episode(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    client = _client(settings, monkeypatch)
+
+    resp = client.get("/random-line-show/900", params={"season": 1})
+
+    assert resp.status_code == 422
+
+
+def test_random_line_show_endpoint_404_when_show_unknown(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+
+    class _NoShowPlex(_FakePlexClient):
+        def list_episodes(self, show_rating_key: int) -> list[MovieResult]:
+            from app.worker.plex_client import ShowNotFoundError
+
+            raise ShowNotFoundError(f"No show {show_rating_key}")
+
+    client = _client(settings, monkeypatch, _NoShowPlex(settings))
+
+    resp = client.get("/random-line-show/900")
 
     assert resp.status_code == 404

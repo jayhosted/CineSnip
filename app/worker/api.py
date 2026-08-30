@@ -145,6 +145,11 @@ class ResolveQuoteResponse(BaseModel):
     subtitle_source: str
     confident_score: float
     min_score: float
+    # True when the engine found more matches than quote_match.fetch_limit
+    # and this response was cut off at that cap — lets the bot tell "this
+    # is every match" apart from "there may be more" without guessing off
+    # a raw count that could coincidentally equal fetch_limit on its own.
+    truncated: bool
     matches: list[QuoteMatchOut]
 
 
@@ -165,6 +170,8 @@ class LibrarySearchResponse(BaseModel):
     matches: list[LibraryQuoteMatchOut]
     confident_score: float
     min_score: float
+    # Same truncation signal as ResolveQuoteResponse.truncated, see there.
+    truncated: bool
 
 
 class RandomQuoteResponse(BaseModel):
@@ -175,6 +182,17 @@ class RandomQuoteResponse(BaseModel):
     end: float
     timecode: str
     text: str
+    # Opaque per-pick identity the bot echoes back as exclude/most_recent on
+    # a reroll, so a shuffle journey never repeats a line already shown.
+    entry_id: int
+    # Size of the eligible candidate pool for this exact scope/filter,
+    # ignoring exclusion — lets the bot disable Shuffle and say so up front
+    # when there's only one match (CLAUDE.md's "Celina" fix), instead of a
+    # button that silently does nothing.
+    pool_size: int
+    # True if the pool had to reset (every candidate already excluded) to
+    # produce this pick.
+    exhausted: bool
 
 
 # Tried in order, only once the configured-settings render already
@@ -323,7 +341,7 @@ def _to_out(movie: MovieResult) -> MovieResultOut:
 
 async def _movie_library_matches(
     app: FastAPI, settings: Settings, quote: str
-) -> tuple[list[CachedTitle], list]:
+) -> tuple[list[CachedTitle], list, bool]:
     # Shared by /search-quote and /search-quote-extend: both search exactly
     # "every cached movie-library title" — the TV episodes sharing this same
     # search_index (CLAUDE.md Section 4) are filtered out here, once.
@@ -341,21 +359,46 @@ async def _movie_library_matches(
     # freezes Discord's own interaction dispatch for the same duration —
     # confirmed as the root cause of "The application did not respond"
     # errors on /snip tv.
+    #
+    # Fetching fetch_limit + 1 (rather than exactly fetch_limit) is what
+    # lets the caller tell "this is genuinely every match" apart from "the
+    # cap was hit, there may be more" — a plain len(matches) == fetch_limit
+    # check can't distinguish those two cases (issue #7 follow-up).
     matches = await asyncio.to_thread(
         search_cached_library,
         settings.quote_index_db_path,
         cached_titles,
         quote,
-        result_limit=qm.candidate_limit,
+        result_limit=qm.fetch_limit + 1,
         min_score=qm.min_score,
         max_window_gap_seconds=qm.max_window_gap_seconds,
         context_lines=qm.context_lines,
         per_title_limit=qm.library_per_title_limit,
     )
-    return cached_titles, matches
+    truncated = len(matches) > qm.fetch_limit
+    return cached_titles, matches[: qm.fetch_limit], truncated
 
 
-def _library_search_payload(matches: list[LibraryQuoteMatch], qm) -> dict:
+def _random_quote_response(result) -> RandomQuoteResponse:
+    """Shared by /random-quote, /random-line, and /random-line-show — turns
+    a library_search.RandomPick into the wire response, echoing entry_id/
+    pool_size/exhausted so the bot can track a reroll journey's history."""
+    pick = result.pick
+    return RandomQuoteResponse(
+        rating_key=pick.rating_key,
+        title=pick.title,
+        library_name=pick.library_name,
+        start=pick.match.start,
+        end=pick.match.end,
+        timecode=_format_display_timecode(pick.match.start),
+        text=pick.match.text,
+        entry_id=pick.entry_id,
+        pool_size=result.pool_size,
+        exhausted=result.exhausted,
+    )
+
+
+def _library_search_payload(matches: list[LibraryQuoteMatch], qm, truncated: bool) -> dict:
     return {
         "matches": [
             {
@@ -374,6 +417,7 @@ def _library_search_payload(matches: list[LibraryQuoteMatch], qm) -> dict:
         ],
         "confident_score": qm.confident_score,
         "min_score": qm.min_score,
+        "truncated": truncated,
     }
 
 
@@ -712,14 +756,20 @@ def create_app(settings: Settings) -> FastAPI:
         # entries), so this just calls find_quote_matches() directly and
         # lets it build its own candidates internally (its default
         # `precomputed=None` path) rather than duplicating that logic here.
+        #
+        # Fetching fetch_limit + 1 (not exactly fetch_limit) is what lets
+        # `truncated` below tell "this is genuinely every match" apart from
+        # "the cap was hit, there may be more" (issue #7 follow-up).
         matches = find_quote_matches(
             result.entries,
             quote,
-            limit=qm.candidate_limit,
+            limit=qm.fetch_limit + 1,
             min_score=qm.min_score,
             max_window_gap_seconds=qm.max_window_gap_seconds,
             context_lines=qm.context_lines,
         )
+        truncated = len(matches) > qm.fetch_limit
+        matches = matches[: qm.fetch_limit]
 
         if not matches:
             raise HTTPException(
@@ -736,6 +786,7 @@ def create_app(settings: Settings) -> FastAPI:
             subtitle_source=result.source.value,
             confident_score=qm.confident_score,
             min_score=qm.min_score,
+            truncated=truncated,
             matches=[
                 QuoteMatchOut(
                     start=m.start,
@@ -758,12 +809,17 @@ def create_app(settings: Settings) -> FastAPI:
     # empty index/no matches is a normal outcome, not an error.
     @app.get("/search-quote", response_model=LibrarySearchResponse)
     async def search_quote(quote: str) -> LibrarySearchResponse:
-        _, matches = await _movie_library_matches(app, settings, quote)
-        return LibrarySearchResponse(**_library_search_payload(matches, settings.quote_match))
+        _, matches, truncated = await _movie_library_matches(app, settings, quote)
+        return LibrarySearchResponse(
+            **_library_search_payload(matches, settings.quote_match, truncated)
+        )
 
     @app.get("/random-quote", response_model=RandomQuoteResponse)
     async def random_quote(
-        quote: str | None = None, media: Literal["movie", "tv", "all"] = "all"
+        quote: str | None = None,
+        media: Literal["movie", "tv", "all"] = "all",
+        exclude: list[int] = Query(default=[]),
+        most_recent: int | None = None,
     ) -> RandomQuoteResponse:
         # Tier 1 (already-cached titles) only, deliberately — no auto-extend,
         # same reasoning as elsewhere: extracting subtitles for random titles
@@ -782,19 +838,112 @@ def create_app(settings: Settings) -> FastAPI:
             for t in search_index.list_titles(settings.quote_index_db_path)
             if t.library_name in allowed_libraries
         ]
-        result = pick_random_quote(settings.quote_index_db_path, cached_titles, quote)
+        result = pick_random_quote(
+            settings.quote_index_db_path,
+            cached_titles,
+            quote,
+            exclude_entry_ids=frozenset(exclude),
+            most_recent_entry_id=most_recent,
+        )
         if result is None:
             raise HTTPException(status_code=404, detail="No matching cached line found.")
 
-        return RandomQuoteResponse(
-            rating_key=result.rating_key,
-            title=result.title,
-            library_name=result.library_name,
-            start=result.match.start,
-            end=result.match.end,
-            timecode=_format_display_timecode(result.match.start),
-            text=result.match.text,
+        return _random_quote_response(result)
+
+    @app.get("/random-line/{rating_key}", response_model=RandomQuoteResponse)
+    async def random_line(
+        rating_key: int,
+        exclude: list[int] = Query(default=[]),
+        most_recent: int | None = None,
+    ) -> RandomQuoteResponse:
+        # /snip movie with no quote/timecode given: a "filtered random" pick
+        # (min-word-count quality filter) scoped to just this one title,
+        # extracting on demand if not yet cached — mirrors /resolve-quote.
+        movie, result = await _load_subtitles(rating_key)
+
+        if result.source is SubtitleSource.NONE or not result.entries:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"No usable subtitles for '{movie.title}' (no sidecar .srt "
+                    "and no text subtitle stream). Random pick isn't available "
+                    "for this title — use timecode instead."
+                ),
+            )
+
+        cached_titles = [
+            CachedTitle(
+                guid=movie.guid,
+                rating_key=movie.rating_key,
+                title=movie.title,
+                library_name=movie.library_name,
+            )
+        ]
+        picked = pick_random_quote(
+            settings.quote_index_db_path,
+            cached_titles,
+            quote=None,
+            exclude_entry_ids=frozenset(exclude),
+            most_recent_entry_id=most_recent,
+            min_words=settings.quote_match.random_min_words,
         )
+        if picked is None:
+            raise HTTPException(status_code=404, detail="No usable line found for this title.")
+
+        return _random_quote_response(picked)
+
+    @app.get("/random-line-show/{show_rating_key}", response_model=RandomQuoteResponse)
+    async def random_line_show(
+        show_rating_key: int,
+        season: int | None = None,
+        episode: int | None = None,
+        exclude: list[int] = Query(default=[]),
+        most_recent: int | None = None,
+    ) -> RandomQuoteResponse:
+        # /snip tv with no quote/timecode given: whole-show scope by default
+        # (mirrors whole-show quote search), or a single episode when
+        # season+episode are both given.
+        if (season is None) != (episode is None):
+            raise HTTPException(
+                status_code=422, detail="season and episode must be given together or not at all."
+            )
+
+        if season is not None:
+            try:
+                ep = await asyncio.to_thread(
+                    app.state.plex.get_episode, show_rating_key, season, episode
+                )
+            except EpisodeNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            episodes = [ep]
+        else:
+            try:
+                episodes = await asyncio.to_thread(app.state.plex.list_episodes, show_rating_key)
+            except ShowNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        # Sequential, not gathered concurrently — same reasoning as
+        # /search-episodes-quote: avoids hammering ffmpeg/Plex with a
+        # dozen-plus simultaneous extractions for a never-touched show.
+        for ep in episodes:
+            await _ensure_episode_cached(ep)
+
+        cached_titles = [
+            CachedTitle(guid=ep.guid, rating_key=ep.rating_key, title=ep.title, library_name=ep.library_name)
+            for ep in episodes
+        ]
+        picked = pick_random_quote(
+            settings.quote_index_db_path,
+            cached_titles,
+            quote=None,
+            exclude_entry_ids=frozenset(exclude),
+            most_recent_entry_id=most_recent,
+            min_words=settings.quote_match.random_min_words,
+        )
+        if picked is None:
+            raise HTTPException(status_code=404, detail="No usable line found for this show.")
+
+        return _random_quote_response(picked)
 
     # Tier 2: extends /search-quote into not-yet-cached movie titles, gated
     # behind library_sync.enabled (CLAUDE.md Roadmap / issue #2 design spec) —
@@ -807,14 +956,17 @@ def create_app(settings: Settings) -> FastAPI:
         extend_cap = cap if cap is not None else settings.quote_match.library_extend_cap
 
         async def event_stream():
-            cached_titles, matches = await _movie_library_matches(app, settings, quote)
-            yield json.dumps({"type": "cached", **_library_search_payload(matches, settings.quote_match)}) + "\n"
+            cached_titles, matches, truncated = await _movie_library_matches(app, settings, quote)
+            yield json.dumps({
+                "type": "cached",
+                **_library_search_payload(matches, settings.quote_match, truncated),
+            }) + "\n"
 
             if not settings.library_sync.enabled:
                 yield json.dumps({
                     "type": "final",
                     "remaining_uncached": None,
-                    **_library_search_payload(matches, settings.quote_match),
+                    **_library_search_payload(matches, settings.quote_match, truncated),
                 }) + "\n"
                 return
 
@@ -887,7 +1039,7 @@ def create_app(settings: Settings) -> FastAPI:
                 yield json.dumps({
                     "type": "final",
                     "remaining_uncached": 0,
-                    **_library_search_payload(matches, settings.quote_match),
+                    **_library_search_payload(matches, settings.quote_match, truncated),
                 }) + "\n"
                 return
 
@@ -919,11 +1071,11 @@ def create_app(settings: Settings) -> FastAPI:
             # Items never even reached this call (not skipped — never
             # looked at) are what's left to report as "remaining".
             remaining = len(uncached_items) - scanned_count
-            _, final_matches = await _movie_library_matches(app, settings, quote)
+            _, final_matches, final_truncated = await _movie_library_matches(app, settings, quote)
             yield json.dumps({
                 "type": "final",
                 "remaining_uncached": remaining,
-                **_library_search_payload(final_matches, settings.quote_match),
+                **_library_search_payload(final_matches, settings.quote_match, final_truncated),
             }) + "\n"
 
         return StreamingResponse(event_stream(), media_type="application/x-ndjson")
@@ -996,17 +1148,22 @@ def create_app(settings: Settings) -> FastAPI:
         ]
 
         qm = settings.quote_match
+        # Fetching fetch_limit + 1 (not exactly fetch_limit) is what lets
+        # `truncated` below tell "this is genuinely every match" apart from
+        # "the cap was hit, there may be more" (issue #7 follow-up).
         matches = await asyncio.to_thread(
             search_cached_library,
             settings.quote_index_db_path,
             cached_titles,
             quote,
-            result_limit=qm.candidate_limit,
+            result_limit=qm.fetch_limit + 1,
             min_score=qm.min_score,
             max_window_gap_seconds=qm.max_window_gap_seconds,
             context_lines=qm.context_lines,
             per_title_limit=qm.library_per_title_limit,
         )
+        truncated = len(matches) > qm.fetch_limit
+        matches = matches[: qm.fetch_limit]
 
         return LibrarySearchResponse(
             matches=[
@@ -1026,6 +1183,7 @@ def create_app(settings: Settings) -> FastAPI:
             ],
             confident_score=qm.confident_score,
             min_score=qm.min_score,
+            truncated=truncated,
         )
 
     return app
