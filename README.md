@@ -20,7 +20,7 @@ one Docker container. Searches across every Plex library you configure.
 4. No privileged intents are needed for the MVP (it's slash-command-only).
 5. Open **OAuth2 → URL Generator**:
    - Scopes: `bot`, `applications.commands`
-   - Bot permissions: `Send Messages`, `Attach Files`, `Use Slash Commands`
+   - Bot permissions: `Send Messages`, `Attach Files`, `Use Slash Commands`, `Create Expressions` (needed for the Soundboard "Add to Soundboard" feature)
 6. Open the generated URL in your browser and invite the bot to your test Discord server.
 
 ## 3. Get a Plex token

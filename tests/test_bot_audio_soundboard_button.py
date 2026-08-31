@@ -125,6 +125,24 @@ def test_button_re_enabled_state_updates_after_apply_render_result(monkeypatch):
     asyncio.run(run())
 
 
+def test_add_to_soundboard_in_dm_is_plain_message_and_skips_can_upload(monkeypatch):
+    can_upload_calls = []
+    monkeypatch.setattr(sb, "can_upload", lambda guild: can_upload_calls.append(guild) or True)
+
+    async def run():
+        view = _make_view()
+        interaction = _fake_interaction(guild=None)
+        await view.add_to_soundboard.callback(interaction)
+        return interaction
+
+    interaction = asyncio.run(run())
+    interaction.response.send_message.assert_awaited_once()
+    (msg,), kwargs = interaction.response.send_message.await_args
+    assert msg == "Soundboard sounds can only be added from inside a server."
+    assert kwargs["ephemeral"] is True
+    assert can_upload_calls == []
+
+
 def test_add_to_soundboard_blocks_without_create_expressions_permission():
     async def run():
         view = _make_view()
@@ -302,6 +320,57 @@ def test_soundboard_disabled_note_appears_in_re_render_content():
     interaction.edit_original_response.assert_awaited_once()
     _, kwargs = interaction.edit_original_response.await_args
     assert "Add to Soundboard is disabled" in kwargs["content"]
+
+
+def test_replace_picker_rejects_when_parent_clip_became_too_long(monkeypatch):
+    # Simulates: picker opened while clip was eligible, then the parent
+    # message's Duration/Merge controls mutated the clip past the
+    # Soundboard's 5.2s cap before the user actually picked a sound.
+    sound = SimpleNamespace(id=1, name="old-sound", user=SimpleNamespace(id=999), guild=None)
+    replace_mock = AsyncMock()
+    monkeypatch.setattr(sb, "replace", replace_mock)
+    monkeypatch.setattr(sb, "can_replace", lambda guild, sound, bot_user_id: True)
+
+    async def run():
+        view = _make_view(duration=4.0)
+        picker = _SoundboardReplacePickerView(view, [sound], bot_user_id=999)
+        view._clip_duration = 6.0  # mutated after the picker was constructed
+        interaction = AsyncMock()
+        interaction.data = {"values": ["1"]}
+        await picker._on_pick(interaction)
+        return interaction
+
+    interaction = asyncio.run(run())
+    replace_mock.assert_not_awaited()
+    interaction.response.send_message.assert_awaited_once()
+    (msg,), kwargs = interaction.response.send_message.await_args
+    assert "5.2s" in msg
+    assert kwargs["ephemeral"] is True
+
+
+def test_replace_picker_rejects_when_parent_content_became_too_large(monkeypatch):
+    # Same scenario as above but for the 512KB size guard instead of
+    # duration — a merge could grow the content past the cap too.
+    sound = SimpleNamespace(id=1, name="old-sound", user=SimpleNamespace(id=999), guild=None)
+    replace_mock = AsyncMock()
+    monkeypatch.setattr(sb, "replace", replace_mock)
+    monkeypatch.setattr(sb, "can_replace", lambda guild, sound, bot_user_id: True)
+
+    async def run():
+        view = _make_view()
+        picker = _SoundboardReplacePickerView(view, [sound], bot_user_id=999)
+        view._content = b"x" * 600_000  # mutated after the picker was constructed
+        interaction = AsyncMock()
+        interaction.data = {"values": ["1"]}
+        await picker._on_pick(interaction)
+        return interaction
+
+    interaction = asyncio.run(run())
+    replace_mock.assert_not_awaited()
+    interaction.response.send_message.assert_awaited_once()
+    (msg,), kwargs = interaction.response.send_message.await_args
+    assert "too large" in msg
+    assert kwargs["ephemeral"] is True
 
 
 def test_replace_picker_success_sends_confirmation(monkeypatch):

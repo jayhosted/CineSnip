@@ -1230,6 +1230,13 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
         from app.bot import soundboard as sb
 
         guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                "Soundboard sounds can only be added from inside a server.",
+                ephemeral=True,
+            )
+            return
+
         bot_user_id = interaction.client.user.id
 
         if not sb.can_upload(guild):
@@ -1329,6 +1336,27 @@ class _SoundboardReplacePickerView(discord.ui.View):
                 ephemeral=True,
             )
             return
+        # Re-validate the parent's CURRENT clip state, not whatever it was
+        # when this picker was opened — the picker lives for up to 120s and
+        # the parent message's Duration/Merge controls stay live during
+        # that window, so the clip that was eligible when "Add to
+        # Soundboard" was first clicked may no longer be by the time a
+        # replace target is picked (final review finding: without this,
+        # sb.replace's delete-then-upload could delete the picked sound and
+        # then fail/upload bad data for an over-length or oversized clip).
+        if not _soundboard_eligible(self._parent._clip_duration, self._parent._format):
+            await interaction.response.send_message(
+                _SOUNDBOARD_DISABLED_DURATION_NOTE,
+                ephemeral=True,
+            )
+            return
+        if len(self._parent._content) > 512_000:
+            await interaction.response.send_message(
+                "Clip is too large for the Soundboard even at this length — try a shorter span.",
+                ephemeral=True,
+            )
+            return
+
         await interaction.response.defer(ephemeral=True)
         # soundboard.replace() deletes the old sound, then uploads the new
         # one (issue #10 code review flagged this: if the delete succeeds
