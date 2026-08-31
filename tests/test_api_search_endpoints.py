@@ -280,7 +280,7 @@ def test_search_quote_extend_short_circuits_when_nothing_uncached(tmp_path, monk
 
 def test_search_quote_extend_skips_titles_already_marked_no_subtitle(tmp_path, monkeypatch):
     settings = _settings_with_sync(tmp_path, enabled=True)
-    upsert_no_subtitle_title(settings.quote_index_db_path, "guid-2", 102, "Silent Film", "Movies")
+    upsert_no_subtitle_title(settings.quote_index_db_path, "guid-2", "102", "Silent Film", "Movies")
     fake_plex = _FakePlexClient(settings, movie_items=[_movie_item("guid-2", 102, "Silent Film")])
     client = _client(settings, monkeypatch, fake_plex)
 

@@ -246,7 +246,7 @@ def test_sync_one_title_skips_already_indexed_no_subtitle_title(tmp_path, monkey
     item = _item("guid-1", "101")
 
     write_cached_subtitles(settings.cache_dir, SubtitleResult(guid="guid-1", source=SubtitleSource.NONE, entries=[]))
-    quote_index.upsert_no_subtitle_title(settings.quote_index_db_path, "guid-1", 101, "Film", "Movies")
+    quote_index.upsert_no_subtitle_title(settings.quote_index_db_path, "guid-1", "101", "Film", "Movies")
 
     def _boom(*args, **kwargs):
         raise AssertionError("read_cached_subtitles should not be called for an already-indexed title")
