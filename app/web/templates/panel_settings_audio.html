@@ -18,6 +18,30 @@
       match.
     </p>
 
+    <label class="field-label" style="display:block; margin:22px 0 10px;">SOUNDBOARD REPLACE SCOPE</label>
+    <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:6px;">
+      <label style="display:flex; align-items:baseline; gap:8px; font-weight:normal;">
+        <input type="radio" name="soundboard_replace_scope" value="cinesnip_only"
+          {% if settings.render_defaults.soundboard_replace_scope == "cinesnip_only" %}checked{% endif %}>
+        <span>Only sounds CineSnip added <span class="footnote" style="display:inline;">(default)</span></span>
+      </label>
+      <label style="display:flex; align-items:baseline; gap:8px; font-weight:normal;">
+        <input type="radio" name="soundboard_replace_scope" value="any"
+          {% if settings.render_defaults.soundboard_replace_scope == "any" %}checked{% endif %}>
+        <span>Any sound on the board</span>
+      </label>
+      <label style="display:flex; align-items:baseline; gap:8px; font-weight:normal;">
+        <input type="radio" name="soundboard_replace_scope" value="none"
+          {% if settings.render_defaults.soundboard_replace_scope == "none" %}checked{% endif %}>
+        <span>Never offer to replace</span>
+      </label>
+    </div>
+    <p class="footnote" style="text-align:left; max-width:none; margin:0;">
+      When a server's Discord Soundboard is full, controls whether "Add to Soundboard"
+      offers to replace an existing sound, and which sounds are eligible. "Never offer
+      to replace" shows a plain "board is full" error instead.
+    </p>
+
     <button class="btn btn-primary" type="submit" style="margin-top:20px;">Save</button>
   </form>
 </div>
