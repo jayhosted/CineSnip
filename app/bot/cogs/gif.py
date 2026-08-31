@@ -297,6 +297,22 @@ def _slugify(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
 
 
+_AUDIO_FILENAME_TEXT_MAX = 60
+
+
+def _audio_filename(fmt: str, subtitle_text: str | None) -> str:
+    """/snip audio's attachment filename (issue #6 follow-up): reflects the
+    subtitle line actually used, so multiple downloaded/posted audio clips
+    are distinguishable at a glance instead of all reading "clip.mp3".
+    Falls back to the generic name when no line is known — a bare timecode
+    render has no subtitle text to draw from."""
+    if subtitle_text:
+        slug = _slugify(subtitle_text)[:_AUDIO_FILENAME_TEXT_MAX].strip("-")
+        if slug:
+            return f"{slug}.{fmt}"
+    return f"clip.{fmt}"
+
+
 def _format_clip_position(seconds: float) -> str:
     """Like _format_unit_timecode, but keeps one decimal place on the
     seconds component instead of rounding to a whole second — used only by
@@ -649,6 +665,52 @@ class ClipResultView(discord.ui.View):
         # Discord's generic "didn't respond in time" with no explanation
         # and the Post button still (wrongly) enabled for a retry that
         # would just fail the same way.
+        await interaction.response.defer()
+        file = discord.File(io.BytesIO(self._content), filename=self._filename)
+        content = _post_metadata_line(
+            self._title,
+            self._clip_start,
+            self._clip_start + self._clip_duration,
+            interaction.user.display_name,
+        )
+        try:
+            await interaction.channel.send(content=content, file=file)
+        except discord.HTTPException as exc:
+            await interaction.edit_original_response(
+                content=f"Couldn't post that clip: {_error_detail_from_discord(exc)}"
+            )
+            return
+        button.disabled = True
+        await interaction.edit_original_response(view=self)
+
+
+class AudioClipResultView(discord.ui.View):
+    """Result view for /snip audio (issue #6): a plain "Post to channel"
+    button only. No style-select, duration-nudge, or merge controls —
+    none of that applies to an audio-only clip, so this deliberately
+    doesn't reuse ClipEditView's editing machinery with everything
+    disabled, it just skips having it."""
+
+    def __init__(
+        self,
+        title: str,
+        content: bytes,
+        filename: str,
+        clip_start: float,
+        clip_duration: float,
+    ) -> None:
+        super().__init__(timeout=300)
+        self._title = title
+        self._content = content
+        self._filename = filename
+        self._clip_start = clip_start
+        self._clip_duration = clip_duration
+
+    @discord.ui.button(label="Post to channel", style=discord.ButtonStyle.primary)
+    async def post(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        # See ClipEditView.post — same defer-before-send fix.
         await interaction.response.defer()
         file = discord.File(io.BytesIO(self._content), filename=self._filename)
         content = _post_metadata_line(
@@ -1413,10 +1475,20 @@ class RandomResultView(discord.ui.View):
         initial_pick: RandomQuoteResult,
         content: bytes,
         filename: str,
+        format: str | None = None,
+        style: str = "classic",
+        kind: Literal["clip", "audio"] = "clip",
     ) -> None:
         super().__init__(timeout=300)
         self._worker = worker
         self._fetch = fetch
+        # format/style/kind let /snip audio's random-pick path (issue #6)
+        # reuse this same Shuffle/Previous/Post view rather than forking
+        # one — every other caller (/snip movie, /snip tv, /snip random)
+        # keeps the pre-existing gif/"classic"/"clip" defaults.
+        self._format = format
+        self._style = style
+        self._kind = kind
         self._history: list[_RandomHistoryEntry] = [
             _RandomHistoryEntry(initial_pick, content, filename)
         ]
@@ -1471,7 +1543,8 @@ class RandomResultView(discord.ui.View):
                 picked.rating_key,
                 str(picked.start),
                 duration=picked.end - picked.start,
-                style="classic",
+                format=self._format,
+                style=self._style,
             )
         except httpx.HTTPError as exc:
             await interaction.edit_original_response(
@@ -1480,7 +1553,11 @@ class RandomResultView(discord.ui.View):
             return
 
         content = render_result.content
-        filename = f"clip.{render_result.format}"
+        filename = (
+            _audio_filename(render_result.format, picked.text)
+            if self._kind == "audio"
+            else f"clip.{render_result.format}"
+        )
 
         self._seen_entry_ids = (
             {picked.entry_id} if picked.exhausted else self._seen_entry_ids | {picked.entry_id}
@@ -1654,6 +1731,8 @@ class LibrarySearchView(discord.ui.View):
         remaining_uncached: int | None = None,
         description: str = "Pick a film below to generate a clip from that line.",
         truncated: bool = False,
+        format: str | None = None,
+        kind: Literal["clip", "audio"] = "clip",
     ) -> None:
         # See QuoteMatchView's __init__ for why this isn't 120s anymore.
         super().__init__(timeout=600)
@@ -1662,6 +1741,11 @@ class LibrarySearchView(discord.ui.View):
         self._matches = matches
         self._description = description
         self._truncated = truncated
+        # format/kind let /snip audio's title-less path (issue #6 follow-up)
+        # reuse this same cross-title picker — every other caller (/snip
+        # search) keeps the pre-existing gif/"clip" defaults.
+        self._format = format
+        self._kind = kind
         self._page = 0
         self._select: discord.ui.Select | None = None
         self._prev_button: discord.ui.Button | None = None
@@ -1764,7 +1848,9 @@ class LibrarySearchView(discord.ui.View):
     async def _on_search_more(self, interaction: discord.Interaction) -> None:
         self.stop()
         await interaction.response.defer()
-        await self._cog._run_library_search(interaction, self._quote)
+        await self._cog._run_library_search(
+            interaction, self._quote, format=self._format, kind=self._kind
+        )
 
     async def _on_select(self, interaction: discord.Interaction) -> None:
         if self._select is None:
@@ -1778,8 +1864,9 @@ class LibrarySearchView(discord.ui.View):
             self._quote,
             None,
             None,
-            None,
+            self._format,
             preferred_start=match.start,
+            kind=self._kind,
         )
 
 
@@ -1827,6 +1914,33 @@ class GifCog(commands.Cog):
             )
         return choices
 
+    async def title_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        # Shared by /snip audio's single `title` param (CLAUDE.md issue #6's
+        # "media selector switches what title autocomplete searches" design)
+        # — interaction.namespace exposes sibling options already typed in
+        # this same command invocation, so `media` need not be re-passed in.
+        if not current:
+            return []
+        media = getattr(interaction.namespace, "media", "movie")
+        try:
+            results = (
+                await self.bot.worker.search_shows(current)
+                if media == "tv"
+                else await self.bot.worker.search(current)
+            )
+        except httpx.HTTPError:
+            return []
+        choices = []
+        for result in results[:25]:
+            label = f"{result.title} ({result.year})" if result.year else result.title
+            label = f"{label} — {result.library_name}"
+            choices.append(
+                app_commands.Choice(name=label[:100], value=str(result.rating_key))
+            )
+        return choices
+
     async def _generate(
         self,
         interaction: discord.Interaction,
@@ -1836,6 +1950,7 @@ class GifCog(commands.Cog):
         end_timecode: str | None,
         format: str | None,
         preferred_start: float | None = None,
+        kind: Literal["clip", "audio"] = "clip",
     ) -> None:
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
@@ -1924,16 +2039,22 @@ class GifCog(commands.Cog):
             selected = match_view.selected
             render_timecode = str(selected.start)
             render_duration = selected.end - selected.start
+            subtitle_text = selected.text
             # A quote match came from real subtitle text, so burn-in has
             # something to show by default (CLAUDE.md Section 7: "subtitles
-            # on when triggered by a quote search").
-            default_style = "classic"
+            # on when triggered by a quote search") — unless this is an
+            # audio-only render (issue #6), which has no frame to burn
+            # subtitles into at all.
+            default_style = "classic" if kind == "clip" else "none"
             await interaction.edit_original_response(
                 content="Generating…", embed=None, view=None
             )
         elif timecode:
             render_timecode = timecode
             render_duration = None
+            # A bare timecode has no known subtitle text (issue #6's audio
+            # filename falls back to a generic name in this case).
+            subtitle_text = None
             # A bare timecode has no known subtitle availability — default
             # to off rather than guessing at burn-in the user didn't ask for.
             default_style = "none"
@@ -1955,7 +2076,7 @@ class GifCog(commands.Cog):
                     rating_key, exclude_entry_ids=exclude, most_recent_entry_id=most_recent
                 )
 
-            await self._run_random_result(interaction, fetch)
+            await self._run_random_result(interaction, fetch, format=format, kind=kind)
             return
 
         render_end_timecode = end_timecode if not quote else None
@@ -1968,6 +2089,8 @@ class GifCog(commands.Cog):
             render_end_timecode,
             format,
             default_style,
+            kind=kind,
+            subtitle_text=subtitle_text,
         )
 
     async def _render_and_respond(
@@ -1980,6 +2103,8 @@ class GifCog(commands.Cog):
         render_end_timecode: str | None,
         format: str | None,
         default_style: str,
+        kind: Literal["clip", "audio"] = "clip",
+        subtitle_text: str | None = None,
     ) -> None:
         # Shared by _generate (movie / a single known episode) and
         # snip_tv's whole-show search (each candidate can resolve to a
@@ -2001,22 +2126,35 @@ class GifCog(commands.Cog):
             )
             return
 
-        filename = f"clip.{render_result.format}"
-        file = discord.File(io.BytesIO(render_result.content), filename=filename)
-        result_view = ClipEditView(
-            self.bot.worker,
-            rating_key,
-            title,
-            render_timecode,
-            render_duration,
-            render_end_timecode,
-            format,
-            render_result.style,
-            render_result.content,
-            filename,
-            render_result.start,
-            render_result.duration,
+        # Audio's filename reflects the subtitle line used (issue #6
+        # follow-up); every other format keeps the plain "clip.<ext>" name.
+        filename = (
+            _audio_filename(render_result.format, subtitle_text)
+            if kind == "audio"
+            else f"clip.{render_result.format}"
         )
+        file = discord.File(io.BytesIO(render_result.content), filename=filename)
+        # Audio (issue #6) has no style/duration/crop to edit — a plain
+        # "Post to channel" button, not ClipEditView's full editing surface.
+        if kind == "audio":
+            result_view = AudioClipResultView(
+                title, render_result.content, filename, render_result.start, render_result.duration,
+            )
+        else:
+            result_view = ClipEditView(
+                self.bot.worker,
+                rating_key,
+                title,
+                render_timecode,
+                render_duration,
+                render_end_timecode,
+                format,
+                render_result.style,
+                render_result.content,
+                filename,
+                render_result.start,
+                render_result.duration,
+            )
         await interaction.edit_original_response(
             content=_no_subtitles_note(default_style, render_result.style) or None,
             attachments=[file],
@@ -2047,9 +2185,16 @@ class GifCog(commands.Cog):
     ) -> None:
         await self._generate(interaction, film, quote, timecode, end_timecode, format)
 
-    async def _run_library_search(self, interaction: discord.Interaction, quote: str) -> None:
-        # Shared by /snip search itself and LibrarySearchView's "Search N
-        # more" button — both stream the same worker endpoint into the same
+    async def _run_library_search(
+        self,
+        interaction: discord.Interaction,
+        quote: str,
+        format: str | None = None,
+        kind: Literal["clip", "audio"] = "clip",
+    ) -> None:
+        # Shared by /snip search itself, /snip audio's title-less path
+        # (issue #6 follow-up), and LibrarySearchView's "Search N more"
+        # button — all stream the same worker endpoint into the same
         # message, just from different entry points (slash command vs.
         # component interaction), both already deferred by their caller.
         last_progress_edit = 0.0
@@ -2141,8 +2286,9 @@ class GifCog(commands.Cog):
 
         final_matches = final_event.matches if final_event else cached_matches
         if not final_matches:
+            command = "/snip audio" if kind == "audio" else "/snip movie"
             await _safe_edit(
-                content="No matches in what CineSnip has indexed so far. Try `/snip movie` on a "
+                content=f"No matches in what CineSnip has indexed so far. Try `{command}` on a "
                 "specific film first to add it, or rephrase your quote.",
                 embed=None,
                 view=None,
@@ -2157,6 +2303,8 @@ class GifCog(commands.Cog):
             final_matches,
             remaining_uncached=remaining_uncached,
             truncated=final_truncated,
+            format=format,
+            kind=kind,
         )
         await _safe_edit(
             content=None,
@@ -2177,12 +2325,19 @@ class GifCog(commands.Cog):
         await self._run_library_search(interaction, quote)
 
     async def _run_random_result(
-        self, interaction: discord.Interaction, fetch: RandomFetch
+        self,
+        interaction: discord.Interaction,
+        fetch: RandomFetch,
+        format: str | None = None,
+        kind: Literal["clip", "audio"] = "clip",
     ) -> None:
-        # Shared by /snip random and by /snip movie's/tv's random-pick path
-        # (no quote/timecode given) — everything past "how to get the first
-        # pick" is identical, so RandomResultView (Shuffle/Previous/Post)
-        # only ever talks to `fetch`, never to a specific worker endpoint.
+        # Shared by /snip random and by /snip movie's/tv's/audio's random-pick
+        # path (no quote/timecode given) — everything past "how to get the
+        # first pick" is identical, so RandomResultView (Shuffle/Previous/
+        # Post) only ever talks to `fetch`, never to a specific worker
+        # endpoint. Audio (issue #6) has no burn-in to default to, so style
+        # is forced to "none" rather than the video path's "classic".
+        style = "classic" if kind == "clip" else "none"
         try:
             picked = await fetch(frozenset(), None)
         except httpx.HTTPError as exc:
@@ -2196,7 +2351,8 @@ class GifCog(commands.Cog):
                 picked.rating_key,
                 str(picked.start),
                 duration=picked.end - picked.start,
-                style="classic",
+                format=format,
+                style=style,
             )
         except httpx.HTTPError as exc:
             await interaction.edit_original_response(
@@ -2204,9 +2360,16 @@ class GifCog(commands.Cog):
             )
             return
 
-        filename = f"clip.{render_result.format}"
+        filename = (
+            _audio_filename(render_result.format, picked.text)
+            if kind == "audio"
+            else f"clip.{render_result.format}"
+        )
         file = discord.File(io.BytesIO(render_result.content), filename=filename)
-        view = RandomResultView(self.bot.worker, fetch, picked, render_result.content, filename)
+        view = RandomResultView(
+            self.bot.worker, fetch, picked, render_result.content, filename,
+            format=format, style=style, kind=kind,
+        )
         # CLAUDE.md's "Celina" fix: a single-match pool must say so up
         # front, not leave Shuffle looking broken when clicked.
         note = " *(only match — nothing else to shuffle to)*" if picked.pool_size <= 1 else ""
@@ -2276,6 +2439,27 @@ class GifCog(commands.Cog):
             )
             return
 
+        await self._run_tv_generate(
+            interaction, show_rating_key, season, episode, quote, timecode, end_timecode, format,
+        )
+
+    async def _run_tv_generate(
+        self,
+        interaction: discord.Interaction,
+        show_rating_key: int,
+        season: int | None,
+        episode: int | None,
+        quote: str | None,
+        timecode: str | None,
+        end_timecode: str | None,
+        format: str | None,
+        kind: Literal["clip", "audio"] = "clip",
+    ) -> None:
+        # Shared by /snip tv and /snip audio's media:tv path (issue #6) —
+        # everything from here on is 100% generic over what the final
+        # render/response looks like (that's `kind`'s only job), matching
+        # CLAUDE.md's existing design that /resolve-episode etc. are already
+        # generic over rating_key.
         if (season is None) != (episode is None):
             await interaction.edit_original_response(
                 content="Give both `season` and `episode`, or neither (to search the "
@@ -2306,7 +2490,8 @@ class GifCog(commands.Cog):
                 )
                 return
             await self._generate(
-                interaction, str(resolved.rating_key), quote, timecode, end_timecode, format
+                interaction, str(resolved.rating_key), quote, timecode, end_timecode, format,
+                kind=kind,
             )
             return
 
@@ -2324,7 +2509,7 @@ class GifCog(commands.Cog):
                     show_rating_key, exclude_entry_ids=exclude, most_recent_entry_id=most_recent
                 )
 
-            await self._run_random_result(interaction, fetch)
+            await self._run_random_result(interaction, fetch, format=format, kind=kind)
             return
 
         await interaction.edit_original_response(
@@ -2388,6 +2573,92 @@ class GifCog(commands.Cog):
             # A quote match came from real subtitle text, so burn-in has
             # something to show by default (CLAUDE.md Section 7: "subtitles
             # on when triggered by a quote search") — same default _generate
-            # uses for its own quote-match path.
-            "classic",
+            # uses for its own quote-match path. Audio (issue #6) has no
+            # burn-in default at all.
+            "classic" if kind == "clip" else "none",
+            kind=kind,
+            subtitle_text=selected.text,
+        )
+
+    @snip_group.command(
+        name="audio",
+        description="Generate an audio-only clip (mp3/ogg) from a film or TV episode.",
+    )
+    @app_commands.describe(
+        media="Whether `title` is a film or a TV show (ignored if `title` is omitted)",
+        title="The film or show to search for — omit along with `media` to search your "
+        "whole movie library by quote, like `/snip search`",
+        quote="A line of dialogue to find (fuzzy — close is fine); with no `title`, searches "
+        "your whole movie library; with a `title`, omit both quote and timecode for a "
+        "random line",
+        timecode="Timestamp, e.g. 1:23:45 or 1h23m45s (TV: requires season/episode; needs a "
+        "`title`)",
+        end_timecode="Custom clip end (timecode only, not quote) — same formats as timecode",
+        season="TV only: season number (requires episode)",
+        episode="TV only: episode number within the season (requires season)",
+        format="Output format (default: mp3 — broader native compatibility with Discord's "
+        "in-message audio player than ogg)",
+    )
+    @app_commands.autocomplete(title=title_autocomplete)
+    async def snip_audio(
+        self,
+        interaction: discord.Interaction,
+        media: Literal["movie", "tv"] = "movie",
+        title: str | None = None,
+        quote: str | None = None,
+        timecode: str | None = None,
+        end_timecode: str | None = None,
+        season: int | None = None,
+        episode: int | None = None,
+        format: Literal["mp3", "ogg"] = "mp3",
+    ) -> None:
+        # No style/duration/crop params (CLAUDE.md issue #6's scope note —
+        # none of that applies to audio), and `format` always has an
+        # explicit value so it never falls through to render_defaults.format
+        # (video-only) on the worker side.
+        if title is None:
+            # Title-less quote search (follow-up to issue #6): mirrors
+            # /snip search's own movie-only library-wide search (CLAUDE.md
+            # Section 5 — the cache/index isn't type-scoped, so any
+            # cross-title search has to filter to movies at read time) and
+            # just renders the eventual pick as audio instead of gif.
+            if quote is None:
+                await interaction.response.send_message(
+                    "Give a `quote` to search your library, or pick a `title` first.",
+                    ephemeral=True,
+                )
+                return
+            if media == "tv":
+                await interaction.response.send_message(
+                    "Library-wide quote search only covers movies (same as `/snip search`) — "
+                    "give a specific `title` to search a TV show.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.defer(ephemeral=True)
+            await self._run_library_search(interaction, quote, format=format, kind="audio")
+            return
+
+        if media == "movie":
+            if season is not None or episode is not None:
+                await interaction.response.send_message(
+                    "`season`/`episode` only apply when `media` is `tv`.", ephemeral=True
+                )
+                return
+            await self._generate(
+                interaction, title, quote, timecode, end_timecode, format, kind="audio"
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            show_rating_key = int(title)
+        except ValueError:
+            await interaction.edit_original_response(
+                content="Please select a show from the autocomplete suggestions."
+            )
+            return
+        await self._run_tv_generate(
+            interaction, show_rating_key, season, episode, quote, timecode, end_timecode, format,
+            kind="audio",
         )

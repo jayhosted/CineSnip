@@ -5,6 +5,7 @@ import discord
 
 from app.bot.cogs.gif import (
     _PAGE_SIZE,
+    AudioClipResultView,
     ClipEditView,
     QuoteMatchView,
     RandomResultView,
@@ -254,11 +255,17 @@ def test_quote_match_view_per_match_title_follows_selection():
 
 
 class _FakeCog:
-    async def _run_library_search(self, interaction, quote):
-        raise AssertionError("not exercised by these tests")
+    def __init__(self):
+        self.searched_again = None
 
-    async def _generate(self, interaction, film, quote, timecode, end_timecode, format, preferred_start=None):
-        self.generated = (film, preferred_start)
+    async def _run_library_search(self, interaction, quote, format=None, kind="clip"):
+        self.searched_again = (quote, format, kind)
+
+    async def _generate(
+        self, interaction, film, quote, timecode, end_timecode, format,
+        preferred_start=None, kind="clip",
+    ):
+        self.generated = (film, preferred_start, format, kind)
 
 
 def test_library_search_view_timeout_gives_time_to_browse_multiple_pages():
@@ -322,7 +329,7 @@ def test_library_search_view_select_on_second_page_resolves_absolute_match():
     view._select._values = ["10"]
     asyncio.run(view._on_select(_fake_interaction()))
 
-    assert cog.generated == (str(10), 10.0)
+    assert cog.generated == (str(10), 10.0, None, "clip")
 
 
 def test_library_results_embed_footer_omitted_for_single_page():
@@ -396,6 +403,44 @@ def test_library_search_view_component_rows_stable_across_page_change():
     # Finding 3: the "Search N more" button must keep its own row after the
     # prev/next buttons are torn down and rebuilt on a page change.
     assert after == before
+
+
+# LibrarySearchView's format/kind (issue #6 follow-up: /snip audio's
+# title-less path reuses this same cross-title picker) — a selection or
+# "Search N more" click must carry the audio format/kind through rather
+# than silently reverting to the gif/"clip" defaults.
+
+
+def test_library_search_view_select_forwards_format_and_kind():
+    matches = [_library_match(i) for i in range(3)]
+    cog = _FakeCog()
+    view = LibrarySearchView(cog, "quote", matches, format="mp3", kind="audio")
+    view._select._values = ["1"]
+
+    asyncio.run(view._on_select(_fake_interaction()))
+
+    assert cog.generated == (str(1), 1.0, "mp3", "audio")
+
+
+def test_library_search_view_search_more_forwards_format_and_kind():
+    matches = [_library_match(i) for i in range(3)]
+    cog = _FakeCog()
+    view = LibrarySearchView(cog, "quote", matches, format="mp3", kind="audio")
+
+    asyncio.run(view._on_search_more(_fake_interaction()))
+
+    assert cog.searched_again == ("quote", "mp3", "audio")
+
+
+def test_library_search_view_defaults_to_gif_format_and_clip_kind():
+    matches = [_library_match(i) for i in range(3)]
+    cog = _FakeCog()
+    view = LibrarySearchView(cog, "quote", matches)
+    view._select._values = ["0"]
+
+    asyncio.run(view._on_select(_fake_interaction()))
+
+    assert cog.generated == (str(0), 0.0, None, "clip")
 
 
 def _random_pick(
@@ -810,3 +855,156 @@ def test_clip_edit_view_click_during_in_flight_prefetch_awaits_it_without_refetc
         assert fallback.disabled is False
 
     asyncio.run(run())
+
+
+# RandomResultView's format/style params (issue #6): let /snip audio's
+# random-pick path reuse Shuffle/Previous/Post rather than forking a new
+# view, while every pre-existing caller (/snip movie, /snip tv, /snip
+# random) keeps the original gif/"classic" defaults untouched.
+
+
+def test_random_result_view_shuffle_defaults_to_classic_style_and_no_format():
+    worker = _FakeWorker()
+    fetch = _FakeFetch([_random_pick(entry_id=2, pool_size=5)])
+    view = RandomResultView(worker, fetch, _random_pick(entry_id=1, pool_size=5), b"x", "clip.gif")
+
+    asyncio.run(view.shuffle.callback(_fake_interaction()))
+
+    worker.render.assert_awaited_once()
+    _, kwargs = worker.render.await_args
+    assert kwargs["format"] is None
+    assert kwargs["style"] == "classic"
+
+
+def test_random_result_view_shuffle_uses_the_given_format_and_style():
+    worker = _FakeWorker()
+    fetch = _FakeFetch([_random_pick(entry_id=2, pool_size=5)])
+    view = RandomResultView(
+        worker, fetch, _random_pick(entry_id=1, pool_size=5), b"x", "clip.mp3",
+        format="mp3", style="none",
+    )
+
+    asyncio.run(view.shuffle.callback(_fake_interaction()))
+
+    worker.render.assert_awaited_once()
+    _, kwargs = worker.render.await_args
+    assert kwargs["format"] == "mp3"
+    assert kwargs["style"] == "none"
+
+
+# AudioClipResultView (issue #6): the /snip audio result view is a plain
+# "Post to channel" button only — no style-select/duration-nudge/merge
+# controls, since none of that applies to an audio-only clip.
+
+
+def test_audio_clip_result_view_has_only_a_post_button():
+    view = AudioClipResultView("The Matrix", b"audio-bytes", "clip.mp3", 10.0, 4.0)
+
+    assert [item.label for item in view.children] == ["Post to channel"]
+
+
+def test_audio_clip_result_view_post_sends_file_and_disables_button():
+    view = AudioClipResultView("The Matrix", b"audio-bytes", "clip.mp3", 10.0, 4.0)
+    interaction = _fake_interaction()
+    interaction.user.display_name = "Neo"
+
+    asyncio.run(view.post.callback(interaction))
+
+    interaction.channel.send.assert_awaited_once()
+    _, kwargs = interaction.channel.send.await_args
+    assert kwargs["file"].filename == "clip.mp3"
+    assert "the-matrix" in kwargs["content"]
+    assert view.post.disabled is True
+
+
+# _render_and_respond's audio filename (issue #6 follow-up): reflects the
+# subtitle line actually used, not a generic "clip.mp3" — _generate/
+# _run_tv_generate thread the matched line's text through as subtitle_text.
+
+
+class _FakeRenderResultWithSpan:
+    def __init__(self, format="mp3", start=10.0, duration=4.0, style="none"):
+        self.content = b"audio-bytes"
+        self.format = format
+        self.start = start
+        self.duration = duration
+        self.style = style
+
+
+def test_render_and_respond_audio_filename_uses_subtitle_text():
+    from types import SimpleNamespace
+
+    from app.bot.cogs.gif import GifCog
+
+    worker = SimpleNamespace(render=AsyncMock(return_value=_FakeRenderResultWithSpan()))
+    cog = GifCog(bot=SimpleNamespace(worker=worker))
+    interaction = _fake_interaction()
+
+    asyncio.run(
+        cog._render_and_respond(
+            interaction, 1, "The Matrix", "10", 4.0, None, "mp3", "none",
+            kind="audio", subtitle_text="I know kung fu",
+        )
+    )
+
+    _, kwargs = interaction.edit_original_response.await_args
+    assert kwargs["attachments"][0].filename == "i-know-kung-fu.mp3"
+
+
+def test_render_and_respond_audio_filename_falls_back_without_subtitle_text():
+    from types import SimpleNamespace
+
+    from app.bot.cogs.gif import GifCog
+
+    worker = SimpleNamespace(render=AsyncMock(return_value=_FakeRenderResultWithSpan()))
+    cog = GifCog(bot=SimpleNamespace(worker=worker))
+    interaction = _fake_interaction()
+
+    asyncio.run(
+        cog._render_and_respond(
+            interaction, 1, "The Matrix", "10", None, None, "mp3", "none", kind="audio",
+        )
+    )
+
+    _, kwargs = interaction.edit_original_response.await_args
+    assert kwargs["attachments"][0].filename == "clip.mp3"
+
+
+def test_render_and_respond_clip_filename_ignores_subtitle_text():
+    # kind="clip" (the default) must never be affected by this — every
+    # existing gif/mp4/webm caller keeps the plain "clip.<ext>" name.
+    from types import SimpleNamespace
+
+    from app.bot.cogs.gif import GifCog
+
+    cog = GifCog(bot=SimpleNamespace(worker=_FakeEditWorker()))
+    interaction = _fake_interaction()
+
+    async def run():
+        await cog._render_and_respond(
+            interaction, 1, "The Matrix", "10", 4.0, None, None, "classic",
+            subtitle_text="I know kung fu",
+        )
+        # Let ClipEditView's background entries-prefetch task (kicked off
+        # during construction) finish inside this same loop, matching
+        # _make_clip_edit_view's note above about asyncio.run() boundaries.
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+
+    _, kwargs = interaction.edit_original_response.await_args
+    assert kwargs["attachments"][0].filename == "clip.gif"
+
+
+def test_random_result_view_audio_shuffle_filename_uses_picked_text():
+    worker = _FakeWorker()
+    worker.render = AsyncMock(return_value=_FakeRenderResult(format="mp3"))
+    fetch = _FakeFetch([_random_pick(entry_id=2, text="I know kung fu", pool_size=5)])
+    view = RandomResultView(
+        worker, fetch, _random_pick(entry_id=1, pool_size=5), b"x", "clip.mp3",
+        format="mp3", style="none", kind="audio",
+    )
+
+    asyncio.run(view.shuffle.callback(_fake_interaction()))
+
+    assert view._current.filename == "i-know-kung-fu.mp3"

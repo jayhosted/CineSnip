@@ -24,11 +24,13 @@ class _FakeRenderer:
         self._default_fps = default_fps
         self._default_width = default_width
         self.calls: list[tuple[int, int]] = []
+        self.audio_languages: list[str] = []
 
-    async def render_clip(self, *args, fps=None, width=None, **kwargs) -> bytes:
+    async def render_clip(self, *args, fps=None, width=None, audio_language="eng", **kwargs) -> bytes:
         fps = fps if fps is not None else self._default_fps
         width = width if width is not None else self._default_width
         self.calls.append((fps, width))
+        self.audio_languages.append(audio_language)
         return b"x" * self._size_for(fps, width)
 
 
@@ -53,6 +55,7 @@ def _run(
     configured_width=480,
     clip_format="gif",
     optimize_gif=None,
+    audio_language="eng",
 ):
     return asyncio.run(
         _render_within_size_limit(
@@ -70,6 +73,7 @@ def _run(
             configured_width,
             max_bytes,
             optimize_gif=optimize_gif or _noop_optimize_gif(),
+            audio_language=audio_language,
         )
     )
 
@@ -180,3 +184,20 @@ def test_non_gif_formats_skip_gifsicle_entirely():
     # optimize_gif must never be called for a non-gif format — it falls
     # straight through to the downscale tiers, whatever they produce.
     assert calls_log == []
+
+
+def test_audio_formats_skip_the_downscale_tiers_entirely():
+    # _DOWNSCALE_TIERS is fps/width — meaningless for mp3/ogg (issue #6). An
+    # oversized audio render should be returned as-is rather than retried.
+    renderer = _FakeRenderer(size_for=lambda fps, width: 1000)
+    result = _run(renderer, max_bytes=500, clip_format="mp3")
+    assert len(result) == 1000
+    assert renderer.calls == [(15, 480)]
+
+
+def test_audio_language_is_forwarded_to_the_renderer():
+    # Bug fix: the configured preferred audio track language must reach
+    # ClipRenderer.render_clip, not get dropped between config and ffmpeg.
+    renderer = _FakeRenderer(size_for=lambda fps, width: 100)
+    _run(renderer, max_bytes=1000, clip_format="mp3", audio_language="fre")
+    assert renderer.audio_languages == ["fre"]

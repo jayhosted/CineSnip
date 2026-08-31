@@ -4,6 +4,7 @@ import json
 import os
 import re
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 from app.worker.crop_cache import get_cached_crop, set_cached_crop
@@ -96,6 +97,14 @@ _VIDEO_CODEC_ARGS: dict[str, list[str]] = {
         "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "32",
         "-deadline", "realtime", "-cpu-used", "5",
     ],
+}
+
+# Audio-only clips (issue #6) — no video stream, so none of _VIDEO_CODEC_ARGS'
+# concerns (faststart seeking, scratch-file-vs-pipe) apply the same way, but a
+# scratch file is still used for consistency with the video path above.
+_AUDIO_CODEC_ARGS: dict[str, list[str]] = {
+    "mp3": ["-c:a", "libmp3lame", "-q:a", "2"],
+    "ogg": ["-c:a", "libvorbis", "-q:a", "4"],
 }
 
 _PROBE_TIMEOUT_SECONDS = 30.0
@@ -389,6 +398,70 @@ async def probe_video_dimensions(input_path: str) -> tuple[int, int]:
     return int(stream["width"]), int(stream["height"])
 
 
+@dataclass
+class AudioStreamInfo:
+    relative_index: int
+    codec_name: str
+    language: str | None
+    title: str | None
+
+
+async def probe_audio_streams(
+    input_path: str, timeout_seconds: float = _PROBE_TIMEOUT_SECONDS
+) -> list[AudioStreamInfo]:
+    stdout = await run_and_capture(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_streams",
+            "-select_streams",
+            "a",
+            input_path,
+        ],
+        timeout_seconds,
+        error_prefix="ffprobe audio probe",
+        capture_stdout=True,
+    )
+    data = json.loads(stdout or b"{}")
+    result = []
+    for relative_index, stream in enumerate(data.get("streams", [])):
+        tags = stream.get("tags", {})
+        result.append(
+            AudioStreamInfo(
+                relative_index=relative_index,
+                codec_name=stream.get("codec_name", ""),
+                language=tags.get("language"),
+                title=tags.get("title"),
+            )
+        )
+    return result
+
+
+def choose_audio_stream(streams: list[AudioStreamInfo], preferred_language: str) -> int:
+    """Returns the relative index (0-based among audio streams only —
+    matches ffmpeg's `-map 0:a:N` specifier) of the audio stream to use.
+
+    Bug this fixes: `-map 0:a:0` (the previous hardcoded behavior) trusts
+    whatever order a file's audio tracks happen to be muxed in, which is
+    NOT always original-language-first — a real file in this library
+    (Pulp Fiction's Blu-ray rip) has its German dub as stream 0 and English
+    as stream 1. This instead picks the first stream tagged with
+    `preferred_language` (an ISO 639-2 code, e.g. "eng" — case-insensitive
+    match against ffprobe's own `language` tag), falling back to stream 0
+    only when no stream carries that tag at all (untagged/single-track
+    files, or a language genuinely not present)."""
+    if not streams:
+        return 0
+    preferred = preferred_language.strip().lower()
+    for stream in streams:
+        if (stream.language or "").strip().lower() == preferred:
+            return stream.relative_index
+    return 0
+
+
 def _escape_filter_path(path: Path) -> str:
     # ffmpeg's filtergraph syntax treats ':' as an option separator, so a
     # bare path breaks parsing the moment it hits one — wrapping in single
@@ -429,7 +502,17 @@ class ClipRenderer:
         subtitle_overrides: dict[int, str | None] | None = None,
         fps: int | None = None,
         width: int | None = None,
+        audio_language: str = "eng",
     ) -> bytes:
+        # Audio-only formats (issue #6) have no frame to crop/tonemap/scale
+        # or burn subtitles into, so none of the video-specific probing
+        # below applies — branch out before any of it runs rather than
+        # paying for ffprobe calls whose results would just be discarded.
+        if fmt in _AUDIO_CODEC_ARGS:
+            return await self._render_audio(
+                input_path, start, duration, scratch_dir, fmt, audio_language
+            )
+
         # fps/width default to this renderer's configured values but can be
         # overridden per call — used by /render's size-downscale retry loop
         # (app/worker/api.py) to re-encode at progressively smaller
@@ -686,6 +769,55 @@ class ClipRenderer:
                     f"fps={fps},{scale_filter}",
                     "-an",
                     *_VIDEO_CODEC_ARGS[fmt],
+                    str(out_path),
+                ],
+                error_prefix=f"ffmpeg {fmt} encode",
+            )
+            return out_path.read_bytes()
+        finally:
+            out_path.unlink(missing_ok=True)
+
+    async def _render_audio(
+        self,
+        input_path: str,
+        start: float,
+        duration: float,
+        scratch_dir: Path,
+        fmt: str,
+        audio_language: str = "eng",
+    ) -> bytes:
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+        out_path = scratch_dir / f"clip-{uuid.uuid4().hex}.{fmt}"
+
+        # A file with multiple audio tracks (dubs) doesn't reliably order
+        # them original-language-first — a real file in this library has
+        # its German dub as stream 0, English as stream 1. Picking by
+        # configured language (default "eng") instead of always "0:a:0"
+        # fixes that; see choose_audio_stream's docstring for the full
+        # story.
+        streams = await probe_audio_streams(input_path)
+        stream_index = choose_audio_stream(streams, audio_language)
+
+        try:
+            await self._run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    *build_seek_args(start, duration),
+                    "-i",
+                    input_path,
+                    # Same reasoning as _render_video's -map 0:v:0: don't
+                    # trust ffmpeg's default stream selection, and strip
+                    # chapters/metadata for the same leaked-full-runtime
+                    # reason.
+                    "-map",
+                    f"0:a:{stream_index}",
+                    "-map_chapters",
+                    "-1",
+                    "-map_metadata",
+                    "-1",
+                    "-vn",
+                    *_AUDIO_CODEC_ARGS[fmt],
                     str(out_path),
                 ],
                 error_prefix=f"ffmpeg {fmt} encode",

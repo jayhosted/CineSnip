@@ -187,3 +187,83 @@ def test_render_passes_subtitle_overrides_to_the_renderer(tmp_path, monkeypatch)
 
     assert response.status_code == 200
     assert captured["subtitle_overrides"] == {3: None, 4: "edited"}
+
+
+def test_render_mp3_format_gets_audio_media_type(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    movie_path = tmp_path / "movie.mkv"
+    movie_path.write_bytes(b"fake")
+    client = _client(settings, monkeypatch, "/media/movie.mkv")
+
+    response = client.post(
+        "/render", json={"rating_key": 1, "timecode": "10", "format": "mp3"}
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "audio/mpeg"
+    assert response.headers["X-Clip-Format"] == "mp3"
+
+
+def test_render_ogg_format_gets_audio_media_type(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    movie_path = tmp_path / "movie.mkv"
+    movie_path.write_bytes(b"fake")
+    client = _client(settings, monkeypatch, "/media/movie.mkv")
+
+    response = client.post(
+        "/render", json={"rating_key": 1, "timecode": "10", "format": "ogg"}
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "audio/ogg"
+    assert response.headers["X-Clip-Format"] == "ogg"
+
+
+def test_render_audio_format_ignores_a_style_request(tmp_path, monkeypatch):
+    # Defense in depth (app/worker/api.py): even if a caller sent a style
+    # alongside an audio format, the worker must not try to fetch/burn
+    # subtitles into a stream with no video frame.
+    settings = _settings(tmp_path)
+    movie_path = tmp_path / "movie.mkv"
+    movie_path.write_bytes(b"fake")
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("get_subtitles must not run for an audio-format render")
+
+    monkeypatch.setattr(api_module, "get_subtitles", _boom)
+    client = _client(settings, monkeypatch, "/media/movie.mkv")
+
+    response = client.post(
+        "/render",
+        json={"rating_key": 1, "timecode": "10", "format": "mp3", "style": "classic"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["X-Clip-Style"] == "none"
+
+
+def test_render_forwards_the_configured_audio_language_to_the_renderer(tmp_path, monkeypatch):
+    # Bug fix: /render must pass settings.render_defaults.audio_language
+    # through to the renderer rather than always trusting the source
+    # file's own (not-necessarily-English-first) audio stream order.
+    settings = _settings(tmp_path)
+    settings.render_defaults.audio_language = "fre"
+    movie_path = tmp_path / "movie.mkv"
+    movie_path.write_bytes(b"fake")
+
+    captured = {}
+
+    class _CapturingRenderer:
+        async def render_clip(self, *args, **kwargs):
+            captured.update(kwargs)
+            return b"clip-bytes"
+
+    client = _client(settings, monkeypatch, "/media/movie.mkv")
+    client.app.state.renderer = _CapturingRenderer()
+
+    response = client.post(
+        "/render", json={"rating_key": 1, "timecode": "10", "format": "mp3"}
+    )
+
+    assert response.status_code == 200
+    assert captured["audio_language"] == "fre"

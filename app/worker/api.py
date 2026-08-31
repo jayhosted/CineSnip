@@ -97,8 +97,11 @@ class RenderRequest(BaseModel):
     # is defined so behavior isn't ambiguous).
     start: float | None = None
     end: float | None = None
-    # None uses render_defaults.format.
-    format: Literal["gif", "mp4", "webm"] | None = None
+    # None uses render_defaults.format. mp3/ogg (issue #6) are audio-only —
+    # the bot always sends one of those explicitly for /snip audio, never
+    # None, so an audio request never falls through to render_defaults.format
+    # (which stays video-only, see Settings.render_defaults).
+    format: Literal["gif", "mp4", "webm", "mp3", "ogg"] | None = None
     # None/"none" means no subtitle burn-in. A style requested on a title
     # with no usable subtitles for the clip's own window degrades to plain
     # (no burn-in) rather than erroring — echoed back via X-Clip-Style so
@@ -229,6 +232,7 @@ async def _render_within_size_limit(
     max_bytes: int,
     optimize_gif=_real_optimize_gif,
     gifsicle_timeout_seconds: float = 60.0,
+    audio_language: str = "eng",
 ) -> bytes:
     """Renders at the configured fps/width first. If the result exceeds
     max_bytes and the format is GIF, tries gifsicle recompression
@@ -249,6 +253,7 @@ async def _render_within_size_limit(
         container_path, start, clip_duration, scratch_dir, clip_format,
         subtitle_entries=subtitle_entries, style=style_preset,
         three_d_format=three_d_format, subtitle_overrides=subtitle_overrides,
+        audio_language=audio_language,
     )
     if len(clip_bytes) <= max_bytes:
         return clip_bytes
@@ -267,6 +272,14 @@ async def _render_within_size_limit(
                 smallest = gifsicle_result
             if len(gifsicle_result) <= max_bytes:
                 return gifsicle_result
+
+    # _DOWNSCALE_TIERS is fps/width pairs — meaningless for an audio-only
+    # format (issue #6), and a re-encode at the same bitrate would just
+    # reproduce the same size four times over. Audio clips are also far
+    # under max_bytes in practice, so this path is a defensive skip, not
+    # a real-world gap.
+    if clip_format in ("mp3", "ogg"):
+        return smallest
 
     for tier_fps, tier_width in _DOWNSCALE_TIERS:
         fps = min(configured_fps, tier_fps)
@@ -608,7 +621,10 @@ def create_app(settings: Settings) -> FastAPI:
             )
 
         clip_format = req.format if req.format is not None else rd.format
-        requested_style = req.style or "none"
+        # Audio has no frame to burn subtitles into — force "none" server-side
+        # rather than trusting every caller to omit style (defense in depth,
+        # not just a bot-side convention).
+        requested_style = (req.style or "none") if clip_format not in ("mp3", "ogg") else "none"
         subtitle_overrides: dict[int, str | None] = (
             {int(k): v for k, v in req.subtitle_overrides.items()} if req.subtitle_overrides else {}
         )
@@ -656,6 +672,7 @@ def create_app(settings: Settings) -> FastAPI:
                 settings.render_defaults.width,
                 settings.render_defaults.max_file_size_bytes,
                 gifsicle_timeout_seconds=settings.render_defaults.gifsicle_timeout_seconds,
+                audio_language=settings.render_defaults.audio_language,
             )
         except RenderTimeoutError as exc:
             raise HTTPException(status_code=504, detail=str(exc)) from exc
@@ -666,6 +683,8 @@ def create_app(settings: Settings) -> FastAPI:
             "gif": "image/gif",
             "mp4": "video/mp4",
             "webm": "video/webm",
+            "mp3": "audio/mpeg",
+            "ogg": "audio/ogg",
         }[clip_format]
         # Bot doesn't know settings.render_defaults.format/style, so it
         # can't infer what was actually used for a request that left them

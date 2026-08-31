@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.bot.cogs.gif import (
+    _audio_filename,
     _error_detail_from_discord,
     _format_unit_timecode,
     _post_metadata_line,
@@ -21,6 +22,30 @@ from app.bot.cogs.gif import (
 )
 def test_slugify(title, expected):
     assert _slugify(title) == expected
+
+
+def test_audio_filename_uses_the_subtitle_text():
+    assert _audio_filename("mp3", "I know you can be overwhelmed") == (
+        "i-know-you-can-be-overwhelmed.mp3"
+    )
+
+
+def test_audio_filename_truncates_long_subtitle_text():
+    long_text = "This is a very long line of dialogue that goes on for quite a while indeed"
+    filename = _audio_filename("ogg", long_text)
+    assert filename.endswith(".ogg")
+    slug = filename[: -len(".ogg")]
+    assert len(slug) <= 60
+    # No truncation mid-word leaving a trailing separator.
+    assert not slug.endswith("-")
+
+
+def test_audio_filename_falls_back_to_generic_name_with_no_subtitle_text():
+    assert _audio_filename("mp3", None) == "clip.mp3"
+
+
+def test_audio_filename_falls_back_when_subtitle_text_slugifies_to_nothing():
+    assert _audio_filename("mp3", "!!!") == "clip.mp3"
 
 
 @pytest.mark.parametrize(

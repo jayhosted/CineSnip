@@ -1,17 +1,23 @@
 import asyncio
+import json
 
 import pytest
 
+from app.worker import ffmpeg as ffmpeg_module
 from app.worker.ffmpeg import (
+    _AUDIO_CODEC_ARGS,
+    AudioStreamInfo,
     ClipRenderer,
     _crop_adjusted_dims,
     _crop_box_or_none,
     _crop_probe_window,
     _three_d_plan,
     build_seek_args,
+    choose_audio_stream,
     is_hdr_transfer,
     parse_cropdetect_output,
     parse_timecode,
+    probe_audio_streams,
 )
 from app.worker.subtitle_render import STYLE_PRESETS
 from app.worker.subtitles import SubtitleEntry
@@ -343,3 +349,189 @@ def test_write_ass_file_applies_subtitle_overrides(tmp_path):
     assert "original one" not in doc
     assert "original two" not in doc
     assert "two" not in doc
+
+
+# Audio-only clips (issue #6): no frame exists to crop/tonemap/scale or burn
+# subtitles into, so render_clip must branch to the audio path before any of
+# that video-specific probing runs, not just skip using its results.
+
+
+def test_audio_codec_args_cover_both_supported_formats():
+    assert _AUDIO_CODEC_ARGS["mp3"] == ["-c:a", "libmp3lame", "-q:a", "2"]
+    assert _AUDIO_CODEC_ARGS["ogg"] == ["-c:a", "libvorbis", "-q:a", "4"]
+
+
+@pytest.mark.parametrize("fmt", ["mp3", "ogg"])
+def test_render_clip_skips_video_probing_for_audio_formats(monkeypatch, tmp_path, fmt):
+    def _boom(*args, **kwargs):
+        raise AssertionError("video-only probe must not run for an audio render")
+
+    monkeypatch.setattr(ffmpeg_module, "probe_stereo_format", _boom)
+    monkeypatch.setattr(ffmpeg_module, "probe_video_dimensions", _boom)
+    monkeypatch.setattr(ffmpeg_module, "probe_color_transfer", _boom)
+    monkeypatch.setattr(ffmpeg_module, "probe_crop", _boom)
+
+    async def fake_render_audio(self, input_path, start, duration, scratch_dir, fmt_arg, audio_language="eng"):
+        return b"audio-bytes"
+
+    monkeypatch.setattr(ClipRenderer, "_render_audio", fake_render_audio)
+
+    renderer = ClipRenderer(fps=15, width=480, crop_cache_db_path=tmp_path / "crop.db")
+    result = asyncio.run(
+        renderer.render_clip(
+            "input.mkv", 0.0, 4.0, tmp_path, fmt=fmt, three_d_format="side_by_side",
+        )
+    )
+    assert result == b"audio-bytes"
+
+
+@pytest.mark.parametrize("fmt", ["mp3", "ogg"])
+def test_render_audio_builds_expected_ffmpeg_args(monkeypatch, tmp_path, fmt):
+    captured = {}
+
+    async def fake_run(self, args, error_prefix, capture_stdout=False):
+        captured["args"] = args
+        # Real ffmpeg writes to the output path given as the last arg;
+        # _render_audio then reads it back from disk.
+        from pathlib import Path
+
+        Path(args[-1]).write_bytes(b"encoded-audio")
+        return None
+
+    async def fake_probe_audio_streams(input_path, timeout_seconds=30.0):
+        return []  # single/untagged track — falls back to stream 0.
+
+    monkeypatch.setattr(ClipRenderer, "_run", fake_run)
+    monkeypatch.setattr(ffmpeg_module, "probe_audio_streams", fake_probe_audio_streams)
+
+    renderer = ClipRenderer(fps=15, width=480)
+    result = asyncio.run(renderer._render_audio("input.mkv", 10.0, 4.0, tmp_path, fmt))
+
+    assert result == b"encoded-audio"
+    args = captured["args"]
+    assert "-map" in args and args[args.index("-map") + 1] == "0:a:0"
+    assert "-map_chapters" in args and args[args.index("-map_chapters") + 1] == "-1"
+    assert "-vn" in args
+    for arg in _AUDIO_CODEC_ARGS[fmt]:
+        assert arg in args
+    assert "-vf" not in args
+
+
+# Bug: a multi-track source doesn't reliably order its audio streams
+# original-language-first — a real file in this library (Pulp Fiction's
+# Blu-ray rip) has German as stream 0, English as stream 1. `-map 0:a:0`
+# alone (the old hardcoded behavior) silently picked the wrong track.
+
+
+def test_render_audio_picks_the_stream_matching_configured_language(monkeypatch, tmp_path):
+    captured = {}
+
+    async def fake_run(self, args, error_prefix, capture_stdout=False):
+        captured["args"] = args
+        from pathlib import Path
+
+        Path(args[-1]).write_bytes(b"encoded-audio")
+        return None
+
+    async def fake_probe_audio_streams(input_path, timeout_seconds=30.0):
+        return [
+            AudioStreamInfo(relative_index=0, codec_name="dts", language="ger", title="German"),
+            AudioStreamInfo(relative_index=1, codec_name="dts", language="eng", title="English"),
+        ]
+
+    monkeypatch.setattr(ClipRenderer, "_run", fake_run)
+    monkeypatch.setattr(ffmpeg_module, "probe_audio_streams", fake_probe_audio_streams)
+
+    renderer = ClipRenderer(fps=15, width=480)
+    asyncio.run(
+        renderer._render_audio("input.mkv", 10.0, 4.0, tmp_path, "mp3", audio_language="eng")
+    )
+
+    args = captured["args"]
+    assert args[args.index("-map") + 1] == "0:a:1"
+
+
+def test_render_audio_falls_back_to_stream_zero_when_language_not_present(monkeypatch, tmp_path):
+    captured = {}
+
+    async def fake_run(self, args, error_prefix, capture_stdout=False):
+        captured["args"] = args
+        from pathlib import Path
+
+        Path(args[-1]).write_bytes(b"encoded-audio")
+        return None
+
+    async def fake_probe_audio_streams(input_path, timeout_seconds=30.0):
+        return [
+            AudioStreamInfo(relative_index=0, codec_name="dts", language="ger", title="German"),
+            AudioStreamInfo(relative_index=1, codec_name="dts", language="fre", title="French"),
+        ]
+
+    monkeypatch.setattr(ClipRenderer, "_run", fake_run)
+    monkeypatch.setattr(ffmpeg_module, "probe_audio_streams", fake_probe_audio_streams)
+
+    renderer = ClipRenderer(fps=15, width=480)
+    asyncio.run(
+        renderer._render_audio("input.mkv", 10.0, 4.0, tmp_path, "mp3", audio_language="eng")
+    )
+
+    args = captured["args"]
+    assert args[args.index("-map") + 1] == "0:a:0"
+
+
+# choose_audio_stream (the pure decision function above) in isolation.
+
+
+def _audio_stream(**overrides):
+    defaults = dict(relative_index=0, codec_name="dts", language="eng", title=None)
+    defaults.update(overrides)
+    return AudioStreamInfo(**defaults)
+
+
+def test_choose_audio_stream_prefers_the_configured_language():
+    streams = [
+        _audio_stream(relative_index=0, language="ger"),
+        _audio_stream(relative_index=1, language="eng"),
+    ]
+    assert choose_audio_stream(streams, "eng") == 1
+
+
+def test_choose_audio_stream_is_case_insensitive():
+    streams = [_audio_stream(relative_index=0, language="ENG")]
+    assert choose_audio_stream(streams, "eng") == 0
+
+
+def test_choose_audio_stream_falls_back_to_first_when_language_absent():
+    streams = [_audio_stream(relative_index=0, language="ger"), _audio_stream(relative_index=1, language="fre")]
+    assert choose_audio_stream(streams, "eng") == 0
+
+
+def test_choose_audio_stream_falls_back_to_first_when_untagged():
+    streams = [_audio_stream(relative_index=0, language=None)]
+    assert choose_audio_stream(streams, "eng") == 0
+
+
+def test_choose_audio_stream_falls_back_to_zero_with_no_streams_at_all():
+    assert choose_audio_stream([], "eng") == 0
+
+
+def test_probe_audio_streams_parses_language_and_title_tags(monkeypatch):
+    payload = json.dumps(
+        {
+            "streams": [
+                {"codec_name": "dts", "tags": {"language": "ger", "title": "German 5.1 DTS"}},
+                {"codec_name": "dts", "tags": {"language": "eng", "title": "English 5.1 DTS"}},
+            ]
+        }
+    ).encode()
+
+    async def fake_run_and_capture(args, timeout_seconds, error_prefix, capture_stdout=False):
+        return payload
+
+    monkeypatch.setattr(ffmpeg_module, "run_and_capture", fake_run_and_capture)
+
+    streams = asyncio.run(probe_audio_streams("input.mkv"))
+
+    assert [s.language for s in streams] == ["ger", "eng"]
+    assert [s.relative_index for s in streams] == [0, 1]
+    assert streams[1].title == "English 5.1 DTS"

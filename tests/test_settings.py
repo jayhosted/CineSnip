@@ -5,6 +5,7 @@ from app.settings import (
     LibrarySyncDefaults,
     PathMapping,
     QuoteMatchDefaults,
+    RenderDefaults,
     Settings,
     SettingsError,
     load_settings,
@@ -99,3 +100,21 @@ def test_quote_match_fetch_limit_round_trips_through_config_yaml(tmp_path):
 
     reloaded = load_settings(env_path=env_path, config_path=config_path)
     assert reloaded.quote_match.fetch_limit == 75
+
+
+def test_render_defaults_audio_language_defaults_to_english():
+    assert RenderDefaults().audio_language == "eng"
+
+
+def test_audio_language_round_trips_through_config_yaml(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("DISCORD_TOKEN=x\nPLEX_URL=http://x\nPLEX_TOKEN=x\n")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("libraries: []\n")
+
+    settings = load_settings(env_path=env_path, config_path=config_path)
+    settings.render_defaults.audio_language = "fre"
+    write_config_yaml(settings, config_path=config_path)
+
+    reloaded = load_settings(env_path=env_path, config_path=config_path)
+    assert reloaded.render_defaults.audio_language == "fre"

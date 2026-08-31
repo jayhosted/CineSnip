@@ -71,6 +71,16 @@ class RenderDefaults(BaseModel):
     # don't trust a documented number without testing it against a real
     # upload on your own guild first.
     max_file_size_bytes: int = 10_000_000
+    # ISO 639-2 code (e.g. "eng", "fre", "ger") /snip audio's mp3/ogg render
+    # prefers when a source has more than one audio track (dubs) — a
+    # multi-track file doesn't reliably order its tracks original-language-
+    # first (a real file in this library has its German dub muxed as
+    # stream 0, English as stream 1), so this can't just be "always the
+    # first audio stream" the way GIF/mp4/webm's video-only "-map 0:v:0"
+    # can. Falls back to the first audio stream if no track carries this
+    # tag at all (see ffmpeg.py's choose_audio_stream). Doesn't apply to
+    # gif/mp4/webm — those formats carry no audio at all (Section 6).
+    audio_language: str = "eng"
 
 
 class WorkerConfig(BaseModel):
