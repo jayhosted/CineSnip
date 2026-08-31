@@ -84,7 +84,7 @@ class _FakeWorker:
 def _make_view(*, duration=4.0, format="mp3", scope=None, subtitle_text=None) -> AudioClipResultView:
     return AudioClipResultView(
         _FakeWorker(),
-        rating_key=1,
+        media_id="1",
         title="The Matrix",
         content=b"audio-bytes",
         filename="clip.mp3",

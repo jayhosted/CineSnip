@@ -614,7 +614,7 @@ class _DurationMergeMixin:
     but ClipEditView's embed also sets the rendered gif as its image,
     which audio has no equivalent of).
 
-    Expects the composing view to provide `self._worker`, `self._rating_key`,
+    Expects the composing view to provide `self._worker`, `self._media_id`,
     `self._clip_start`, `self._clip_duration`, `self.add_item`/`remove_item`,
     and to call `self._init_duration_merge()` once during its own __init__
     (after those attributes exist) before any of this is used.
@@ -675,7 +675,7 @@ class _DurationMergeMixin:
 
     async def _fetch_entries(self) -> list[SubtitleEntryResult]:
         try:
-            entries = await self._worker.subtitles(self._rating_key)
+            entries = await self._worker.subtitles(self._media_id)
         except httpx.HTTPError:
             # Don't cache the failure as a successful empty result — a
             # transient error (e.g. a slow cold extraction that timed out)
@@ -826,7 +826,7 @@ class _DurationMergeMixin:
             await interaction.edit_original_response(view=self)
             return
 
-        slow_warning = await _slow_subtitle_warning(self._worker, self._rating_key)
+        slow_warning = await _slow_subtitle_warning(self._worker, self._media_id)
         if slow_warning:
             await interaction.edit_original_response(
                 content=f"Loading duration controls…{slow_warning}", embed=None
@@ -849,7 +849,7 @@ class _DurationMergeMixin:
             await interaction.edit_original_response(content=None, embed=None, view=self)
             return
 
-        slow_warning = await _slow_subtitle_warning(self._worker, self._rating_key)
+        slow_warning = await _slow_subtitle_warning(self._worker, self._media_id)
         if slow_warning:
             await interaction.edit_original_response(
                 content=f"Loading merge options…{slow_warning}", embed=None
@@ -947,7 +947,7 @@ class ClipResultView(discord.ui.View):
     def __init__(
         self,
         worker,
-        rating_key: int,
+        media_id: str,
         title: str,
         timecode: str,
         duration: float | None,
@@ -961,7 +961,7 @@ class ClipResultView(discord.ui.View):
     ) -> None:
         super().__init__(timeout=300)
         self._worker = worker
-        self._rating_key = rating_key
+        self._media_id = media_id
         self._title = title
         self._timecode = timecode
         self._duration = duration
@@ -1009,14 +1009,14 @@ class ClipResultView(discord.ui.View):
         # bare-timecode clip) can be the first request that actually needs
         # this title's subtitles — same cold-extraction risk as a fresh
         # quote search, just reached via a different route.
-        slow_warning = await _slow_subtitle_warning(self._worker, self._rating_key)
+        slow_warning = await _slow_subtitle_warning(self._worker, self._media_id)
         if slow_warning:
             await interaction.edit_original_response(
                 content=f"Regenerating with a new style…{slow_warning}"
             )
         try:
             render_result = await self._worker.render(
-                self._rating_key,
+                self._media_id,
                 self._timecode,
                 duration=self._duration,
                 end_timecode=self._end_timecode,
@@ -1086,7 +1086,7 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
     def __init__(
         self,
         worker,
-        rating_key: int,
+        media_id: str,
         title: str,
         content: bytes,
         filename: str,
@@ -1100,7 +1100,7 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
         # longer than the one-shot 300s a plain post-only view needs.
         super().__init__(timeout=1800)
         self._worker = worker
-        self._rating_key = rating_key
+        self._media_id = media_id
         self._title = title
         self._content = content
         self._filename = filename
@@ -1146,7 +1146,7 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
         await interaction.edit_original_response(content=status_message, view=self)
         try:
             render_result = await self._worker.render(
-                self._rating_key,
+                self._media_id,
                 start=start,
                 end=end,
                 format=self._format,
@@ -1167,7 +1167,7 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
         await interaction.edit_original_response(content=status_message, view=self)
         try:
             render_result = await self._worker.render(
-                self._rating_key,
+                self._media_id,
                 timecode=timecode,
                 end_timecode=end_timecode,
                 format=self._format,
@@ -1634,7 +1634,7 @@ class ClipEditView(ClipResultView, _DurationMergeMixin):
         # Section 2's upfront slow-extraction warning). Folded into
         # _re_render's status_message rather than a separate edit here, so
         # there's still exactly one place showing pre-render status text.
-        slow_warning = await _slow_subtitle_warning(self._worker, self._rating_key)
+        slow_warning = await _slow_subtitle_warning(self._worker, self._media_id)
         status_message = (
             f"Regenerating with a new style…{slow_warning}" if slow_warning else "Generating…"
         )
@@ -1709,7 +1709,7 @@ class ClipEditView(ClipResultView, _DurationMergeMixin):
         # button once entries are ready, since the modal window is now
         # closed for this click.
         await interaction.response.defer()
-        slow_warning = await _slow_subtitle_warning(self._worker, self._rating_key)
+        slow_warning = await _slow_subtitle_warning(self._worker, self._media_id)
         if slow_warning:
             await interaction.edit_original_response(
                 content=f"Loading subtitles…{slow_warning}", embed=None
@@ -1749,7 +1749,7 @@ class ClipEditView(ClipResultView, _DurationMergeMixin):
         requested_style = self.style
         try:
             render_result = await self._worker.render(
-                self._rating_key,
+                self._media_id,
                 start=start,
                 end=end,
                 format=self._format,
@@ -1779,7 +1779,7 @@ class ClipEditView(ClipResultView, _DurationMergeMixin):
         requested_style = self.style
         try:
             render_result = await self._worker.render(
-                self._rating_key,
+                self._media_id,
                 timecode=timecode,
                 end_timecode=end_timecode,
                 format=self._format,
@@ -2065,7 +2065,7 @@ def _validate_quote_or_timecode(
     return None
 
 
-async def _slow_subtitle_warning(worker, rating_key: int) -> str:
+async def _slow_subtitle_warning(worker, media_id: str) -> str:
     """Best-effort hint (cheap: no ffmpeg involved on the worker side) that a
     quote search or styled render is about to fall through to a cold
     embedded-subtitle extraction, which has no fast seek and can take
@@ -2076,7 +2076,7 @@ async def _slow_subtitle_warning(worker, rating_key: int) -> str:
     can trigger this cost.
     """
     try:
-        status = await worker.subtitle_status(rating_key)
+        status = await worker.subtitle_status(media_id)
     except httpx.HTTPError:
         return ""
     if not status.likely_slow:
@@ -2386,13 +2386,7 @@ class GifCog(commands.Cog):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
 
-        try:
-            rating_key = int(film)
-        except ValueError:
-            await interaction.edit_original_response(
-                content="Please select a result from the autocomplete suggestions."
-            )
-            return
+        media_id = film
 
         validation_error = _validate_quote_or_timecode(quote, timecode, end_timecode)
         if validation_error:
@@ -2400,7 +2394,7 @@ class GifCog(commands.Cog):
             return
 
         try:
-            resolved = await self.bot.worker.resolve(rating_key)
+            resolved = await self.bot.worker.resolve(media_id)
         except httpx.HTTPError as exc:
             await interaction.edit_original_response(
                 content=f"Couldn't find that film: {_error_detail(exc)}"
@@ -2408,7 +2402,7 @@ class GifCog(commands.Cog):
             return
 
         # No separate "confirm the film" step: autocomplete already pins an
-        # exact rating_key (title + year + library shown right there in the
+        # exact media_id (title + year + library shown right there in the
         # picker). Per CLAUDE.md decision #4, a same-titled result from a
         # different library is surfaced as a lightweight note folded into
         # this status message, not a new click-gated confirmation step.
@@ -2419,12 +2413,12 @@ class GifCog(commands.Cog):
                 if timecode
                 else ""
             )
-            slow_warning = await _slow_subtitle_warning(self.bot.worker, rating_key)
+            slow_warning = await _slow_subtitle_warning(self.bot.worker, media_id)
             await interaction.edit_original_response(
                 content=f"Searching {resolved.title}'s subtitles{library_note}…{note}{slow_warning}"
             )
             try:
-                resolved_quote = await self.bot.worker.resolve_quote(rating_key, quote)
+                resolved_quote = await self.bot.worker.resolve_quote(media_id, quote)
             except httpx.HTTPError as exc:
                 await interaction.edit_original_response(
                     content=f"Couldn't search subtitles: {_error_detail(exc)}"
@@ -2504,7 +2498,7 @@ class GifCog(commands.Cog):
 
             async def fetch(exclude: frozenset[int], most_recent: int | None) -> RandomQuoteResult:
                 return await self.bot.worker.random_line(
-                    rating_key, exclude_entry_ids=exclude, most_recent_entry_id=most_recent
+                    media_id, exclude_entry_ids=exclude, most_recent_entry_id=most_recent
                 )
 
             await self._run_random_result(interaction, fetch, format=format, kind=kind)
@@ -2513,7 +2507,7 @@ class GifCog(commands.Cog):
         render_end_timecode = end_timecode if not quote else None
         await self._render_and_respond(
             interaction,
-            rating_key,
+            media_id,
             resolved.title,
             render_timecode,
             render_duration,
@@ -2527,7 +2521,7 @@ class GifCog(commands.Cog):
     async def _render_and_respond(
         self,
         interaction: discord.Interaction,
-        rating_key: int,
+        media_id: str,
         title: str,
         render_timecode: str,
         render_duration: float | None,
@@ -2539,12 +2533,12 @@ class GifCog(commands.Cog):
     ) -> None:
         # Shared by _generate (movie / a single known episode) and
         # snip_tv's whole-show search (each candidate can resolve to a
-        # DIFFERENT episode's rating_key, only known once QuoteMatchView's
+        # DIFFERENT episode's media_id, only known once QuoteMatchView's
         # Confirm step picks one) — everything past "what to render and
         # what to call it" is identical either way.
         try:
             render_result = await self.bot.worker.render(
-                rating_key,
+                media_id,
                 render_timecode,
                 duration=render_duration,
                 end_timecode=render_end_timecode,
@@ -2572,7 +2566,7 @@ class GifCog(commands.Cog):
         if kind == "audio":
             result_view = AudioClipResultView(
                 self.bot.worker,
-                rating_key,
+                media_id,
                 title,
                 render_result.content,
                 filename,
@@ -2585,7 +2579,7 @@ class GifCog(commands.Cog):
         else:
             result_view = ClipEditView(
                 self.bot.worker,
-                rating_key,
+                media_id,
                 title,
                 render_timecode,
                 render_duration,
@@ -2876,22 +2870,16 @@ class GifCog(commands.Cog):
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
-        try:
-            show_rating_key = int(show)
-        except ValueError:
-            await interaction.edit_original_response(
-                content="Please select a show from the autocomplete suggestions."
-            )
-            return
+        show_media_id = show
 
         await self._run_tv_generate(
-            interaction, show_rating_key, season, episode, quote, timecode, end_timecode, format,
+            interaction, show_media_id, season, episode, quote, timecode, end_timecode, format,
         )
 
     async def _run_tv_generate(
         self,
         interaction: discord.Interaction,
-        show_rating_key: int,
+        show_media_id: str,
         season: int | None,
         episode: int | None,
         quote: str | None,
@@ -2904,7 +2892,7 @@ class GifCog(commands.Cog):
         # everything from here on is 100% generic over what the final
         # render/response looks like (that's `kind`'s only job), matching
         # CLAUDE.md's existing design that /resolve-episode etc. are already
-        # generic over rating_key.
+        # generic over media_id.
         if (season is None) != (episode is None):
             await interaction.edit_original_response(
                 content="Give both `season` and `episode`, or neither (to search the "
@@ -2928,7 +2916,7 @@ class GifCog(commands.Cog):
 
         if season is not None:
             try:
-                resolved = await self.bot.worker.resolve_episode(show_rating_key, season, episode)
+                resolved = await self.bot.worker.resolve_episode(show_media_id, season, episode)
             except httpx.HTTPError as exc:
                 await interaction.edit_original_response(
                     content=f"Couldn't find that episode: {_error_detail(exc)}"
@@ -2951,7 +2939,7 @@ class GifCog(commands.Cog):
 
             async def fetch(exclude: frozenset[int], most_recent: int | None) -> RandomQuoteResult:
                 return await self.bot.worker.random_line_show(
-                    show_rating_key, exclude_entry_ids=exclude, most_recent_entry_id=most_recent
+                    show_media_id, exclude_entry_ids=exclude, most_recent_entry_id=most_recent
                 )
 
             await self._run_random_result(interaction, fetch, format=format, kind=kind)
@@ -2962,7 +2950,7 @@ class GifCog(commands.Cog):
             "episodes not seen before…"
         )
         try:
-            result = await self.bot.worker.search_episodes_quote(show_rating_key, quote)
+            result = await self.bot.worker.search_episodes_quote(show_media_id, quote)
         except httpx.HTTPError as exc:
             await interaction.edit_original_response(
                 content=f"Couldn't search that show: {_error_detail(exc)}"
@@ -3096,14 +3084,8 @@ class GifCog(commands.Cog):
             return
 
         await interaction.response.defer(ephemeral=True)
-        try:
-            show_rating_key = int(title)
-        except ValueError:
-            await interaction.edit_original_response(
-                content="Please select a show from the autocomplete suggestions."
-            )
-            return
+        show_media_id = title
         await self._run_tv_generate(
-            interaction, show_rating_key, season, episode, quote, timecode, end_timecode, format,
+            interaction, show_media_id, season, episode, quote, timecode, end_timecode, format,
             kind="audio",
         )

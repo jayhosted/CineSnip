@@ -617,7 +617,7 @@ def _make_clip_edit_view(worker) -> ClipEditView:
     # a single wrapping coroutine, not one asyncio.run() per action.
     return ClipEditView(
         worker,
-        rating_key=1,
+        media_id="1",
         title="Title",
         timecode="10",
         duration=4.0,
@@ -829,7 +829,7 @@ def test_clip_edit_view_click_during_in_flight_prefetch_awaits_it_without_refetc
         call_count = 0
         release = asyncio.Event()
 
-        async def slow_subtitles(rating_key: int) -> list[SubtitleEntryResult]:
+        async def slow_subtitles(media_id: str) -> list[SubtitleEntryResult]:
             nonlocal call_count
             call_count += 1
             await release.wait()
@@ -905,7 +905,7 @@ def _make_audio_view(worker, format=None) -> AudioClipResultView:
     # whichever loop is current when it's created.
     return AudioClipResultView(
         worker,
-        rating_key=1,
+        media_id="1",
         title="The Matrix",
         content=b"audio-bytes",
         filename="clip.mp3",
