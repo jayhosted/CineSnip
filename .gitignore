@@ -6,6 +6,15 @@ docker-compose.jellyfin.yml
 jellyfin-config/
 jellyfin-cache/
 
+# Jellyfin backend manual-verification test rig (issue #24) — throwaway
+# second bot/container, deleted after verification. Never shipped, never
+# meant to reach git even transiently.
+.env.jellyfin-test
+config.yaml.jellyfin-test
+docker-compose.jellyfin-test.yml
+scratch-jellyfin-test/
+cache-jellyfin-test/
+
 # Python
 __pycache__/
 *.pyc
