@@ -81,6 +81,12 @@ class JellyfinClient:
             "ParentId": section["ItemId"],
             "IncludeItemTypes": item_type,
             "Recursive": "true",
+            # Confirmed against a live server: list endpoints omit
+            # MediaSources (and so source_path) unless explicitly asked for
+            # — unlike a single-item fetch by ID, which includes it by
+            # default. Without this, every enumerated item has
+            # source_path="" and can never be rendered.
+            "Fields": "MediaSources",
         }
         response = self._http.get(f"/Users/{self._user_id}/Items", params=params)
         return [
@@ -102,7 +108,11 @@ class JellyfinClient:
         # once across the whole server: it scopes results to the libraries
         # this install actually configured, and — the reason it matters —
         # it's the only way to know which library each hit belongs to.
-        # A search response carries no MediaSources path to fall back on.
+        # A search response carries no MediaSources path unless explicitly
+        # requested (confirmed against a live server — same gap as
+        # enumerate_section) — still needed here even though library_name
+        # itself comes from the folder, not a source_path fallback, because
+        # source_path is what a later /render call actually needs.
         results: list[MovieResult] = []
         for folder in folders:
             if len(results) >= limit:
@@ -112,6 +122,7 @@ class JellyfinClient:
                 "IncludeItemTypes": item_type,
                 "Recursive": "true",
                 "ParentId": folder["ItemId"],
+                "Fields": "MediaSources",
             }
             response = self._http.get("/Items", params=params)
             for item in response.json().get("Items", []):
@@ -127,13 +138,26 @@ class JellyfinClient:
         return self._search_folders(self._show_folders, "Series", query, limit)
 
     def get_movie(self, media_id: str) -> MovieResult:
-        response = self._http.get(f"/Items/{media_id}")
+        # A bare /Items/{id} (no userId) returns HTTP 400 on real Jellyfin
+        # servers — confirmed against a live instance during manual
+        # verification (issue #24) — Jellyfin genuinely requires the
+        # /Users/{userId}/Items/{itemId} form for a single-item fetch by ID,
+        # same as enumerate_section/_search_folders already use.
+        response = self._http.get(f"/Users/{self._user_id}/Items/{media_id}")
         if response.status_code == 404:
             raise MovieNotFoundError(media_id)
         return self._to_result(response.json())
 
     def get_episode(self, show_media_id: str, season: int, episode: int) -> MovieResult:
-        response = self._http.get(f"/Shows/{show_media_id}/Episodes")
+        # Confirmed against a live Jellyfin server: /Shows/{id}/Episodes
+        # (unlike a single-item fetch) works fine without a userId prefix —
+        # do not "fix" this to match get_movie's /Users/{id}/... form, that
+        # 404s here. Fields=MediaSources is still required, same gap as
+        # enumerate_section/_search_folders — omitted, every episode's
+        # source_path is "".
+        response = self._http.get(
+            f"/Shows/{show_media_id}/Episodes", params={"Fields": "MediaSources"}
+        )
         if response.status_code == 404:
             raise EpisodeNotFoundError(show_media_id, season, episode)
         for item in response.json().get("Items", []):
@@ -142,7 +166,9 @@ class JellyfinClient:
         raise EpisodeNotFoundError(show_media_id, season, episode)
 
     def list_episodes(self, show_media_id: str) -> list[MovieResult]:
-        response = self._http.get(f"/Shows/{show_media_id}/Episodes")
+        response = self._http.get(
+            f"/Shows/{show_media_id}/Episodes", params={"Fields": "MediaSources"}
+        )
         if response.status_code == 404:
             raise ShowNotFoundError(show_media_id)
         return [self._to_result(item) for item in response.json().get("Items", [])]

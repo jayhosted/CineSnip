@@ -52,7 +52,7 @@ def _client_with_mock(handler, movie_folders=None, show_folders=None) -> Jellyfi
 
 def test_get_movie_returns_media_result_with_string_id():
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/Items/abc-123"
+        assert request.url.path == "/Users/user-1/Items/abc-123"
         assert request.headers["X-Emby-Token"] == "key123"
         return httpx.Response(
             200,
@@ -92,6 +92,11 @@ def test_search_movies_filters_by_item_type():
         assert request.url.params["searchTerm"] == "matrix"
         assert request.url.params["IncludeItemTypes"] == "Movie"
         assert request.url.params["ParentId"] == "f1"
+        # Real Jellyfin servers omit MediaSources from list endpoints unless
+        # explicitly requested — confirmed against a live instance during
+        # manual verification (issue #24). Without this, source_path is
+        # always "" and every render fails.
+        assert request.url.params["Fields"] == "MediaSources"
         return httpx.Response(
             200,
             json={
@@ -164,6 +169,7 @@ def test_get_movie_outside_every_configured_folder_has_empty_library_name():
 
 def test_enumerate_section_uses_the_folder_name_it_was_given():
     def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["Fields"] == "MediaSources"
         return httpx.Response(
             200,
             json={
@@ -187,6 +193,7 @@ def test_enumerate_section_uses_the_folder_name_it_was_given():
 
 def test_episode_library_name_is_the_configured_library_not_the_series():
     def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["Fields"] == "MediaSources"
         return httpx.Response(
             200,
             json={
