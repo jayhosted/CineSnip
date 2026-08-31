@@ -7,10 +7,10 @@ from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 def test_resolves_windows_style_path_on_first_drive():
     mappings = [
         PathMapping(
-            plex_prefix="D:\\Movies", container_path="/media/movies-d"
+            path_prefix="D:\\Movies", container_path="/media/movies-d"
         ),
         PathMapping(
-            plex_prefix="E:\\Media\\Video\\Movies", container_path="/media/movies-e"
+            path_prefix="E:\\Media\\Video\\Movies", container_path="/media/movies-e"
         ),
     ]
     plex_path = "D:\\Movies\\1917 (2019)\\1917.mkv"
@@ -23,10 +23,10 @@ def test_resolves_windows_style_path_on_first_drive():
 def test_resolves_windows_style_path_on_second_drive():
     mappings = [
         PathMapping(
-            plex_prefix="D:\\Movies", container_path="/media/movies-d"
+            path_prefix="D:\\Movies", container_path="/media/movies-d"
         ),
         PathMapping(
-            plex_prefix="E:\\Media\\Video\\Movies", container_path="/media/movies-e"
+            path_prefix="E:\\Media\\Video\\Movies", container_path="/media/movies-e"
         ),
     ]
     plex_path = "E:\\Media\\Video\\Movies\\12 Angry Men (1957)\\12 Angry Men.mkv"
@@ -38,9 +38,9 @@ def test_resolves_windows_style_path_on_second_drive():
 
 def test_longest_prefix_wins_when_overlapping():
     mappings = [
-        PathMapping(plex_prefix="D:\\Media", container_path="/media/generic"),
+        PathMapping(path_prefix="D:\\Media", container_path="/media/generic"),
         PathMapping(
-            plex_prefix="D:\\Media\\Movies", container_path="/media/movies-specific"
+            path_prefix="D:\\Media\\Movies", container_path="/media/movies-specific"
         ),
     ]
     plex_path = "D:\\Media\\Movies\\Film.mkv"
@@ -58,7 +58,7 @@ def test_strips_windows_extended_length_path_prefix():
     # with "No path mapping configured" despite an otherwise-correct entry.
     mappings = [
         PathMapping(
-            plex_prefix="D:\\Movies", container_path="/media/movies-d"
+            path_prefix="D:\\Movies", container_path="/media/movies-d"
         ),
     ]
     plex_path = (
@@ -80,7 +80,7 @@ def test_strips_windows_extended_length_unc_prefix():
     # UNC path (\\server\share\...), not a local drive — a distinct escape
     # sequence from the drive-letter form above.
     mappings = [
-        PathMapping(plex_prefix="\\\\nas\\Movies", container_path="/media/movies"),
+        PathMapping(path_prefix="\\\\nas\\Movies", container_path="/media/movies"),
     ]
     plex_path = "\\\\?\\UNC\\nas\\Movies\\Film (2020)\\Film.mkv"
 
@@ -92,7 +92,7 @@ def test_strips_windows_extended_length_unc_prefix():
 def test_raises_when_no_mapping_matches():
     mappings = [
         PathMapping(
-            plex_prefix="D:\\Movies", container_path="/media/movies-d"
+            path_prefix="D:\\Movies", container_path="/media/movies-d"
         ),
     ]
 

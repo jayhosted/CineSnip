@@ -18,7 +18,7 @@ def _settings(tmp_path, library_name="Movies", mappings=None) -> Settings:
     root.mkdir(exist_ok=True)
     (root / "placeholder.txt").write_text("x")  # non-empty mount by default
     if mappings is None:
-        mappings = [PathMapping(plex_prefix="D:\\Movies", container_path=str(root))]
+        mappings = [PathMapping(path_prefix="D:\\Movies", container_path=str(root))]
     return Settings(
         discord_token="x",
         plex_url="http://localhost",
@@ -79,7 +79,7 @@ def test_mount_check_passes_for_populated_mount(tmp_path):
 
 
 def test_mount_check_fails_for_missing_mount(tmp_path):
-    mappings = [PathMapping(plex_prefix="D:\\Movies", container_path=str(tmp_path / "does-not-exist"))]
+    mappings = [PathMapping(path_prefix="D:\\Movies", container_path=str(tmp_path / "does-not-exist"))]
     settings = _settings(tmp_path, mappings=mappings)
 
     assert _mount_check(settings, "Movies") is False
@@ -88,7 +88,7 @@ def test_mount_check_fails_for_missing_mount(tmp_path):
 def test_mount_check_fails_for_empty_mount(tmp_path):
     empty_root = tmp_path / "empty"
     empty_root.mkdir()
-    mappings = [PathMapping(plex_prefix="D:\\Movies", container_path=str(empty_root))]
+    mappings = [PathMapping(path_prefix="D:\\Movies", container_path=str(empty_root))]
     settings = _settings(tmp_path, mappings=mappings)
 
     assert _mount_check(settings, "Movies") is False
@@ -100,8 +100,8 @@ def test_mount_check_fails_if_any_of_several_mappings_is_bad(tmp_path):
     (good_root / "f.txt").write_text("x")
     bad_root = tmp_path / "bad"  # never created
     mappings = [
-        PathMapping(plex_prefix="D:\\A", container_path=str(good_root)),
-        PathMapping(plex_prefix="E:\\B", container_path=str(bad_root)),
+        PathMapping(path_prefix="D:\\A", container_path=str(good_root)),
+        PathMapping(path_prefix="E:\\B", container_path=str(bad_root)),
     ]
     settings = _settings(tmp_path, mappings=mappings)
 
@@ -151,7 +151,7 @@ def test_sync_library_persists_item_count(tmp_path):
 
 def test_mount_check_failure_blocks_removal_but_not_addition(tmp_path):
     bad_root = tmp_path / "gone"  # never created -> mount check fails
-    mappings = [PathMapping(plex_prefix="D:\\Movies", container_path=str(bad_root))]
+    mappings = [PathMapping(path_prefix="D:\\Movies", container_path=str(bad_root))]
     settings = _settings(tmp_path, mappings=mappings)
     _precache(settings, "guid-removed")  # cached, but no longer in the live list
     quote_index.set_section_updated_at(settings.quote_index_db_path, "Movies", 100)
@@ -173,7 +173,7 @@ def test_spot_check_failure_blocks_removal(tmp_path):
     root = tmp_path / "media"
     root.mkdir(exist_ok=True)
     (root / "placeholder.txt").write_text("x")
-    mappings = [PathMapping(plex_prefix="D:\\Movies", container_path=str(root))]
+    mappings = [PathMapping(path_prefix="D:\\Movies", container_path=str(root))]
     settings = _settings(tmp_path, mappings=mappings)
     _precache(settings, "guid-removed")
     quote_index.set_section_updated_at(settings.quote_index_db_path, "Movies", 100)
@@ -396,7 +396,7 @@ def test_both_guards_pass_deletes_removed_title_and_updates_state(tmp_path):
     root.mkdir(exist_ok=True)
     # The still-present item's actual file, so the spot check finds it.
     (root / "still_present.mkv").write_text("video bytes")
-    mappings = [PathMapping(plex_prefix="D:\\Movies", container_path=str(root))]
+    mappings = [PathMapping(path_prefix="D:\\Movies", container_path=str(root))]
     settings = _settings(tmp_path, mappings=mappings)
 
     _precache(settings, "guid-removed")

@@ -28,7 +28,7 @@ def _settings(tmp_path, fetch_limit: int) -> Settings:
             LibraryConfig(
                 name="Movies",
                 path_mappings=[
-                    PathMapping(plex_prefix="/media", container_path=str(tmp_path))
+                    PathMapping(path_prefix="/media", container_path=str(tmp_path))
                 ],
             )
         ],

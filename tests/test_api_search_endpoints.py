@@ -223,7 +223,7 @@ def _settings_with_sync(tmp_path, enabled: bool, cap: int | None = None, mount_r
         libraries = [
             LibraryConfig(
                 name="Movies",
-                path_mappings=[PathMapping(plex_prefix="D:\\Movies", container_path=str(mount_root))],
+                path_mappings=[PathMapping(path_prefix="D:\\Movies", container_path=str(mount_root))],
             )
         ]
     return Settings(

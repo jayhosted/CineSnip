@@ -87,7 +87,7 @@ def _state_with_one_library(*, three_d_format="none"):
         name="Movies",
         section_type="movie",
         selected=True,
-        mapping_rows=[MappingRow(plex_prefix="D:\\Movies", container_path="/media/movies")],
+        mapping_rows=[MappingRow(path_prefix="D:\\Movies", container_path="/media/movies")],
         three_d_format=three_d_format,
     )
     state.library_choices = [choice]

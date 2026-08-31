@@ -67,7 +67,7 @@ def _settings(tmp_path, max_concurrent_renders: int = 3) -> Settings:
             LibraryConfig(
                 name="Movies",
                 path_mappings=[
-                    PathMapping(plex_prefix="/media", container_path=str(tmp_path))
+                    PathMapping(path_prefix="/media", container_path=str(tmp_path))
                 ],
             )
         ],
@@ -78,7 +78,7 @@ def _settings(tmp_path, max_concurrent_renders: int = 3) -> Settings:
 
 def _movie() -> MovieResult:
     # plex_path matches the LibraryConfig path_mapping in _settings()
-    # (plex_prefix "/media" -> container_path=tmp_path) — the real file on
+    # (path_prefix "/media" -> container_path=tmp_path) — the real file on
     # disk is written at tmp_path / "movie.mkv" by each test.
     return MovieResult(
         rating_key=1, title="The Matrix", year=1999, duration_ms=8_160_000,
