@@ -1,13 +1,19 @@
-# One entry per Plex library CineSnip should search. `name` must match the
-# library's title in Plex exactly (case-sensitive) — this is also how a
-# result is labeled when the same title exists in more than one library
-# (e.g. a regular Movies library and a separate 4K one).
+# plex or jellyfin — see README.md for the full setup instructions for
+# each. Only one backend is active per install; JELLYFIN_URL/JELLYFIN_API_KEY
+# in .env are only required when this is set to jellyfin.
+media_server: plex
+
+# One entry per library CineSnip should search. `name` must match the
+# library's title in Plex/Jellyfin exactly (case-sensitive) — this is also
+# how a result is labeled when the same title exists in more than one
+# library (e.g. a regular Movies library and a separate 4K one).
 #
 # Under path_mappings, add one entry per folder that library spans.
-# plex_prefix must match exactly how Plex reports the path (Windows-style
-# backslashes if Plex runs on Windows). container_path is where that same
-# folder is bind-mounted inside the Docker container (see docker-compose.yml).
-# A library that only lives in one folder needs only one entry.
+# path_prefix must match exactly how Plex/Jellyfin reports the path
+# (Windows-style backslashes if the media server runs on Windows).
+# container_path is where that same folder is bind-mounted inside the
+# Docker container (see docker-compose.yml). A library that only lives in
+# one folder needs only one entry.
 #
 # three_d_format (optional, default "none") tags a library as containing
 # 3D encodes that pack both eyes into a single frame — "side_by_side" or
@@ -21,11 +27,11 @@
 libraries:
   - name: "Movies"
     path_mappings:
-      - plex_prefix: "D:\\Movies"
+      - path_prefix: "D:\\Movies"
         container_path: "/media/movies"
   - name: "TV Shows"
     path_mappings:
-      - plex_prefix: "D:\\TV Shows"
+      - path_prefix: "D:\\TV Shows"
         container_path: "/media/tv"
 
 # duration_seconds is used for timecode-driven clips. A quote-driven clip
