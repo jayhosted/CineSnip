@@ -1,0 +1,23 @@
+<div id="settings-content">
+  <div class="page-header"><h1>Settings</h1><p>Configuration CineSnip doesn't need to ask for during first-run setup.</p></div>
+  {% include "settings_tabs.html" %}
+
+  <form class="card" style="margin-top:18px; max-width:520px;"
+    hx-post="/settings/audio" hx-target="#settings-content" hx-swap="outerHTML">
+    {% if saved %}<div class="save-banner">Saved — applied without a restart.</div>{% endif %}
+    {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+
+    <label class="field-label" style="display:block; margin-bottom:10px;">/SNIP AUDIO</label>
+
+    <label class="field-label" for="audio_language">PREFERRED AUDIO LANGUAGE</label>
+    <input type="text" id="audio_language" name="audio_language" value="{{ settings.render_defaults.audio_language }}" style="margin:6px 0 6px; max-width:160px;">
+    <p class="footnote" style="text-align:left; max-width:none; margin:0;">
+      ISO 639-2 code (e.g. <code>eng</code>, <code>fre</code>, <code>ger</code>). Used when a
+      source has more than one audio track (dubs) — picks the track tagged
+      with this language, falling back to the file's first track if none
+      match.
+    </p>
+
+    <button class="btn btn-primary" type="submit" style="margin-top:20px;">Save</button>
+  </form>
+</div>

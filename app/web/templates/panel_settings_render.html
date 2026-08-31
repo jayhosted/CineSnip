@@ -46,16 +46,8 @@
       </div>
     </div>
 
-    <div class="field-row" style="margin-bottom:22px;">
-      <div style="flex:1;">
-        <label class="field-label" for="timeout_seconds">ENCODE TIMEOUT (s)</label>
-        <input type="text" id="timeout_seconds" name="timeout_seconds" value="{{ settings.render_defaults.timeout_seconds }}" style="margin-top:6px;">
-      </div>
-      <div style="flex:1;">
-        <label class="field-label" for="audio_language">AUDIO LANGUAGE (/snip audio, ISO 639-2, e.g. eng)</label>
-        <input type="text" id="audio_language" name="audio_language" value="{{ settings.render_defaults.audio_language }}" style="margin-top:6px;">
-      </div>
-    </div>
+    <label class="field-label" for="timeout_seconds">ENCODE TIMEOUT (s)</label>
+    <input type="text" id="timeout_seconds" name="timeout_seconds" value="{{ settings.render_defaults.timeout_seconds }}" style="margin:6px 0 22px;">
 
     <label class="field-label" style="display:block; margin-bottom:10px;">QUOTE MATCHING</label>
 

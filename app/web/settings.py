@@ -19,6 +19,7 @@ from app.worker import search_index
 _TABS = [
     ("general", "General"),
     ("render", "Render & Subtitles"),
+    ("audio", "Audio"),
     ("cache", "Cache & Sync"),
     ("discord", "Discord"),
     ("plex", "Plex"),
@@ -107,12 +108,13 @@ def register_settings_routes(
                 format=str(form["format"]),
                 min_duration_seconds=float(form["min_duration_seconds"]),
                 max_duration_seconds=float(form["max_duration_seconds"]),
-                audio_language=str(form["audio_language"]).strip() or "eng",
-                # gifsicle_timeout_seconds/max_file_size_bytes aren't in this
-                # form — preserved from the existing settings rather than
+                # gifsicle_timeout_seconds/max_file_size_bytes/audio_language
+                # aren't in this form (audio_language lives on its own Audio
+                # tab) — preserved from the existing settings rather than
                 # silently reset to RenderDefaults' own Pydantic defaults.
                 gifsicle_timeout_seconds=settings.render_defaults.gifsicle_timeout_seconds,
                 max_file_size_bytes=settings.render_defaults.max_file_size_bytes,
+                audio_language=settings.render_defaults.audio_language,
             )
             quote_match = QuoteMatchDefaults(
                 fetch_limit=int(form["fetch_limit"]),
@@ -133,6 +135,33 @@ def register_settings_routes(
         updated.quote_match = quote_match
         await apply(updated)
         return render_tab(request, "render", "panel_settings_render.html", saved=True)
+
+    # ---- Audio ---------------------------------------------------------
+    # Split out from Render & Subtitles into its own tab since more
+    # audio-specific settings are planned (Discord Soundboard replacement
+    # options, issue #10) — kept together here rather than crowding the
+    # render tab as that grows.
+
+    @app.get("/settings/audio", response_class=HTMLResponse)
+    async def settings_audio(request: Request):
+        return render_tab(request, "audio", "panel_settings_audio.html")
+
+    @app.post("/settings/audio", response_class=HTMLResponse)
+    async def settings_audio_save(request: Request):
+        settings = settings_holder.settings
+        form = await request.form()
+
+        audio_language = str(form.get("audio_language", "")).strip()
+        if not audio_language:
+            return render_tab(
+                request, "audio", "panel_settings_audio.html",
+                error="Audio language can't be blank.",
+            )
+
+        updated = settings.model_copy(deep=True)
+        updated.render_defaults.audio_language = audio_language
+        await apply(updated)
+        return render_tab(request, "audio", "panel_settings_audio.html", saved=True)
 
     # ---- Cache & Sync ------------------------------------------------------
 
