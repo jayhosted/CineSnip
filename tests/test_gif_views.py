@@ -892,29 +892,138 @@ def test_random_result_view_shuffle_uses_the_given_format_and_style():
     assert kwargs["style"] == "none"
 
 
-# AudioClipResultView (issue #6): the /snip audio result view is a plain
-# "Post to channel" button only — no style-select/duration-nudge/merge
-# controls, since none of that applies to an audio-only clip.
+# AudioClipResultView (issue #6): the /snip audio result view. No
+# style-select or ✏️ Edit Subs (no burn-in to edit), but issue #21 gives it
+# the same ⏱ Duration / 🔀 Merge Subs span-editing controls as ClipEditView,
+# via the shared _DurationMergeMixin.
 
 
-def test_audio_clip_result_view_has_only_a_post_button():
-    view = AudioClipResultView("The Matrix", b"audio-bytes", "clip.mp3", 10.0, 4.0)
+def _make_audio_view(worker, format=None) -> AudioClipResultView:
+    # See _make_clip_edit_view's note: must run inside the same event loop
+    # as any asyncio.run() driving further actions on this view, since
+    # __init__ kicks off a background entries-prefetch task bound to
+    # whichever loop is current when it's created.
+    return AudioClipResultView(
+        worker,
+        rating_key=1,
+        title="The Matrix",
+        content=b"audio-bytes",
+        filename="clip.mp3",
+        clip_start=10.0,
+        clip_duration=4.0,
+        format=format,
+    )
 
-    assert [item.label for item in view.children] == ["Post to channel"]
+
+def test_audio_clip_result_view_has_duration_merge_toggles_and_post():
+    async def run():
+        view = _make_audio_view(_FakeEditWorker())
+        return {item.label: item.row for item in view.children}
+
+    rows_by_label = asyncio.run(run())
+    assert rows_by_label == {"⏱ Duration": 1, "🔀 Merge Subs": 1, "Post to channel": 4}
 
 
 def test_audio_clip_result_view_post_sends_file_and_disables_button():
-    view = AudioClipResultView("The Matrix", b"audio-bytes", "clip.mp3", 10.0, 4.0)
-    interaction = _fake_interaction()
-    interaction.user.display_name = "Neo"
+    async def run():
+        view = _make_audio_view(_FakeEditWorker())
+        interaction = _fake_interaction()
+        interaction.user.display_name = "Neo"
+        await view.post.callback(interaction)
+        return interaction, view
 
-    asyncio.run(view.post.callback(interaction))
+    interaction, view = asyncio.run(run())
 
     interaction.channel.send.assert_awaited_once()
     _, kwargs = interaction.channel.send.await_args
     assert kwargs["file"].filename == "clip.mp3"
     assert "the-matrix" in kwargs["content"]
     assert view.post.disabled is True
+
+
+def test_audio_clip_result_view_duration_row_layout_defaults_to_middle_step():
+    async def run():
+        view = _make_audio_view(_FakeEditWorker())
+        await view._open_duration()
+
+        row2 = [b for b in view._category_buttons if b.row == 2]
+        row3 = [b for b in view._category_buttons if b.row == 3]
+        assert [b.label for b in row2] == [
+            "Start ← 1s", "Start → 1s", "End ← 1s", "End → 1s", "Custom",
+        ]
+        assert [b.label for b in row3] == ["Shift ← 1s", "Shift → 1s", "0.5s", "1s", "3s"]
+
+    asyncio.run(run())
+
+
+def test_audio_clip_result_view_start_nudge_calls_render_with_style_none_no_overrides():
+    async def run():
+        view = _make_audio_view(_FakeEditWorker(), format="mp3")
+        await view._open_duration()
+        start_left = next(b for b in view._category_buttons if b.label == "Start ← 1s")
+
+        await start_left.callback(_fake_interaction())
+        return view
+
+    view = asyncio.run(run())
+
+    view._worker.render.assert_awaited_once()
+    _, kwargs = view._worker.render.await_args
+    assert kwargs["start"] == 9.0
+    assert kwargs["end"] == 14.0
+    assert kwargs["format"] == "mp3"
+    assert kwargs["style"] == "none"
+    assert "subtitle_overrides" not in kwargs
+
+
+def test_audio_clip_result_view_merge_previous_extends_start_to_adjacent_entry():
+    async def run():
+        entries = [_entry(0, 5.0, 8.0, "previous line")]
+        view = _make_audio_view(_FakeEditWorker(entries=entries))
+
+        await view._on_merge_previous(_fake_interaction())
+        return view
+
+    view = asyncio.run(run())
+
+    view._worker.render.assert_awaited_once()
+    _, kwargs = view._worker.render.await_args
+    assert kwargs["start"] == 5.0
+    assert kwargs["end"] == 14.0
+
+
+def test_audio_clip_result_view_merge_open_uses_plain_content_not_embed():
+    async def run():
+        entries = [_entry(0, 5.0, 8.0, "previous line")]
+        view = _make_audio_view(_FakeEditWorker(entries=entries))
+        interaction = _fake_interaction()
+
+        await view._on_toggle_merge(interaction)
+        return interaction
+
+    interaction = asyncio.run(run())
+
+    _, kwargs = interaction.edit_original_response.await_args
+    assert kwargs["embed"] is None
+    assert "previous line" in kwargs["content"]
+
+
+def test_audio_clip_result_view_edit_resets_filename_to_generic():
+    async def run():
+        worker = _FakeEditWorker()
+        worker.render.return_value = _FakeRenderResult2(format="mp3", start=9.0, duration=5.0)
+        view = _make_audio_view(worker)
+        await view._open_duration()
+        start_left = next(b for b in view._category_buttons if b.label == "Start ← 1s")
+
+        await start_left.callback(_fake_interaction())
+        return view
+
+    view = asyncio.run(run())
+
+    assert view._filename == "clip.mp3"
+    assert view._clip_start == 9.0
+    assert view._clip_duration == 5.0
 
 
 # _render_and_respond's audio filename (issue #6 follow-up): reflects the
@@ -936,16 +1045,24 @@ def test_render_and_respond_audio_filename_uses_subtitle_text():
 
     from app.bot.cogs.gif import GifCog
 
-    worker = SimpleNamespace(render=AsyncMock(return_value=_FakeRenderResultWithSpan()))
+    worker = SimpleNamespace(
+        render=AsyncMock(return_value=_FakeRenderResultWithSpan()),
+        subtitles=AsyncMock(return_value=[]),
+    )
     cog = GifCog(bot=SimpleNamespace(worker=worker))
     interaction = _fake_interaction()
 
-    asyncio.run(
-        cog._render_and_respond(
+    async def run():
+        await cog._render_and_respond(
             interaction, 1, "The Matrix", "10", 4.0, None, "mp3", "none",
             kind="audio", subtitle_text="I know kung fu",
         )
-    )
+        # Let AudioClipResultView's background entries-prefetch task (kicked
+        # off during construction) finish inside this same loop — see
+        # test_render_and_respond_clip_filename_ignores_subtitle_text.
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
 
     _, kwargs = interaction.edit_original_response.await_args
     assert kwargs["attachments"][0].filename == "i-know-kung-fu.mp3"
@@ -956,15 +1073,20 @@ def test_render_and_respond_audio_filename_falls_back_without_subtitle_text():
 
     from app.bot.cogs.gif import GifCog
 
-    worker = SimpleNamespace(render=AsyncMock(return_value=_FakeRenderResultWithSpan()))
+    worker = SimpleNamespace(
+        render=AsyncMock(return_value=_FakeRenderResultWithSpan()),
+        subtitles=AsyncMock(return_value=[]),
+    )
     cog = GifCog(bot=SimpleNamespace(worker=worker))
     interaction = _fake_interaction()
 
-    asyncio.run(
-        cog._render_and_respond(
+    async def run():
+        await cog._render_and_respond(
             interaction, 1, "The Matrix", "10", None, None, "mp3", "none", kind="audio",
         )
-    )
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
 
     _, kwargs = interaction.edit_original_response.await_args
     assert kwargs["attachments"][0].filename == "clip.mp3"
