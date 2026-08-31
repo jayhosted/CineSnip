@@ -722,6 +722,12 @@ def _write_config_files(
         interval_hours=existing_sync.interval_hours,
     )
     config = {
+        # Preserved, not re-derived: the wizard's Plex steps don't collect
+        # media_server, so rebuilding it from a default would silently flip
+        # a configured Jellyfin install back to Plex on any reconfiguration
+        # — the same "never discard an edited value" rule as the sections
+        # below. Falls back to the Settings default only on a first run.
+        "media_server": current_settings.media_server if current_settings else "plex",
         "libraries": [lib.model_dump() for lib in state.selected_libraries()],
         "render_defaults": (current_settings.render_defaults if current_settings else RenderDefaults()).model_dump(),
         "subtitle_defaults": (current_settings.subtitle_defaults if current_settings else SubtitleDefaults()).model_dump(),
