@@ -201,7 +201,18 @@ class JellyfinClient:
         # downstream arithmetic/formatting. `or default` catches null too.
         media_sources = item.get("MediaSources") or [{}]
         source_path = media_sources[0].get("Path") or ""
-        thumb_url = None  # deferred — auth story not yet decided, issue #27
+        # Same precedent as PlexClient: plexapi's own thumbUrl embeds the
+        # token as a query param (includeToken=True) rather than requiring a
+        # header, so a bare <img src> can load it — this isn't a new class of
+        # risk, it's matching what this codebase already ships for Plex.
+        # Only set when the item actually has its own primary image (mirrors
+        # PlexClient's `if getattr(item, "thumb", None)` guard) — a bare
+        # ImageTags-less item has nothing to point at.
+        thumb_url = (
+            f"{self._base_url}/Items/{item['Id']}/Images/Primary?api_key={self._api_key}"
+            if item.get("ImageTags", {}).get("Primary")
+            else None
+        )
 
         if item.get("Type") == "Episode":
             season = item.get("ParentIndexNumber") or 0

@@ -77,6 +77,48 @@ def test_get_movie_returns_media_result_with_string_id():
     assert result.guid == "abc-123"
 
 
+def test_get_movie_thumb_url_includes_api_key_when_primary_image_present():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "Id": "abc-123",
+                "Name": "Film",
+                "ProductionYear": 2020,
+                "RunTimeTicks": 50_000_000,
+                "MediaSources": [{"Path": "/media/movies/film.mkv"}],
+                "Type": "Movie",
+                "ImageTags": {"Primary": "sometag"},
+            },
+        )
+
+    client = _client_with_mock(handler)
+    result = client.get_movie("abc-123")
+
+    assert result.thumb_url == "http://jf.test/Items/abc-123/Images/Primary?api_key=key123"
+
+
+def test_get_movie_thumb_url_is_none_without_primary_image():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "Id": "abc-123",
+                "Name": "Film",
+                "ProductionYear": 2020,
+                "RunTimeTicks": 50_000_000,
+                "MediaSources": [{"Path": "/media/movies/film.mkv"}],
+                "Type": "Movie",
+                "ImageTags": {},
+            },
+        )
+
+    client = _client_with_mock(handler)
+    result = client.get_movie("abc-123")
+
+    assert result.thumb_url is None
+
+
 def test_get_movie_not_found_raises():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, json={})
