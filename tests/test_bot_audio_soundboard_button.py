@@ -7,8 +7,10 @@ import discord
 from app.bot import soundboard as sb
 from app.bot.cogs.gif import (
     AudioClipResultView,
+    _SoundboardNameModal,
     _SoundboardReplacePickerView,
     _filter_replace_candidates,
+    _soundboard_default_name,
     _soundboard_eligible,
 )
 
@@ -45,6 +47,21 @@ def test_filter_replace_candidates_any_returns_everything():
     assert result == sounds
 
 
+def test_soundboard_default_name_prefers_subtitle_text():
+    assert _soundboard_default_name("The Matrix", "I know kung fu") == "I know kung fu"
+
+
+def test_soundboard_default_name_falls_back_to_title_when_no_subtitle_text():
+    assert _soundboard_default_name("The Matrix", None) == "The Matrix"
+
+
+def test_soundboard_default_name_truncates_to_32_chars():
+    long_text = "This is a very long subtitle line that exceeds Discord's limit"
+    result = _soundboard_default_name("The Matrix", long_text)
+    assert result == long_text[:32]
+    assert len(result) == 32
+
+
 def test_filter_replace_candidates_none_returns_empty():
     class _S:
         def __init__(self, user_id):
@@ -64,7 +81,7 @@ class _FakeWorker:
         self.subtitles = AsyncMock(return_value=[])
 
 
-def _make_view(*, duration=4.0, format="mp3", scope=None) -> AudioClipResultView:
+def _make_view(*, duration=4.0, format="mp3", scope=None, subtitle_text=None) -> AudioClipResultView:
     return AudioClipResultView(
         _FakeWorker(),
         rating_key=1,
@@ -75,6 +92,7 @@ def _make_view(*, duration=4.0, format="mp3", scope=None) -> AudioClipResultView
         clip_duration=duration,
         format=format,
         soundboard_replace_scope=(lambda: scope) if scope is not None else None,
+        subtitle_text=subtitle_text,
     )
 
 
@@ -173,7 +191,23 @@ def test_add_to_soundboard_blocks_when_content_too_large():
     assert "too large" in msg
 
 
-def test_add_to_soundboard_uploads_when_board_not_full(monkeypatch):
+def test_add_to_soundboard_opens_name_modal_when_board_not_full(monkeypatch):
+    async def run():
+        view = _make_view(subtitle_text="I know kung fu")
+        guild = _guild(create_expressions=True, sound_count=0)
+        interaction = _fake_interaction(guild)
+        await view.add_to_soundboard.callback(interaction)
+        return interaction
+
+    interaction = asyncio.run(run())
+    interaction.response.send_message.assert_not_awaited()
+    interaction.response.send_modal.assert_awaited_once()
+    (modal,), _ = interaction.response.send_modal.await_args
+    assert isinstance(modal, _SoundboardNameModal)
+    assert modal.name_input.default == "I know kung fu"
+
+
+def test_soundboard_name_modal_confirm_uploads_with_submitted_name(monkeypatch):
     upload_mock = AsyncMock()
     monkeypatch.setattr(sb, "upload", upload_mock)
 
@@ -182,14 +216,25 @@ def test_add_to_soundboard_uploads_when_board_not_full(monkeypatch):
         guild = _guild(create_expressions=True, sound_count=0)
         interaction = _fake_interaction(guild)
         await view.add_to_soundboard.callback(interaction)
-        return interaction
+        (modal,), _ = interaction.response.send_modal.await_args
 
-    interaction = asyncio.run(run())
+        # Simulates the user editing the pre-filled field and submitting —
+        # discord.py itself populates `._value` from the real modal-submit
+        # payload the same way (TextInput._refresh_state); `.default`'s
+        # setter only updates the component's rendered default, not the
+        # live submitted value, so there's no public API to fake this with.
+        modal.name_input._value = "Custom Name"
+        submit_interaction = AsyncMock()
+        await modal.on_submit(submit_interaction)
+        return submit_interaction
+
+    submit_interaction = asyncio.run(run())
     upload_mock.assert_awaited_once()
     _, kwargs = upload_mock.await_args
+    assert kwargs["name"] == "Custom Name"
     assert kwargs["sound"] == b"audio-bytes"
-    interaction.followup.send.assert_awaited_once()
-    (msg,), _ = interaction.followup.send.await_args
+    submit_interaction.followup.send.assert_awaited_once()
+    (msg,), _ = submit_interaction.followup.send.await_args
     assert "Added" in msg
 
 
@@ -202,8 +247,8 @@ def test_add_to_soundboard_full_board_none_scope_is_plain_error(monkeypatch):
         return interaction
 
     interaction = asyncio.run(run())
-    interaction.followup.send.assert_awaited_once()
-    (msg,), kwargs = interaction.followup.send.await_args
+    interaction.response.send_message.assert_awaited_once()
+    (msg,), kwargs = interaction.response.send_message.await_args
     assert msg == "This server's Soundboard is full."
     assert "view" not in kwargs
 
@@ -249,7 +294,26 @@ def test_add_to_soundboard_full_board_no_eligible_candidates_is_plain_error(monk
     assert "view" not in kwargs
 
 
-def test_replace_picker_delete_then_upload_failure_reports_data_loss_risk(monkeypatch):
+def test_replace_picker_opens_name_modal_after_guards_pass(monkeypatch):
+    sound = SimpleNamespace(id=1, name="old-sound", user=SimpleNamespace(id=999), guild=None)
+    monkeypatch.setattr(sb, "can_replace", lambda guild, sound, bot_user_id: True)
+
+    async def run():
+        view = _make_view(subtitle_text="I know kung fu")
+        picker = _SoundboardReplacePickerView(view, [sound], bot_user_id=999)
+        interaction = AsyncMock()
+        interaction.data = {"values": ["1"]}
+        await picker._on_pick(interaction)
+        return interaction
+
+    interaction = asyncio.run(run())
+    interaction.response.send_modal.assert_awaited_once()
+    (modal,), _ = interaction.response.send_modal.await_args
+    assert isinstance(modal, _SoundboardNameModal)
+    assert modal.name_input.default == "I know kung fu"
+
+
+def test_replace_picker_name_modal_confirm_reports_delete_then_upload_failure(monkeypatch):
     sound = SimpleNamespace(id=1, name="old-sound", user=SimpleNamespace(id=999), guild=None)
 
     async def failing_replace(*args, **kwargs):
@@ -264,11 +328,15 @@ def test_replace_picker_delete_then_upload_failure_reports_data_loss_risk(monkey
         interaction = AsyncMock()
         interaction.data = {"values": ["1"]}
         await picker._on_pick(interaction)
-        return interaction
+        (modal,), _ = interaction.response.send_modal.await_args
 
-    interaction = asyncio.run(run())
-    interaction.followup.send.assert_awaited_once()
-    (msg,), _ = interaction.followup.send.await_args
+        submit_interaction = AsyncMock()
+        await modal.on_submit(submit_interaction)
+        return submit_interaction
+
+    submit_interaction = asyncio.run(run())
+    submit_interaction.followup.send.assert_awaited_once()
+    (msg,), _ = submit_interaction.followup.send.await_args
     assert "may now be missing" in msg
     assert "old-sound" in msg
 
@@ -373,7 +441,7 @@ def test_replace_picker_rejects_when_parent_content_became_too_large(monkeypatch
     assert kwargs["ephemeral"] is True
 
 
-def test_replace_picker_success_sends_confirmation(monkeypatch):
+def test_replace_picker_name_modal_confirm_replaces_with_submitted_name(monkeypatch):
     sound = SimpleNamespace(id=1, name="old-sound", user=SimpleNamespace(id=999), guild=None)
     replace_mock = AsyncMock()
     monkeypatch.setattr(sb, "replace", replace_mock)
@@ -385,10 +453,17 @@ def test_replace_picker_success_sends_confirmation(monkeypatch):
         interaction = AsyncMock()
         interaction.data = {"values": ["1"]}
         await picker._on_pick(interaction)
-        return interaction
+        (modal,), _ = interaction.response.send_modal.await_args
 
-    interaction = asyncio.run(run())
+        modal.name_input._value = "New Sound Name"
+        submit_interaction = AsyncMock()
+        await modal.on_submit(submit_interaction)
+        return submit_interaction
+
+    submit_interaction = asyncio.run(run())
     replace_mock.assert_awaited_once()
-    interaction.followup.send.assert_awaited_once()
-    (msg,), _ = interaction.followup.send.await_args
+    _, kwargs = replace_mock.await_args
+    assert kwargs["name"] == "New Sound Name"
+    submit_interaction.followup.send.assert_awaited_once()
+    (msg,), _ = submit_interaction.followup.send.await_args
     assert "Replaced" in msg

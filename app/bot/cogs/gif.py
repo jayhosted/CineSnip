@@ -329,6 +329,17 @@ _SOUNDBOARD_DISABLED_DURATION_NOTE = (
     "end_timecode to trim it, then retry."
 )
 
+_SOUNDBOARD_NAME_MAX = 32
+
+
+def _soundboard_default_name(title: str, subtitle_text: str | None) -> str:
+    """Pre-fills the name-confirmation modal (issue #10 follow-up): the
+    current subtitle line reads better as a Soundboard entry than every
+    clip from the same title sharing one name, but a bare-timecode render
+    has no line to draw from, so title is the fallback (matching the name
+    always used before this modal existed)."""
+    return (subtitle_text or title)[:_SOUNDBOARD_NAME_MAX]
+
 
 def _filter_replace_candidates(sounds, scope: str, bot_user_id: int):
     """Narrows a full board's sounds to what soundboard_replace_scope (issue
@@ -1083,6 +1094,7 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
         clip_duration: float,
         format: str | None = None,
         soundboard_replace_scope: Callable[[], str] | None = None,
+        subtitle_text: str | None = None,
     ) -> None:
         # 1800s (30 min), matching ClipEditView — an editing session takes
         # longer than the one-shot 300s a plain post-only view needs.
@@ -1095,6 +1107,11 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
         self._clip_start = clip_start
         self._clip_duration = clip_duration
         self._format = format
+        # Same subtitle line the filename is derived from (issue #10
+        # follow-up) — kept separately since the modal wants the raw,
+        # readable line text, not _audio_filename's dash-slugified form.
+        # Updated on re-render in _apply_render_result, same as _filename.
+        self._subtitle_text = subtitle_text
         # A narrow closure (CineSnipBot.soundboard_replace_scope, issue #10
         # review finding), not a handle to the whole SettingsHolder/Settings
         # tree — this view never gets a path to discord_token/plex_token/
@@ -1178,7 +1195,8 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
         # dialogue doesn't just collapse to the generic "clip.<ext>". Falls
         # back to generic if entries aren't cached yet or none overlap.
         window = _entries_in_window(self._all_entries or [], self._clip_start, self._clip_end)
-        self._filename = _audio_filename(render_result.format, window[0].text if window else None)
+        self._subtitle_text = window[0].text if window else None
+        self._filename = _audio_filename(render_result.format, self._subtitle_text)
         self._update_soundboard_button()
         await self._refresh_open_category()
 
@@ -1254,13 +1272,16 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
             )
             return
 
-        await interaction.response.defer(ephemeral=True)
-
         if sb.is_full(guild):
             scope = self._soundboard_replace_scope()
             if scope == "none":
-                await interaction.followup.send("This server's Soundboard is full.", ephemeral=True)
+                await interaction.response.send_message("This server's Soundboard is full.", ephemeral=True)
                 return
+            # is_full/list_sounds don't lead to a modal either way (a plain
+            # error or the picker view both), so deferring here — same as
+            # before this change — is safe; only the fresh-upload path below
+            # needs to keep the interaction unresponded-to for send_modal.
+            await interaction.response.defer(ephemeral=True)
             all_sounds = await sb.list_sounds(guild)
             candidates = _filter_replace_candidates(all_sounds, scope=scope, bot_user_id=bot_user_id)
             if not candidates:
@@ -1276,20 +1297,34 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
             )
             return
 
-        try:
-            await sb.upload(guild, name=self._title[:32], sound=self._content)
-        except discord.Forbidden:
-            await interaction.followup.send(
-                "CineSnip doesn't have the Create Expressions permission on this server. "
-                "Ask the bot's host to update its permissions.",
-                ephemeral=True,
-            )
-            return
-        except discord.HTTPException as exc:
-            await interaction.followup.send(f"Couldn't add that to the Soundboard: {exc}", ephemeral=True)
-            return
+        async def _confirm_upload(modal_interaction: discord.Interaction, name: str) -> None:
+            await modal_interaction.response.defer(ephemeral=True)
+            try:
+                await sb.upload(guild, name=name, sound=self._content)
+            except discord.Forbidden:
+                await modal_interaction.followup.send(
+                    "CineSnip doesn't have the Create Expressions permission on this server. "
+                    "Ask the bot's host to update its permissions.",
+                    ephemeral=True,
+                )
+                return
+            except discord.HTTPException as exc:
+                await modal_interaction.followup.send(
+                    f"Couldn't add that to the Soundboard: {exc}", ephemeral=True
+                )
+                return
+            await modal_interaction.followup.send("Added to the Soundboard!", ephemeral=True)
 
-        await interaction.followup.send("Added to the Soundboard!", ephemeral=True)
+        # A modal must be the interaction's FIRST response — no defer/
+        # send_message before this point in this branch — and doubles as
+        # the confirm step: nothing is uploaded until the user submits it.
+        await interaction.response.send_modal(
+            _SoundboardNameModal(
+                title="Add to Soundboard",
+                default_name=_soundboard_default_name(self._title, self._subtitle_text),
+                on_confirm=_confirm_upload,
+            )
+        )
 
     def _update_soundboard_button(self) -> None:
         self.add_to_soundboard.disabled = not _soundboard_eligible(self._clip_duration, self._format)
@@ -1357,27 +1392,68 @@ class _SoundboardReplacePickerView(discord.ui.View):
             )
             return
 
-        await interaction.response.defer(ephemeral=True)
-        # soundboard.replace() deletes the old sound, then uploads the new
-        # one (issue #10 code review flagged this: if the delete succeeds
-        # but the upload then fails, the guild is left with NEITHER sound —
-        # a real data-loss-shaped failure, not just "the replace didn't
-        # happen"). There's no way to tell from here which of the two steps
-        # actually failed, so the message hedges rather than asserting the
-        # delete definitely went through — but it must name this specific
-        # risk, not just say "couldn't replace that sound" the way an
-        # ordinary failure would.
-        try:
-            await sb.replace(sound, name=self._parent._title[:32], new_sound=self._parent._content)
-        except discord.HTTPException as exc:
-            await interaction.followup.send(
-                f"Couldn't replace \"{sound.name}\" on the Soundboard: {exc}. If the old sound "
-                "was already removed before this failed, the Soundboard may now be missing it "
-                "entirely — check the server's Soundboard and re-add it if needed.",
-                ephemeral=True,
+        async def _confirm_replace(modal_interaction: discord.Interaction, name: str) -> None:
+            await modal_interaction.response.defer(ephemeral=True)
+            # soundboard.replace() deletes the old sound, then uploads the
+            # new one (issue #10 code review flagged this: if the delete
+            # succeeds but the upload then fails, the guild is left with
+            # NEITHER sound — a real data-loss-shaped failure, not just
+            # "the replace didn't happen"). There's no way to tell from here
+            # which of the two steps actually failed, so the message hedges
+            # rather than asserting the delete definitely went through — but
+            # it must name this specific risk, not just say "couldn't
+            # replace that sound" the way an ordinary failure would.
+            try:
+                await sb.replace(sound, name=name, new_sound=self._parent._content)
+            except discord.HTTPException as exc:
+                await modal_interaction.followup.send(
+                    f"Couldn't replace \"{sound.name}\" on the Soundboard: {exc}. If the old sound "
+                    "was already removed before this failed, the Soundboard may now be missing it "
+                    "entirely — check the server's Soundboard and re-add it if needed.",
+                    ephemeral=True,
+                )
+                return
+            await modal_interaction.followup.send("Replaced on the Soundboard!", ephemeral=True)
+
+        # Modal must be this interaction's first response (doubles as the
+        # confirm step, same as the fresh-upload path in add_to_soundboard)
+        # — no defer/send_message before this point once the guards above
+        # have passed.
+        await interaction.response.send_modal(
+            _SoundboardNameModal(
+                title=f'Replace "{sound.name}"'[:45],
+                default_name=_soundboard_default_name(
+                    self._parent._title, self._parent._subtitle_text
+                ),
+                on_confirm=_confirm_replace,
             )
-            return
-        await interaction.followup.send("Replaced on the Soundboard!", ephemeral=True)
+        )
+
+
+class _SoundboardNameModal(discord.ui.Modal):
+    """Shared confirm+name step for both add_to_soundboard's fresh-upload
+    path and _SoundboardReplacePickerView's replace path (issue #10 follow-
+    up) — submitting IS the confirmation, so this doesn't need a separate
+    Yes/No dialog on top of it. `on_confirm` is the caller's actual upload/
+    replace action, invoked with the modal's own submit interaction (which
+    must be responded to independently of the interaction that opened this
+    modal) and the user's final chosen name."""
+
+    name_input = discord.ui.TextInput(label="Sound name", min_length=2, max_length=_SOUNDBOARD_NAME_MAX)
+
+    def __init__(
+        self,
+        *,
+        title: str,
+        default_name: str,
+        on_confirm: Callable[[discord.Interaction, str], Awaitable[None]],
+    ) -> None:
+        super().__init__(title=title)
+        self.name_input.default = default_name
+        self._on_confirm = on_confirm
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self._on_confirm(interaction, self.name_input.value.strip())
 
 
 class _CustomDurationModal(discord.ui.Modal, title="Custom duration"):
@@ -2504,6 +2580,7 @@ class GifCog(commands.Cog):
                 render_result.duration,
                 format=format,
                 soundboard_replace_scope=getattr(self.bot, "soundboard_replace_scope", None),
+                subtitle_text=subtitle_text,
             )
         else:
             result_view = ClipEditView(
