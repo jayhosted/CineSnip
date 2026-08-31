@@ -410,7 +410,7 @@ def test_search_quote_extend_skip_does_not_consume_cap_budget(tmp_path, monkeypa
     monkeypatch.setattr(library_sync_module, "get_subtitles", _fake_get_subtitles)
 
     # First item in enumeration order has no path mapping covering its
-    # plex_path (mount_root's mapping only covers "D:\Movies") — a SKIP.
+    # source_path (mount_root's mapping only covers "D:\Movies") — a SKIP.
     # Second item does have a matching mapping and an on-disk file — a real,
     # extractable title. With cap=1, the SKIP must not use up the one slot:
     # the extractable title should still be processed in this same call.

@@ -13,9 +13,9 @@ def test_resolves_windows_style_path_on_first_drive():
             path_prefix="E:\\Media\\Video\\Movies", container_path="/media/movies-e"
         ),
     ]
-    plex_path = "D:\\Movies\\1917 (2019)\\1917.mkv"
+    source_path = "D:\\Movies\\1917 (2019)\\1917.mkv"
 
-    result = resolve_container_path(plex_path, mappings)
+    result = resolve_container_path(source_path, mappings)
 
     assert result == "/media/movies-d/1917 (2019)/1917.mkv"
 
@@ -29,9 +29,9 @@ def test_resolves_windows_style_path_on_second_drive():
             path_prefix="E:\\Media\\Video\\Movies", container_path="/media/movies-e"
         ),
     ]
-    plex_path = "E:\\Media\\Video\\Movies\\12 Angry Men (1957)\\12 Angry Men.mkv"
+    source_path = "E:\\Media\\Video\\Movies\\12 Angry Men (1957)\\12 Angry Men.mkv"
 
-    result = resolve_container_path(plex_path, mappings)
+    result = resolve_container_path(source_path, mappings)
 
     assert result == "/media/movies-e/12 Angry Men (1957)/12 Angry Men.mkv"
 
@@ -43,9 +43,9 @@ def test_longest_prefix_wins_when_overlapping():
             path_prefix="D:\\Media\\Movies", container_path="/media/movies-specific"
         ),
     ]
-    plex_path = "D:\\Media\\Movies\\Film.mkv"
+    source_path = "D:\\Media\\Movies\\Film.mkv"
 
-    result = resolve_container_path(plex_path, mappings)
+    result = resolve_container_path(source_path, mappings)
 
     assert result == "/media/movies-specific/Film.mkv"
 
@@ -61,14 +61,14 @@ def test_strips_windows_extended_length_path_prefix():
             path_prefix="D:\\Movies", container_path="/media/movies-d"
         ),
     ]
-    plex_path = (
+    source_path = (
         "\\\\?\\D:\\Movies\\Borat - Cultural Learnings of America "
         "for Make Benefit Glorious Nation of Kazakhstan (2006)\\Borat Cultural "
         "Learnings of America for Make Benefit Glorious Nation of Kazakhstan "
         "(2006) {imdb-tt0443453} [Bluray-1080p Proper][DTS 5.1][x264]-NERDHD.mkv"
     )
 
-    result = resolve_container_path(plex_path, mappings)
+    result = resolve_container_path(source_path, mappings)
 
     assert result.startswith("/media/movies-d/Borat")
     assert result.endswith(".mkv")
@@ -82,9 +82,9 @@ def test_strips_windows_extended_length_unc_prefix():
     mappings = [
         PathMapping(path_prefix="\\\\nas\\Movies", container_path="/media/movies"),
     ]
-    plex_path = "\\\\?\\UNC\\nas\\Movies\\Film (2020)\\Film.mkv"
+    source_path = "\\\\?\\UNC\\nas\\Movies\\Film (2020)\\Film.mkv"
 
-    result = resolve_container_path(plex_path, mappings)
+    result = resolve_container_path(source_path, mappings)
 
     assert result == "/media/movies/Film (2020)/Film.mkv"
 

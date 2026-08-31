@@ -16,7 +16,7 @@ from app.worker.media_client import (
 
 class PlexClient:
     # A single /snip movie invocation calls get_movie() up to three times for
-    # the same rating_key (/resolve, /resolve-quote, /render), each a real
+    # the same media_id (/resolve, /resolve-quote, /render), each a real
     # network round-trip to Plex. This TTL only needs to cover the handful
     # of seconds between those calls within one command — long enough to
     # dedupe that, short enough that a retitled/deleted item doesn't linger.

@@ -260,10 +260,10 @@ def test_render_sends_start_end_and_subtitle_overrides_when_given():
 
 
 def test_render_coerces_int_media_id_to_str_in_json_body():
-    """Bare-timecode calls (both /snip movie and /snip tv) still pass an int
-    rating_key through gif.py's int(film) parsing. WorkerClient.render() must
-    coerce it to str before building the request body, since RenderRequest.media_id
-    is typed str and pydantic rejects a raw JSON number outright."""
+    """Defensive coercion: gif.py now passes media_id as str throughout, but
+    WorkerClient.render() must still coerce a stray int to str before building
+    the request body, since RenderRequest.media_id is typed str and pydantic
+    rejects a raw JSON number outright."""
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
