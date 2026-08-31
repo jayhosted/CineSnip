@@ -305,6 +305,20 @@ def load_settings(
             f"Copy .env.example to .env and fill them in — see README.md."
         )
 
+    # Library auto-sync depends on Plex's per-section updatedAt for change
+    # detection; Jellyfin has no analog, so JellyfinClient raises
+    # NotImplementedError there (issue #25). Caught here, at config-load
+    # time, rather than left to surface deep inside the background sync
+    # loop — where its broad "media server unreachable" handler would
+    # swallow it and silently no-op forever.
+    if (raw_config.get("library_sync") or {}).get("enabled") and media_server == "jellyfin":
+        raise SettingsError(
+            "library_sync.enabled is not supported with media_server: jellyfin — "
+            "automatic library sync is Plex-only (issue #25). Set "
+            "library_sync.enabled: false in config.yaml, or switch to "
+            "media_server: plex."
+        )
+
     dev_guild_id: int | None = None
     if dev_guild_id_raw:
         try:

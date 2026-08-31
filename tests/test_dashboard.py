@@ -32,7 +32,7 @@ def test_coverage_stats_aggregates_across_libraries(tmp_path):
     quote_index.set_library_item_count(settings.quote_index_db_path, "Movies", 5)
     quote_index.set_library_item_count(settings.quote_index_db_path, "3D", 2)
 
-    holder = SettingsHolder(settings=settings, plex_client=None)
+    holder = SettingsHolder(settings=settings, media_client=None)
 
     stats = _coverage_stats(holder)
 
@@ -51,7 +51,7 @@ def test_coverage_stats_excludes_no_subtitle_source_rows_from_buckets(tmp_path):
     _upsert(settings.quote_index_db_path, "g2", "2", "F2", "Movies", "none")
     quote_index.upsert_no_subtitle_title(settings.quote_index_db_path, "g2", "2", "F2", "Movies")
 
-    holder = SettingsHolder(settings=settings, plex_client=None)
+    holder = SettingsHolder(settings=settings, media_client=None)
 
     stats = _coverage_stats(holder)
 
@@ -62,7 +62,7 @@ def test_coverage_stats_excludes_no_subtitle_source_rows_from_buckets(tmp_path):
 
 def test_coverage_stats_handles_no_persisted_count_yet(tmp_path):
     settings = _settings(tmp_path, ["Movies"])
-    holder = SettingsHolder(settings=settings, plex_client=None)
+    holder = SettingsHolder(settings=settings, media_client=None)
 
     stats = _coverage_stats(holder)
 
@@ -72,7 +72,7 @@ def test_coverage_stats_handles_no_persisted_count_yet(tmp_path):
 
 def test_coverage_stats_handles_no_libraries_configured(tmp_path):
     settings = _settings(tmp_path, [])
-    holder = SettingsHolder(settings=settings, plex_client=None)
+    holder = SettingsHolder(settings=settings, media_client=None)
 
     stats = _coverage_stats(holder)
 

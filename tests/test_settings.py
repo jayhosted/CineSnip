@@ -179,3 +179,57 @@ def test_media_server_jellyfin_succeeds_with_jellyfin_env(tmp_path):
     assert settings.media_server == "jellyfin"
     assert settings.jellyfin_url == "http://jf:8096"
     assert settings.jellyfin_api_key == "key"
+
+
+def test_jellyfin_plus_library_sync_enabled_is_rejected_at_load(tmp_path):
+    # library_sync is Plex-only (issue #25): JellyfinClient raises
+    # NotImplementedError for it, and the sync loop's broad
+    # "server unreachable" handler would swallow that into a silent no-op —
+    # so the combination has to fail here instead, at config-load time.
+    env = tmp_path / ".env"
+    env.write_text(
+        "DISCORD_TOKEN=t\nJELLYFIN_URL=http://jf:8096\nJELLYFIN_API_KEY=key\n"
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "media_server: jellyfin\nlibraries: []\nlibrary_sync:\n  enabled: true\n"
+    )
+
+    with pytest.raises(SettingsError, match="library_sync"):
+        load_settings(env_path=env, config_path=config)
+
+
+def test_jellyfin_with_library_sync_disabled_still_loads(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text(
+        "DISCORD_TOKEN=t\nJELLYFIN_URL=http://jf:8096\nJELLYFIN_API_KEY=key\n"
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "media_server: jellyfin\nlibraries: []\nlibrary_sync:\n  enabled: false\n"
+    )
+
+    assert load_settings(env_path=env, config_path=config).library_sync.enabled is False
+
+
+def test_plex_with_library_sync_enabled_still_loads(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("DISCORD_TOKEN=t\nPLEX_URL=http://x\nPLEX_TOKEN=y\n")
+    config = tmp_path / "config.yaml"
+    config.write_text("libraries: []\nlibrary_sync:\n  enabled: true\n")
+
+    assert load_settings(env_path=env, config_path=config).library_sync.enabled is True
+
+
+def test_media_server_round_trips_through_write_config_yaml(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text(
+        "DISCORD_TOKEN=t\nJELLYFIN_URL=http://jf:8096\nJELLYFIN_API_KEY=key\n"
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text("media_server: jellyfin\nlibraries: []\n")
+
+    settings = load_settings(env_path=env, config_path=config)
+    write_config_yaml(settings, config_path=config)
+
+    assert load_settings(env_path=env, config_path=config).media_server == "jellyfin"

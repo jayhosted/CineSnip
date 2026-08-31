@@ -107,9 +107,13 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates, settings
         # previous manual click), run_library_sync_once no-ops immediately
         # rather than racing it, so no separate check is needed here.
         settings = settings_holder.settings
-        plex = settings_holder.plex_client
-        if plex is not None:
-            asyncio.create_task(run_library_sync_once(settings, plex))
+        media_client = settings_holder.media_client
+        # library_sync is Plex-only (issue #25) — load_settings() already
+        # refuses the jellyfin + library_sync.enabled combination outright,
+        # so this guard is belt-and-braces for a Settings built some other
+        # way rather than a state a configured install can reach.
+        if media_client is not None and settings.media_server == "plex":
+            asyncio.create_task(run_library_sync_once(settings, media_client))
         progress, log_lines = await run_in_threadpool(_sync_panel_state, settings_holder)
         return HTMLResponse(_render_sync_panel(templates, request, settings_holder, progress, log_lines))
 
