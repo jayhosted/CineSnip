@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 
 from fastapi import FastAPI, Request
@@ -11,6 +12,8 @@ from fastapi.templating import Jinja2Templates
 from app.runtime import SettingsHolder
 from app.worker import quote_index, search_index
 from app.worker.library_sync import run_library_sync_once
+
+logger = logging.getLogger(__name__)
 
 # How often the SSE stream re-checks quote_index.db for a change. Progress
 # is persisted there (not held in memory), so this is a poll-and-diff loop,
@@ -114,6 +117,13 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates, settings
         # way rather than a state a configured install can reach.
         if media_client is not None and settings.media_server == "plex":
             asyncio.create_task(run_library_sync_once(settings, media_client))
+        elif settings.media_server != "plex" and settings.library_sync.enabled:
+            logger.error(
+                "Manual sync run requested but media_server is '%s' — "
+                "library auto-sync is only supported with Plex (issue #25). "
+                "Doing nothing.",
+                settings.media_server,
+            )
         progress, log_lines = await run_in_threadpool(_sync_panel_state, settings_holder)
         return HTMLResponse(_render_sync_panel(templates, request, settings_holder, progress, log_lines))
 

@@ -159,7 +159,9 @@ class JellyfinClient:
             f"/Shows/{show_media_id}/Episodes", params={"Fields": "MediaSources"}
         )
         if response.status_code == 404:
-            raise EpisodeNotFoundError(show_media_id, season, episode)
+            # The show itself doesn't exist — distinct from "this show
+            # exists but has no SxxExx" (the fallthrough below).
+            raise ShowNotFoundError(show_media_id)
         for item in response.json().get("Items", []):
             if item.get("ParentIndexNumber") == season and item.get("IndexNumber") == episode:
                 return self._to_result(item)
@@ -176,7 +178,7 @@ class JellyfinClient:
     def _to_result(self, item: dict, library_name: str | None = None) -> MovieResult:
         media_sources = item.get("MediaSources") or [{}]
         source_path = media_sources[0].get("Path", "")
-        thumb_url = None  # populated in Task 6 once wired behind api.py's thumb_url usage
+        thumb_url = None  # deferred — auth story not yet decided, issue #27
 
         if item.get("Type") == "Episode":
             title = (

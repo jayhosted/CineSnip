@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.templating import Jinja2Templates
 from fastapi.testclient import TestClient
 
+from app.bot.worker_client import RenderResult, WorkerClient
 from app.runtime import SettingsHolder
 from app.settings import Settings
 from app.web.generate import register_generate_routes
@@ -34,3 +35,26 @@ def test_select_endpoint_accepts_string_media_id(client):
     assert response.status_code == 200
     assert 'name="media_id"' in response.text
     assert 'value="abc-123"' in response.text
+
+
+def test_render_endpoint_passes_string_media_id_through_to_worker(client, monkeypatch):
+    # /generate/render's form["media_id"] read is the other half of the
+    # opaque-media_id contract /generate/select covers above — this proves
+    # a non-numeric id round-trips through the POST body into
+    # WorkerClient.render() unmodified, not coerced/rejected the way an
+    # int(...) cast would have.
+    captured = {}
+
+    async def fake_render(self, media_id, timecode, **kwargs):
+        captured["media_id"] = media_id
+        return RenderResult(content=b"gif-bytes", format="gif", style="classic", start=0.0, duration=4.0)
+
+    monkeypatch.setattr(WorkerClient, "render", fake_render)
+
+    response = client.post(
+        "/generate/render",
+        data={"media_id": "abc-123", "timecode": "0:00:01"},
+    )
+
+    assert response.status_code == 200
+    assert captured["media_id"] == "abc-123"

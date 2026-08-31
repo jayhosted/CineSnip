@@ -3,7 +3,7 @@ import pytest
 
 from app.settings import LibraryConfig, Settings
 from app.worker.jellyfin_client import JellyfinClient
-from app.worker.media_client import MovieNotFoundError
+from app.worker.media_client import MovieNotFoundError, ShowNotFoundError
 
 
 def _settings(libraries=None) -> Settings:
@@ -217,6 +217,19 @@ def test_episode_library_name_is_the_configured_library_not_the_series():
 
     assert episode.library_name == "TV Shows"
     assert "Some Show" in episode.title
+
+
+def test_get_episode_404_on_the_show_itself_raises_show_not_found():
+    # A 404 here means the *show* doesn't exist — distinct from the show
+    # existing but not having that season/episode, which is a plain
+    # fallthrough after a 200 with no matching item (not tested here).
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={})
+
+    client = _client_with_mock(handler)
+
+    with pytest.raises(ShowNotFoundError):
+        client.get_episode("missing-show", 1, 1)
 
 
 def test_search_shows_scopes_to_configured_show_folders():

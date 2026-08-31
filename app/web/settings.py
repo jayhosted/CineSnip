@@ -197,6 +197,21 @@ def register_settings_routes(
                 error=f"Couldn't save — check your values ({exc}).",
             )
 
+        # apply() writes config.yaml unconditionally before load_settings()
+        # re-validates it — load_settings() DOES reject this combination,
+        # but only after the bad value is already on disk, which is one
+        # restart too late (issue #24: library_sync has no Jellyfin support,
+        # #25). Reject it here, before the write, not after.
+        if library_sync.enabled and settings.media_server == "jellyfin":
+            cached_count = len(search_index.list_titles(settings.quote_index_db_path))
+            return render_tab(
+                request, "cache", "panel_settings_cache.html", cached_count=cached_count,
+                error=(
+                    "library_sync.enabled is not supported with media_server: "
+                    "jellyfin — see issue #25."
+                ),
+            )
+
         updated = settings.model_copy(deep=True)
         updated.library_sync = library_sync
         await apply(updated)

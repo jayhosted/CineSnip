@@ -1,8 +1,9 @@
 """One-off/manual CLI: extract + cache subtitles (and warm the candidate
 cache) for every movie and TV episode across all configured libraries.
 Sequential, not concurrent — deliberately mirrors /search-episodes-quote's
-own reasoning (avoid hammering Plex/ffmpeg with many simultaneous
-extractions).
+own reasoning (avoid hammering the media server/ffmpeg with many
+simultaneous extractions). Works with either backend (config.yaml's
+media_server) — everything here is MediaClient-generic.
 
 All real per-title logic lives in app/worker/library_sync.py's
 sync_one_title() — this script is just enumeration + a progress-printing
@@ -42,18 +43,18 @@ import time
 
 from app.settings import load_settings
 from app.worker.library_sync import sync_one_title
-from app.worker.plex_client import MovieResult, PlexClient
+from app.worker.media_client import MovieResult, create_media_client
 
 settings = load_settings()
-plex = PlexClient(settings)
+media_client = create_media_client(settings)
 
 FORCE = "--force" in sys.argv
 
 
 async def main() -> None:
     items: list[MovieResult] = []
-    for library_name, section in plex.library_sections():
-        items.extend(plex.enumerate_section(section))
+    for library_name, section in media_client.library_sections():
+        items.extend(media_client.enumerate_section(section))
 
     total = len(items)
     print(f"Found {total} titles across all configured libraries. Starting…", flush=True)
