@@ -158,8 +158,16 @@ def register_settings_routes(
                 error="Audio language can't be blank.",
             )
 
+        soundboard_replace_scope = str(form.get("soundboard_replace_scope", "")).strip()
+        if soundboard_replace_scope not in ("cinesnip_only", "any", "none"):
+            return render_tab(
+                request, "audio", "panel_settings_audio.html",
+                error="Soundboard replace scope must be one of: cinesnip_only, any, none.",
+            )
+
         updated = settings.model_copy(deep=True)
         updated.render_defaults.audio_language = audio_language
+        updated.render_defaults.soundboard_replace_scope = soundboard_replace_scope
         await apply(updated)
         return render_tab(request, "audio", "panel_settings_audio.html", saved=True)
 
