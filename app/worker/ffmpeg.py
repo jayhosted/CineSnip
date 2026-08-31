@@ -563,7 +563,7 @@ class ClipRenderer:
         try:
             if fmt == "gif":
                 return await self._render_gif(
-                    input_path, start, duration, scratch_dir, fps, width, ass_path,
+                    input_path, start, duration, fps, width, ass_path,
                     three_d_prefix, is_hdr, crop_box,
                 )
             return await self._render_video(
@@ -669,7 +669,6 @@ class ClipRenderer:
         input_path: str,
         start: float,
         duration: float,
-        scratch_dir: Path,
         fps: int,
         width: int,
         ass_path: Path | None = None,
@@ -677,49 +676,32 @@ class ClipRenderer:
         is_hdr: bool = False,
         crop_box: tuple[int, int, int, int] | None = None,
     ) -> bytes:
-        scratch_dir.mkdir(parents=True, exist_ok=True)
-        palette_path = scratch_dir / f"palette-{uuid.uuid4().hex}.png"
+        # Still a two-pass palette algorithm (palettegen sees every frame
+        # before paletteuse runs), but as one ffmpeg process instead of two
+        # separate invocations each re-seeking/re-decoding/re-filtering the
+        # source from scratch — split[a][b] feeds the same filtered frame
+        # stream to both palettegen and paletteuse. Verified byte-identical
+        # against the old two-invocation output on real 1080p sources (with
+        # and without subtitle burn-in) while using ~30% less total CPU
+        # time (issue #17 benchmarking).
         scale_filter = self._scale_and_subtitle_filter(width, ass_path, three_d_prefix, is_hdr, crop_box)
 
-        try:
-            await self._run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    *build_seek_args(start, duration),
-                    "-i",
-                    input_path,
-                    "-vf",
-                    f"fps={fps},{scale_filter},palettegen",
-                    # image2 muxer needs this to write one still image
-                    # rather than expecting a %d sequence pattern.
-                    "-update",
-                    "1",
-                    str(palette_path),
-                ],
-                error_prefix="ffmpeg palette pass",
-            )
-
-            gif_bytes = await self._run(
-                [
-                    "ffmpeg",
-                    *build_seek_args(start, duration),
-                    "-i",
-                    input_path,
-                    "-i",
-                    str(palette_path),
-                    "-lavfi",
-                    f"fps={fps},{scale_filter}[x];[x][1:v]paletteuse",
-                    "-f",
-                    "gif",
-                    "pipe:1",
-                ],
-                error_prefix="ffmpeg encode pass",
-                capture_stdout=True,
-            )
-            return gif_bytes or b""
-        finally:
-            palette_path.unlink(missing_ok=True)
+        gif_bytes = await self._run(
+            [
+                "ffmpeg",
+                *build_seek_args(start, duration),
+                "-i",
+                input_path,
+                "-filter_complex",
+                f"fps={fps},{scale_filter},split[a][b];[a]palettegen[p];[b][p]paletteuse",
+                "-f",
+                "gif",
+                "pipe:1",
+            ],
+            error_prefix="ffmpeg gif encode",
+            capture_stdout=True,
+        )
+        return gif_bytes or b""
 
     async def _render_video(
         self,
