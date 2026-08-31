@@ -11,6 +11,10 @@ from app.worker.media_client import (
 )
 
 
+def _normalize_path(path: str) -> str:
+    return path.replace("\\", "/").lower()
+
+
 class JellyfinClient:
     def __init__(self, settings: Settings):
         self._base_url = settings.jellyfin_url
@@ -39,6 +43,34 @@ class JellyfinClient:
         ]
         self.movie_library_names = frozenset(f["Name"] for f in self._movie_folders)
         self.show_library_names = frozenset(f["Name"] for f in self._show_folders)
+        # Folder name -> its on-disk roots, used to attribute a single item
+        # fetched by ID (get_movie/get_episode/list_episodes) back to the
+        # configured library it lives under. Every other call path already
+        # knows its folder and passes the name in directly.
+        self._folder_locations = [
+            (f["Name"], list(f.get("Locations") or []))
+            for f in self._movie_folders + self._show_folders
+        ]
+
+    def _library_name_for_path(self, source_path: str) -> str:
+        """Longest-prefix match of an item's own file path against each
+        configured folder's Jellyfin `Locations`, in the same spirit as
+        path_mapper.resolve_container_path(). Returns "" when nothing
+        matches — an item outside every configured library, which the
+        movie_library_names/show_library_names filters in api.py then drop.
+        """
+        if not source_path:
+            return ""
+        normalized = _normalize_path(source_path)
+        best_name = ""
+        best_length = -1
+        for name, locations in self._folder_locations:
+            for location in locations:
+                prefix = _normalize_path(location).rstrip("/")
+                if normalized.startswith(prefix + "/") or normalized == prefix:
+                    if len(prefix) > best_length:
+                        best_name, best_length = name, len(prefix)
+        return best_name
 
     def library_sections(self) -> list[tuple[str, object]]:
         return [(f["Name"], f) for f in self._movie_folders + self._show_folders]
@@ -51,7 +83,10 @@ class JellyfinClient:
             "Recursive": "true",
         }
         response = self._http.get(f"/Users/{self._user_id}/Items", params=params)
-        return [self._to_result(item) for item in response.json().get("Items", [])]
+        return [
+            self._to_result(item, library_name=section["Name"])
+            for item in response.json().get("Items", [])
+        ]
 
     def current_section_updated_ats(self) -> dict[str, int]:
         # No Jellyfin analog to Plex's per-section updatedAt — library_sync
@@ -60,17 +95,36 @@ class JellyfinClient:
             "library_sync is not supported with media_server: jellyfin (issue #25)."
         )
 
+    def _search_folders(
+        self, folders: list[dict], item_type: str, query: str, limit: int
+    ) -> list[MovieResult]:
+        # Searched one configured folder at a time (ParentId) rather than
+        # once across the whole server: it scopes results to the libraries
+        # this install actually configured, and — the reason it matters —
+        # it's the only way to know which library each hit belongs to.
+        # A search response carries no MediaSources path to fall back on.
+        results: list[MovieResult] = []
+        for folder in folders:
+            if len(results) >= limit:
+                break
+            params = {
+                "searchTerm": query,
+                "IncludeItemTypes": item_type,
+                "Recursive": "true",
+                "ParentId": folder["ItemId"],
+            }
+            response = self._http.get("/Items", params=params)
+            for item in response.json().get("Items", []):
+                results.append(self._to_result(item, library_name=folder["Name"]))
+                if len(results) >= limit:
+                    break
+        return results[:limit]
+
     def search_movies(self, query: str, limit: int = 25) -> list[MovieResult]:
-        params = {"searchTerm": query, "IncludeItemTypes": "Movie", "Recursive": "true"}
-        response = self._http.get("/Items", params=params)
-        items = response.json().get("Items", [])[:limit]
-        return [self._to_result(item) for item in items]
+        return self._search_folders(self._movie_folders, "Movie", query, limit)
 
     def search_shows(self, query: str, limit: int = 25) -> list[MovieResult]:
-        params = {"searchTerm": query, "IncludeItemTypes": "Series", "Recursive": "true"}
-        response = self._http.get("/Items", params=params)
-        items = response.json().get("Items", [])[:limit]
-        return [self._to_result(item) for item in items]
+        return self._search_folders(self._show_folders, "Series", query, limit)
 
     def get_movie(self, media_id: str) -> MovieResult:
         response = self._http.get(f"/Items/{media_id}")
@@ -93,8 +147,7 @@ class JellyfinClient:
             raise ShowNotFoundError(show_media_id)
         return [self._to_result(item) for item in response.json().get("Items", [])]
 
-    @staticmethod
-    def _to_result(item: dict) -> MovieResult:
+    def _to_result(self, item: dict, library_name: str | None = None) -> MovieResult:
         media_sources = item.get("MediaSources") or [{}]
         source_path = media_sources[0].get("Path", "")
         thumb_url = None  # populated in Task 6 once wired behind api.py's thumb_url usage
@@ -118,5 +171,15 @@ class JellyfinClient:
             thumb_url=thumb_url,
             source_path=source_path,
             guid=item["Id"],
-            library_name=item.get("SeriesName") or "",
+            # The *configured library* this item lives in, never the series
+            # title: library_name is what settings.path_mappings_for() and
+            # api.py's movie/show library filters key off, exactly as
+            # PlexClient reports librarySectionTitle here. Callers that
+            # already know their folder pass it in; a single item fetched by
+            # ID is attributed from its own file path instead.
+            library_name=(
+                library_name
+                if library_name is not None
+                else self._library_name_for_path(source_path)
+            ),
         )
