@@ -398,7 +398,7 @@ def _random_quote_response(result) -> RandomQuoteResponse:
     pool_size/exhausted so the bot can track a reroll journey's history."""
     pick = result.pick
     return RandomQuoteResponse(
-        media_id=str(pick.rating_key),
+        media_id=pick.media_id,
         title=pick.title,
         library_name=pick.library_name,
         start=pick.match.start,
@@ -415,7 +415,7 @@ def _library_search_payload(matches: list[LibraryQuoteMatch], qm, truncated: boo
     return {
         "matches": [
             {
-                "media_id": str(m.rating_key),
+                "media_id": m.media_id,
                 "title": m.title,
                 "library_name": m.library_name,
                 "start": m.match.start,
@@ -905,7 +905,7 @@ def create_app(settings: Settings) -> FastAPI:
         cached_titles = [
             CachedTitle(
                 guid=movie.guid,
-                rating_key=movie.media_id,
+                media_id=movie.media_id,
                 title=movie.title,
                 library_name=movie.library_name,
             )
@@ -960,7 +960,7 @@ def create_app(settings: Settings) -> FastAPI:
             await _ensure_episode_cached(ep)
 
         cached_titles = [
-            CachedTitle(guid=ep.guid, rating_key=ep.media_id, title=ep.title, library_name=ep.library_name)
+            CachedTitle(guid=ep.guid, media_id=ep.media_id, title=ep.title, library_name=ep.library_name)
             for ep in episodes
         ]
         picked = pick_random_quote(
@@ -1171,7 +1171,7 @@ def create_app(settings: Settings) -> FastAPI:
         cached_titles = [
             CachedTitle(
                 guid=ep.guid,
-                rating_key=ep.media_id,
+                media_id=ep.media_id,
                 title=ep.title,
                 library_name=ep.library_name,
             )
@@ -1199,7 +1199,7 @@ def create_app(settings: Settings) -> FastAPI:
         return LibrarySearchResponse(
             matches=[
                 LibraryQuoteMatchOut(
-                    media_id=str(m.rating_key),
+                    media_id=m.media_id,
                     title=m.title,
                     library_name=m.library_name,
                     start=m.match.start,

@@ -3,7 +3,7 @@ from app.worker.subtitles import SubtitleEntry, SubtitleResult, SubtitleSource, 
 from scripts.migrate_to_fts5 import migrate_one_title
 
 
-def _seed_legacy_title(db_path, cache_dir, guid, rating_key, title, library_name, sidecar_path=None):
+def _seed_legacy_title(db_path, cache_dir, guid, media_id, title, library_name, sidecar_path=None):
     """Populate one legacy cached_titles row + its per-title JSON cache
     file, mirroring what get_subtitles()/library_sync used to write before
     the search_index migration."""
@@ -20,7 +20,7 @@ def _seed_legacy_title(db_path, cache_dir, guid, rating_key, title, library_name
         stream_index=None if sidecar_path else 0,
     )
     write_cached_subtitles(cache_dir, result, source_path=sidecar_path)
-    quote_index.upsert_cached_title(db_path, guid, rating_key, title, library_name, source.value)
+    quote_index.upsert_cached_title(db_path, guid, media_id, title, library_name, source.value)
 
 
 def test_migrate_one_title_sidecar_gets_real_fingerprint(tmp_path):
@@ -29,7 +29,7 @@ def test_migrate_one_title_sidecar_gets_real_fingerprint(tmp_path):
     sidecar = tmp_path / "movie.en.srt"
     sidecar.write_text("dummy")
 
-    _seed_legacy_title(db_path, cache_dir, "guid-1", 101, "Film One", "Movies", sidecar_path=sidecar)
+    _seed_legacy_title(db_path, cache_dir, "guid-1", "101", "Film One", "Movies", sidecar_path=sidecar)
     cached = quote_index.list_cached_titles(db_path)[0]
 
     outcome = migrate_one_title(db_path, cache_dir, cached)
@@ -46,7 +46,7 @@ def test_migrate_one_title_embedded_gets_no_fingerprint(tmp_path):
     db_path = tmp_path / "quote_index.db"
     cache_dir = tmp_path / "cache"
 
-    _seed_legacy_title(db_path, cache_dir, "guid-2", 102, "Film Two", "Movies", sidecar_path=None)
+    _seed_legacy_title(db_path, cache_dir, "guid-2", "102", "Film Two", "Movies", sidecar_path=None)
     cached = quote_index.list_cached_titles(db_path)[0]
 
     outcome = migrate_one_title(db_path, cache_dir, cached)
@@ -61,7 +61,7 @@ def test_migrate_one_title_missing_json_reports_failure(tmp_path):
     db_path = tmp_path / "quote_index.db"
     cache_dir = tmp_path / "cache"
     # cached_titles row exists but its JSON cache file was never written.
-    quote_index.upsert_cached_title(db_path, "guid-3", 103, "Film Three", "Movies", "sidecar")
+    quote_index.upsert_cached_title(db_path, "guid-3", "103", "Film Three", "Movies", "sidecar")
     cached = quote_index.list_cached_titles(db_path)[0]
 
     outcome = migrate_one_title(db_path, cache_dir, cached)
@@ -79,7 +79,7 @@ def test_resumability_second_pass_completes_interrupted_run(tmp_path):
         guid = f"guid-{i}"
         sidecar = tmp_path / f"movie-{i}.en.srt"
         sidecar.write_text("dummy")
-        _seed_legacy_title(db_path, cache_dir, guid, 100 + i, f"Film {i}", "Movies", sidecar_path=sidecar)
+        _seed_legacy_title(db_path, cache_dir, guid, str(100 + i), f"Film {i}", "Movies", sidecar_path=sidecar)
         titles.append(guid)
 
     all_cached = quote_index.list_cached_titles(db_path)
@@ -119,7 +119,7 @@ def test_force_reprocesses_already_migrated_titles(tmp_path):
     sidecar = tmp_path / "movie.en.srt"
     sidecar.write_text("dummy")
 
-    _seed_legacy_title(db_path, cache_dir, "guid-1", 101, "Film One", "Movies", sidecar_path=sidecar)
+    _seed_legacy_title(db_path, cache_dir, "guid-1", "101", "Film One", "Movies", sidecar_path=sidecar)
     cached = quote_index.list_cached_titles(db_path)[0]
 
     first = migrate_one_title(db_path, cache_dir, cached)

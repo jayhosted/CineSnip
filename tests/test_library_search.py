@@ -9,7 +9,7 @@ def _db_path(tmp_path):
     return tmp_path / "search_index.db"
 
 
-def _write_title(db_path, guid, rating_key, title, library_name, texts):
+def _write_title(db_path, guid, media_id, title, library_name, texts):
     entries = [
         SubtitleEntry(index=i + 1, start=float(i * 5), end=float(i * 5 + 2), text=text)
         for i, text in enumerate(texts)
@@ -17,7 +17,7 @@ def _write_title(db_path, guid, rating_key, title, library_name, texts):
     search_index.upsert_title(
         db_path,
         guid=guid,
-        rating_key=rating_key,
+        media_id=media_id,
         title=title,
         library_name=library_name,
         source="sidecar",
@@ -30,12 +30,12 @@ def _write_title(db_path, guid, rating_key, title, library_name, texts):
 
 def test_search_cached_library_returns_best_match_per_title(tmp_path):
     db_path = _db_path(tmp_path)
-    _write_title(db_path, "guid-1", 1, "Monty Python", "Movies", ["Nobody expects the Spanish Inquisition!"])
-    _write_title(db_path, "guid-2", 2, "Terminator", "Movies", ["I'll be back."])
+    _write_title(db_path, "guid-1", "1", "Monty Python", "Movies", ["Nobody expects the Spanish Inquisition!"])
+    _write_title(db_path, "guid-2", "2", "Terminator", "Movies", ["I'll be back."])
 
     cached_titles = [
-        CachedTitle(guid="guid-1", rating_key=1, title="Monty Python", library_name="Movies"),
-        CachedTitle(guid="guid-2", rating_key=2, title="Terminator", library_name="Movies"),
+        CachedTitle(guid="guid-1", media_id="1", title="Monty Python", library_name="Movies"),
+        CachedTitle(guid="guid-2", media_id="2", title="Terminator", library_name="Movies"),
     ]
 
     results = search_cached_library(
@@ -49,7 +49,7 @@ def test_search_cached_library_returns_best_match_per_title(tmp_path):
     )
 
     assert len(results) == 1
-    assert results[0].rating_key == 1
+    assert results[0].media_id == "1"
     assert results[0].title == "Monty Python"
 
 
@@ -61,14 +61,14 @@ def test_search_cached_library_sorts_by_score_descending(tmp_path):
     # candidate is now correctly suppressed entirely rather than ranked low.
     db_path = _db_path(tmp_path)
     _write_title(
-        db_path, "guid-1", 1, "Weak Match", "Movies",
+        db_path, "guid-1", "1", "Weak Match", "Movies",
         ["The Force is strong with this one, but not with you."],
     )
-    _write_title(db_path, "guid-2", 2, "Strong Match", "Movies", ["May the Force be with you."])
+    _write_title(db_path, "guid-2", "2", "Strong Match", "Movies", ["May the Force be with you."])
 
     cached_titles = [
-        CachedTitle(guid="guid-1", rating_key=1, title="Weak Match", library_name="Movies"),
-        CachedTitle(guid="guid-2", rating_key=2, title="Strong Match", library_name="Movies"),
+        CachedTitle(guid="guid-1", media_id="1", title="Weak Match", library_name="Movies"),
+        CachedTitle(guid="guid-2", media_id="2", title="Strong Match", library_name="Movies"),
     ]
 
     results = search_cached_library(
@@ -87,10 +87,10 @@ def test_search_cached_library_sorts_by_score_descending(tmp_path):
 def test_search_cached_library_respects_result_limit(tmp_path):
     db_path = _db_path(tmp_path)
     for i in range(5):
-        _write_title(db_path, f"guid-{i}", i, f"Film {i}", "Movies", ["Same line of dialogue."])
+        _write_title(db_path, f"guid-{i}", str(i), f"Film {i}", "Movies", ["Same line of dialogue."])
 
     cached_titles = [
-        CachedTitle(guid=f"guid-{i}", rating_key=i, title=f"Film {i}", library_name="Movies")
+        CachedTitle(guid=f"guid-{i}", media_id=str(i), title=f"Film {i}", library_name="Movies")
         for i in range(5)
     ]
 
@@ -113,7 +113,7 @@ def test_search_cached_library_skips_missing_cache_entry(tmp_path):
     # nothing (empty DB), triggering the fallback path, which then has
     # nothing to iterate either.
     cached_titles = [
-        CachedTitle(guid="ghost-guid", rating_key=1, title="Ghost", library_name="Movies"),
+        CachedTitle(guid="ghost-guid", media_id="1", title="Ghost", library_name="Movies"),
     ]
 
     results = search_cached_library(
@@ -135,11 +135,11 @@ def test_search_cached_library_skips_guid_with_no_matching_cached_title(tmp_path
     # (e.g. it belongs to a different library scope the caller filtered
     # out) — it must be skipped, not surfaced.
     db_path = _db_path(tmp_path)
-    _write_title(db_path, "guid-known", 1, "Known", "Movies", ["a very particular set of skills"])
-    _write_title(db_path, "guid-unknown", 2, "Unknown", "Movies", ["a very particular set of skills"])
+    _write_title(db_path, "guid-known", "1", "Known", "Movies", ["a very particular set of skills"])
+    _write_title(db_path, "guid-unknown", "2", "Unknown", "Movies", ["a very particular set of skills"])
 
     cached_titles = [
-        CachedTitle(guid="guid-known", rating_key=1, title="Known", library_name="Movies"),
+        CachedTitle(guid="guid-known", media_id="1", title="Known", library_name="Movies"),
     ]
 
     results = search_cached_library(
@@ -162,12 +162,12 @@ def test_search_cached_library_fallback_finds_typo_query(tmp_path):
     # instead — fuzzy matching (unlike FTS5's exact-token matching) can
     # still find this.
     db_path = _db_path(tmp_path)
-    _write_title(db_path, "guid-1", 1, "Monty Python", "Movies", ["Nobody expects the Spanish Inquisition!"])
-    _write_title(db_path, "guid-2", 2, "Terminator", "Movies", ["I'll be back."])
+    _write_title(db_path, "guid-1", "1", "Monty Python", "Movies", ["Nobody expects the Spanish Inquisition!"])
+    _write_title(db_path, "guid-2", "2", "Terminator", "Movies", ["I'll be back."])
 
     cached_titles = [
-        CachedTitle(guid="guid-1", rating_key=1, title="Monty Python", library_name="Movies"),
-        CachedTitle(guid="guid-2", rating_key=2, title="Terminator", library_name="Movies"),
+        CachedTitle(guid="guid-1", media_id="1", title="Monty Python", library_name="Movies"),
+        CachedTitle(guid="guid-2", media_id="2", title="Terminator", library_name="Movies"),
     ]
 
     # Sanity check: this query really does miss the FTS5 pre-filter.
@@ -184,7 +184,7 @@ def test_search_cached_library_fallback_finds_typo_query(tmp_path):
     )
 
     assert len(results) == 1
-    assert results[0].rating_key == 1
+    assert results[0].media_id == "1"
     assert results[0].title == "Monty Python"
 
 
@@ -198,16 +198,16 @@ def test_fast_path_and_fallback_path_agree_on_ordering(tmp_path, monkeypatch):
     # identically ordered results.
     db_path = _db_path(tmp_path)
     _write_title(
-        db_path, "guid-1", 1, "Weak Match", "Movies",
+        db_path, "guid-1", "1", "Weak Match", "Movies",
         ["The Force is strong with this one, but not with you."],
     )
-    _write_title(db_path, "guid-2", 2, "Strong Match", "Movies", ["May the Force be with you."])
-    _write_title(db_path, "guid-3", 3, "No Match", "Movies", ["Nobody expects the Spanish Inquisition!"])
+    _write_title(db_path, "guid-2", "2", "Strong Match", "Movies", ["May the Force be with you."])
+    _write_title(db_path, "guid-3", "3", "No Match", "Movies", ["Nobody expects the Spanish Inquisition!"])
 
     cached_titles = [
-        CachedTitle(guid="guid-1", rating_key=1, title="Weak Match", library_name="Movies"),
-        CachedTitle(guid="guid-2", rating_key=2, title="Strong Match", library_name="Movies"),
-        CachedTitle(guid="guid-3", rating_key=3, title="No Match", library_name="Movies"),
+        CachedTitle(guid="guid-1", media_id="1", title="Weak Match", library_name="Movies"),
+        CachedTitle(guid="guid-2", media_id="2", title="Strong Match", library_name="Movies"),
+        CachedTitle(guid="guid-3", media_id="3", title="No Match", library_name="Movies"),
     ]
 
     kwargs = dict(
@@ -230,8 +230,8 @@ def test_fast_path_and_fallback_path_agree_on_ordering(tmp_path, monkeypatch):
     monkeypatch.setattr(search_index, "search_entry_ids", lambda *a, **kw: [])
     fallback_results = search_cached_library(db_path, cached_titles, query, **kwargs)
 
-    assert [(r.rating_key, r.match.score) for r in fast_results] == [
-        (r.rating_key, r.match.score) for r in fallback_results
+    assert [(r.media_id, r.match.score) for r in fast_results] == [
+        (r.media_id, r.match.score) for r in fallback_results
     ]
     assert len(fast_results) > 0
 
@@ -259,10 +259,10 @@ def test_search_cached_library_scores_a_windowed_slice_not_the_whole_title(tmp_p
     db_path = _db_path(tmp_path)
     texts = ["irrelevant filler dialogue line"] * 200
     texts[100] = "the treasure is buried under the old oak tree"
-    _write_title(db_path, "guid-1", 1, "Long Film", "Movies", texts)
+    _write_title(db_path, "guid-1", "1", "Long Film", "Movies", texts)
 
     cached_titles = [
-        CachedTitle(guid="guid-1", rating_key=1, title="Long Film", library_name="Movies"),
+        CachedTitle(guid="guid-1", media_id="1", title="Long Film", library_name="Movies"),
     ]
 
     import app.worker.library_search as library_search_module
@@ -304,10 +304,10 @@ def test_search_cached_library_merges_multiple_hits_in_one_title_before_ranking(
     texts = ["irrelevant filler dialogue line"] * 200
     texts[10] = "a shared unique keyword phrase right here"
     texts[150] = "a shared unique keyword phrase right here too"
-    _write_title(db_path, "guid-1", 1, "Long Film", "Movies", texts)
+    _write_title(db_path, "guid-1", "1", "Long Film", "Movies", texts)
 
     cached_titles = [
-        CachedTitle(guid="guid-1", rating_key=1, title="Long Film", library_name="Movies"),
+        CachedTitle(guid="guid-1", media_id="1", title="Long Film", library_name="Movies"),
     ]
 
     import app.worker.library_search as library_search_module
@@ -348,14 +348,14 @@ def test_search_cached_library_scopes_fts_prefilter_to_cached_titles(tmp_path, m
     # and the FTS5 pre-filter itself must be called with the scoped
     # title_ids (not None / unscoped).
     db_path = _db_path(tmp_path)
-    _write_title(db_path, "guid-ep1", 1, "Show S01E01", "TV Shows", ["nothing quotable here"])
-    _write_title(db_path, "guid-ep2", 2, "Show S01E02", "TV Shows", ["that's what she said"])
+    _write_title(db_path, "guid-ep1", "1", "Show S01E01", "TV Shows", ["nothing quotable here"])
+    _write_title(db_path, "guid-ep2", "2", "Show S01E02", "TV Shows", ["that's what she said"])
     # Outside the show's scope, but a stronger match for the same quote.
-    _write_title(db_path, "guid-other", 99, "Unrelated Movie", "Movies", ["that's what she said, exactly"])
+    _write_title(db_path, "guid-other", "99", "Unrelated Movie", "Movies", ["that's what she said, exactly"])
 
     cached_titles = [
-        CachedTitle(guid="guid-ep1", rating_key=1, title="Show S01E01", library_name="TV Shows"),
-        CachedTitle(guid="guid-ep2", rating_key=2, title="Show S01E02", library_name="TV Shows"),
+        CachedTitle(guid="guid-ep1", media_id="1", title="Show S01E01", library_name="TV Shows"),
+        CachedTitle(guid="guid-ep2", media_id="2", title="Show S01E02", library_name="TV Shows"),
     ]
 
     import app.worker.library_search as library_search_module
@@ -399,11 +399,11 @@ def test_search_cached_library_fallback_scoped_to_cached_titles(tmp_path, monkey
     # a fuzzy-matchable typo'd quote must not appear in results, and
     # iter_all_entries must have been called with the scoped title_ids.
     db_path = _db_path(tmp_path)
-    _write_title(db_path, "guid-ep1", 1, "Show S01E01", "TV Shows", ["that's what she saidd"])
-    _write_title(db_path, "guid-other", 99, "Unrelated Movie", "Movies", ["that's what she saidd"])
+    _write_title(db_path, "guid-ep1", "1", "Show S01E01", "TV Shows", ["that's what she saidd"])
+    _write_title(db_path, "guid-other", "99", "Unrelated Movie", "Movies", ["that's what she saidd"])
 
     cached_titles = [
-        CachedTitle(guid="guid-ep1", rating_key=1, title="Show S01E01", library_name="TV Shows"),
+        CachedTitle(guid="guid-ep1", media_id="1", title="Show S01E01", library_name="TV Shows"),
     ]
 
     import app.worker.library_search as library_search_module
@@ -448,14 +448,14 @@ def test_pick_random_quote_returns_none_for_no_cached_titles(tmp_path):
 
 def test_pick_random_quote_without_quote_picks_a_cached_line(tmp_path):
     db_path = _db_path(tmp_path)
-    _write_title(db_path, "guid-1", 1, "Monty Python", "Movies", ["Nobody expects the Spanish Inquisition!"])
+    _write_title(db_path, "guid-1", "1", "Monty Python", "Movies", ["Nobody expects the Spanish Inquisition!"])
 
-    cached_titles = [CachedTitle(guid="guid-1", rating_key=1, title="Monty Python", library_name="Movies")]
+    cached_titles = [CachedTitle(guid="guid-1", media_id="1", title="Monty Python", library_name="Movies")]
 
     result = pick_random_quote(db_path, cached_titles, quote=None)
 
     assert result is not None
-    assert result.pick.rating_key == 1
+    assert result.pick.media_id == "1"
     assert result.pick.match.text == "Nobody expects the Spanish Inquisition!"
     assert result.pool_size == 1
     assert result.exhausted is False
@@ -467,25 +467,25 @@ def test_pick_random_quote_with_quote_only_returns_whole_word_matches(tmp_path):
     # mirrors find_quote_matches' word-boundary test
     # (test_literal_match_word_boundary_does_not_match_inside_another_word).
     db_path = _db_path(tmp_path)
-    _write_title(db_path, "guid-1", 1, "Cat Film", "Movies", ["The cat sat on the mat."])
-    _write_title(db_path, "guid-2", 2, "Unrelated Film", "Movies", ["The file was concatenated."])
+    _write_title(db_path, "guid-1", "1", "Cat Film", "Movies", ["The cat sat on the mat."])
+    _write_title(db_path, "guid-2", "2", "Unrelated Film", "Movies", ["The file was concatenated."])
 
     cached_titles = [
-        CachedTitle(guid="guid-1", rating_key=1, title="Cat Film", library_name="Movies"),
-        CachedTitle(guid="guid-2", rating_key=2, title="Unrelated Film", library_name="Movies"),
+        CachedTitle(guid="guid-1", media_id="1", title="Cat Film", library_name="Movies"),
+        CachedTitle(guid="guid-2", media_id="2", title="Unrelated Film", library_name="Movies"),
     ]
 
     for _ in range(10):
         result = pick_random_quote(db_path, cached_titles, quote="cat")
         assert result is not None
-        assert result.pick.rating_key == 1
+        assert result.pick.media_id == "1"
 
 
 def test_pick_random_quote_with_quote_returns_none_when_no_whole_word_match(tmp_path):
     db_path = _db_path(tmp_path)
-    _write_title(db_path, "guid-1", 1, "Unrelated Film", "Movies", ["The file was concatenated."])
+    _write_title(db_path, "guid-1", "1", "Unrelated Film", "Movies", ["The file was concatenated."])
 
-    cached_titles = [CachedTitle(guid="guid-1", rating_key=1, title="Unrelated Film", library_name="Movies")]
+    cached_titles = [CachedTitle(guid="guid-1", media_id="1", title="Unrelated Film", library_name="Movies")]
 
     assert pick_random_quote(db_path, cached_titles, quote="cat") is None
 
@@ -494,9 +494,9 @@ def test_pick_random_quote_with_quote_excludes_already_seen_entries(tmp_path):
     # The "Celina" bug: a narrow quote match with a small pool must not
     # repeat an entry the caller has already marked as seen this journey.
     db_path = _db_path(tmp_path)
-    _write_title(db_path, "guid-1", 1, "Film", "Movies", ["Celina waved.", "Celina laughed."])
+    _write_title(db_path, "guid-1", "1", "Film", "Movies", ["Celina waved.", "Celina laughed."])
 
-    cached_titles = [CachedTitle(guid="guid-1", rating_key=1, title="Film", library_name="Movies")]
+    cached_titles = [CachedTitle(guid="guid-1", media_id="1", title="Film", library_name="Movies")]
 
     first = pick_random_quote(db_path, cached_titles, quote="Celina")
     assert first is not None
@@ -512,8 +512,8 @@ def test_pick_random_quote_with_quote_excludes_already_seen_entries(tmp_path):
 
 def test_pick_random_quote_with_quote_resets_and_reports_exhausted_when_pool_used_up(tmp_path):
     db_path = _db_path(tmp_path)
-    _write_title(db_path, "guid-1", 1, "Film", "Movies", ["Celina waved.", "Celina laughed."])
-    cached_titles = [CachedTitle(guid="guid-1", rating_key=1, title="Film", library_name="Movies")]
+    _write_title(db_path, "guid-1", "1", "Film", "Movies", ["Celina waved.", "Celina laughed."])
+    cached_titles = [CachedTitle(guid="guid-1", media_id="1", title="Film", library_name="Movies")]
 
     first = pick_random_quote(db_path, cached_titles, quote="Celina")
     second = pick_random_quote(
@@ -540,8 +540,8 @@ def test_pick_random_quote_with_quote_resets_and_reports_exhausted_when_pool_use
 
 def test_pick_random_quote_with_quote_single_result_pool_reports_pool_size_one(tmp_path):
     db_path = _db_path(tmp_path)
-    _write_title(db_path, "guid-1", 1, "Film", "Movies", ["Celina waved.", "Someone else spoke."])
-    cached_titles = [CachedTitle(guid="guid-1", rating_key=1, title="Film", library_name="Movies")]
+    _write_title(db_path, "guid-1", "1", "Film", "Movies", ["Celina waved.", "Someone else spoke."])
+    cached_titles = [CachedTitle(guid="guid-1", media_id="1", title="Film", library_name="Movies")]
 
     result = pick_random_quote(db_path, cached_titles, quote="Celina")
 
@@ -551,8 +551,8 @@ def test_pick_random_quote_with_quote_single_result_pool_reports_pool_size_one(t
 
 def test_pick_random_quote_without_quote_applies_min_words_filter(tmp_path):
     db_path = _db_path(tmp_path)
-    _write_title(db_path, "guid-1", 1, "Film", "Movies", ["Okay.", "This is a much longer line of dialogue."])
-    cached_titles = [CachedTitle(guid="guid-1", rating_key=1, title="Film", library_name="Movies")]
+    _write_title(db_path, "guid-1", "1", "Film", "Movies", ["Okay.", "This is a much longer line of dialogue."])
+    cached_titles = [CachedTitle(guid="guid-1", media_id="1", title="Film", library_name="Movies")]
 
     for _ in range(10):
         result = pick_random_quote(db_path, cached_titles, quote=None, min_words=3)

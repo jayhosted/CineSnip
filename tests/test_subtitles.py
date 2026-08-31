@@ -277,14 +277,14 @@ def test_cache_paths_for_special_character_guids_are_filesystem_safe(tmp_path):
 # --- get_subtitles() orchestration (search_index-backed) -------------------
 
 
-def _movie(guid="plex://movie/abc", rating_key=101, title="Film", library_name="Movies"):
+def _movie(guid="plex://movie/abc", media_id="101", title="Film", library_name="Movies"):
     return MovieResult(
-        rating_key=rating_key,
+        media_id=media_id,
         title=title,
         year=2000,
         duration_ms=1000,
         thumb_url=None,
-        plex_path="D:\\Movies\\Film.mkv",
+        source_path="D:\\Movies\\Film.mkv",
         guid=guid,
         library_name=library_name,
     )

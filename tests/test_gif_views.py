@@ -444,11 +444,11 @@ def test_library_search_view_defaults_to_gif_format_and_clip_kind():
 
 
 def _random_pick(
-    rating_key="1", title="Film", start=0.0, end=2.0, text="Line",
+    media_id="1", title="Film", start=0.0, end=2.0, text="Line",
     entry_id=1, pool_size=5, exhausted=False,
 ) -> RandomQuoteResult:
     return RandomQuoteResult(
-        media_id=rating_key, title=title, library_name="Movies",
+        media_id=media_id, title=title, library_name="Movies",
         start=start, end=end, timecode=f"0:{int(start):02d}", text=text,
         entry_id=entry_id, pool_size=pool_size, exhausted=exhausted,
     )

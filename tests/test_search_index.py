@@ -53,7 +53,7 @@ def test_upsert_title_round_trip(tmp_path):
     upsert_title(
         db_path,
         guid="guid-1",
-        rating_key=101,
+        media_id="101",
         title="Film One",
         library_name="Movies",
         source="sidecar",
@@ -81,7 +81,7 @@ def test_get_entries_returns_empty_list_for_cached_title_with_no_entries(tmp_pat
     upsert_title(
         db_path,
         guid="guid-empty",
-        rating_key=1,
+        media_id="1",
         title="Empty",
         library_name="Movies",
         source="sidecar",
@@ -98,7 +98,7 @@ def test_upsert_title_twice_replaces_entries_not_duplicates(tmp_path):
     upsert_title(
         db_path,
         guid="guid-1",
-        rating_key=101,
+        media_id="101",
         title="Film One",
         library_name="Movies",
         source="sidecar",
@@ -111,7 +111,7 @@ def test_upsert_title_twice_replaces_entries_not_duplicates(tmp_path):
     upsert_title(
         db_path,
         guid="guid-1",
-        rating_key=101,
+        media_id="101",
         title="Film One",
         library_name="Movies",
         source="sidecar",
@@ -133,7 +133,7 @@ def test_get_fingerprint_round_trip(tmp_path):
     upsert_title(
         db_path,
         guid="guid-1",
-        rating_key=101,
+        media_id="101",
         title="Film One",
         library_name="Movies",
         source="sidecar",
@@ -155,7 +155,7 @@ def test_get_fingerprint_none_when_not_set(tmp_path):
     upsert_title(
         db_path,
         guid="guid-1",
-        rating_key=101,
+        media_id="101",
         title="Film One",
         library_name="Movies",
         source="sidecar",
@@ -171,7 +171,7 @@ def _populate_small_corpus(db_path):
     upsert_title(
         db_path,
         guid="guid-1",
-        rating_key=101,
+        media_id="101",
         title="Film One",
         library_name="Movies",
         source="sidecar",
@@ -183,7 +183,7 @@ def _populate_small_corpus(db_path):
     upsert_title(
         db_path,
         guid="guid-2",
-        rating_key=102,
+        media_id="102",
         title="Film Two",
         library_name="3D",
         source="embedded",
@@ -200,8 +200,8 @@ def test_list_titles_and_for_library_and_has_and_remove(tmp_path):
 
     titles = list_titles(db_path)
     assert set(titles) == {
-        CachedTitle(guid="guid-1", rating_key=101, title="Film One", library_name="Movies", source="sidecar"),
-        CachedTitle(guid="guid-2", rating_key=102, title="Film Two", library_name="3D", source="embedded"),
+        CachedTitle(guid="guid-1", media_id="101", title="Film One", library_name="Movies", source="sidecar"),
+        CachedTitle(guid="guid-2", media_id="102", title="Film Two", library_name="3D", source="embedded"),
     }
 
     movies_only = list_titles_for_library(db_path, "Movies")
@@ -258,7 +258,7 @@ def test_search_title_ids_handles_single_character_and_digit_tokens(tmp_path):
     upsert_title(
         db_path,
         guid="guid-1",
-        rating_key=101,
+        media_id="101",
         title="Film One",
         library_name="Movies",
         source="sidecar",
@@ -314,7 +314,7 @@ def test_iter_all_entries_on_missing_db_yields_nothing(tmp_path):
 def test_iter_all_entries_scoped_to_title_ids_excludes_others(tmp_path):
     db_path = tmp_path / "quote_index.db"
     _populate_small_corpus(db_path)
-    guid_to_id = {t.guid: t.rating_key for t in list_titles(db_path)}
+    guid_to_id = {t.guid: t.media_id for t in list_titles(db_path)}
     with _connect(db_path) as conn:
         rows = conn.execute("SELECT guid, title_id FROM titles").fetchall()
     guid_to_title_id = dict(rows)
@@ -393,7 +393,7 @@ def test_fetch_entry_windows_excludes_entries_outside_every_window(tmp_path):
     texts[10] = "first hit line"
     texts[40] = "second hit line"
     upsert_title(
-        db_path, guid="guid-1", rating_key=1, title="Film", library_name="Movies",
+        db_path, guid="guid-1", media_id="1", title="Film", library_name="Movies",
         source="sidecar", sidecar_path=None, stream_index=None,
         entries=_entries(*texts), fingerprint=None,
     )
@@ -422,7 +422,7 @@ def test_fetch_entry_windows_batches_many_windows_beyond_chunk_size(tmp_path):
     title_ids = []
     for i in range(250):
         upsert_title(
-            db_path, guid=f"guid-{i}", rating_key=i, title=f"Film {i}", library_name="Movies",
+            db_path, guid=f"guid-{i}", media_id=str(i), title=f"Film {i}", library_name="Movies",
             source="sidecar", sidecar_path=None, stream_index=None,
             entries=_entries("only line"), fingerprint=None,
         )
@@ -448,7 +448,7 @@ def test_search_entry_ids_is_entry_level_not_title_level(tmp_path):
     texts = ["irrelevant filler line"] * 50
     texts[25] = "the treasure is buried under the old oak tree"
     upsert_title(
-        db_path, guid="guid-1", rating_key=1, title="Film", library_name="Movies",
+        db_path, guid="guid-1", media_id="1", title="Film", library_name="Movies",
         source="sidecar", sidecar_path=None, stream_index=None,
         entries=_entries(*texts), fingerprint=None,
     )
@@ -467,7 +467,7 @@ def test_search_entry_ids_respects_limit_across_titles(tmp_path):
     db_path = tmp_path / "quote_index.db"
     for i in range(10):
         upsert_title(
-            db_path, guid=f"guid-{i}", rating_key=i, title=f"Film {i}", library_name="Movies",
+            db_path, guid=f"guid-{i}", media_id=str(i), title=f"Film {i}", library_name="Movies",
             source="sidecar", sidecar_path=None, stream_index=None,
             entries=_entries("a shared unique keyword here"), fingerprint=None,
         )
@@ -501,24 +501,24 @@ def test_search_entry_ids_empty_scope_yields_nothing(tmp_path):
 def test_coverage_counts_by_source_excludes_none_and_other_libraries(tmp_path):
     db_path = tmp_path / "quote_index.db"
     upsert_title(
-        db_path, guid="g1", rating_key=1, title="Sidecar Film", library_name="Movies",
+        db_path, guid="g1", media_id="1", title="Sidecar Film", library_name="Movies",
         source="sidecar", sidecar_path=None, stream_index=None, entries=[], fingerprint=None,
     )
     upsert_title(
-        db_path, guid="g2", rating_key=2, title="Sidecar Film Two", library_name="Movies",
+        db_path, guid="g2", media_id="2", title="Sidecar Film Two", library_name="Movies",
         source="sidecar", sidecar_path=None, stream_index=None, entries=[], fingerprint=None,
     )
     upsert_title(
-        db_path, guid="g3", rating_key=3, title="Embedded Film", library_name="Movies",
+        db_path, guid="g3", media_id="3", title="Embedded Film", library_name="Movies",
         source="embedded", sidecar_path=None, stream_index=2, entries=[], fingerprint=None,
     )
     upsert_title(
-        db_path, guid="g4", rating_key=4, title="No Subtitle Film", library_name="Movies",
+        db_path, guid="g4", media_id="4", title="No Subtitle Film", library_name="Movies",
         source="none", sidecar_path=None, stream_index=None, entries=[], fingerprint=None,
     )
     # a different library must not bleed into Movies' counts
     upsert_title(
-        db_path, guid="g5", rating_key=5, title="3D Film", library_name="3D",
+        db_path, guid="g5", media_id="5", title="3D Film", library_name="3D",
         source="sidecar", sidecar_path=None, stream_index=None, entries=[], fingerprint=None,
     )
 
@@ -533,7 +533,7 @@ def test_coverage_counts_on_missing_db_returns_zeros(tmp_path):
 def test_coverage_counts_on_unknown_library_returns_zeros(tmp_path):
     db_path = tmp_path / "quote_index.db"
     upsert_title(
-        db_path, guid="g1", rating_key=1, title="Film", library_name="Movies",
+        db_path, guid="g1", media_id="1", title="Film", library_name="Movies",
         source="sidecar", sidecar_path=None, stream_index=None, entries=[], fingerprint=None,
     )
     assert coverage_counts(db_path, "TV Shows") == {"sidecar": 0, "embedded": 0}
@@ -601,7 +601,7 @@ def test_pick_random_entry_id_returns_none_for_empty_title_ids(tmp_path):
     upsert_title(
         db_path,
         guid="guid-1",
-        rating_key=101,
+        media_id="101",
         title="Film One",
         library_name="Movies",
         source="sidecar",
@@ -618,7 +618,7 @@ def test_pick_random_entry_id_only_returns_entries_from_scoped_titles(tmp_path):
     upsert_title(
         db_path,
         guid="guid-1",
-        rating_key=101,
+        media_id="101",
         title="Film One",
         library_name="Movies",
         source="sidecar",
@@ -630,7 +630,7 @@ def test_pick_random_entry_id_only_returns_entries_from_scoped_titles(tmp_path):
     upsert_title(
         db_path,
         guid="guid-2",
-        rating_key=102,
+        media_id="102",
         title="Film Two",
         library_name="Movies",
         source="sidecar",
@@ -652,7 +652,7 @@ def test_pick_random_entry_id_only_returns_entries_from_scoped_titles(tmp_path):
 def test_pick_random_entry_id_excludes_given_ids(tmp_path):
     db_path = tmp_path / "quote_index.db"
     upsert_title(
-        db_path, guid="guid-1", rating_key=101, title="Film One", library_name="Movies",
+        db_path, guid="guid-1", media_id="101", title="Film One", library_name="Movies",
         source="sidecar", sidecar_path=None, stream_index=None,
         entries=_entries("only", "other"), fingerprint=None,
     )

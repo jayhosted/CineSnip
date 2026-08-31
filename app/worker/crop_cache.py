@@ -13,9 +13,9 @@ from typing import Iterator
 #
 # Keyed by file path + an mtime/size fingerprint (mirroring
 # search_index.py's titles.fingerprint_mtime/fingerprint_size), not by
-# Plex rating_key/guid: the detected crop is purely a property of this
+# Plex media_id/guid: the detected crop is purely a property of this
 # file's own pixels, so the fingerprint alone is what determines whether a
-# cached value can still be trusted — a rating_key would be a second,
+# cached value can still be trusted — a media_id would be a second,
 # redundant key carrying no extra correctness guarantee.
 #
 # A cropdetect probe genuinely costs real time (~3s even on a short clip

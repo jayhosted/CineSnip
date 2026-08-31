@@ -71,7 +71,7 @@ def _settings(tmp_path) -> Settings:
     )
 
 
-def _write_title(db_path, guid, rating_key, title, library_name, texts):
+def _write_title(db_path, guid, media_id, title, library_name, texts):
     entries = [
         SubtitleEntry(index=i + 1, start=float(i * 5), end=float(i * 5 + 2), text=text)
         for i, text in enumerate(texts)
@@ -79,7 +79,7 @@ def _write_title(db_path, guid, rating_key, title, library_name, texts):
     search_index.upsert_title(
         db_path,
         guid=guid,
-        rating_key=rating_key,
+        media_id=media_id,
         title=title,
         library_name=library_name,
         source="sidecar",
