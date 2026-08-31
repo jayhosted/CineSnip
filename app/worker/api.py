@@ -18,12 +18,12 @@ from app.worker.gif_optimize import GifOptimizeError, optimize_gif as _real_opti
 from app.worker.library_search import LibraryQuoteMatch, pick_random_quote, search_cached_library
 from app.worker.library_sync import sync_one_title
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
-from app.worker.plex_client import (
+from app.worker.media_client import (
     EpisodeNotFoundError,
     MovieNotFoundError,
     MovieResult,
-    PlexClient,
     ShowNotFoundError,
+    create_media_client,
 )
 from app.worker.quote_index import CachedTitle
 from app.worker.quotes import find_quote_matches
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 class MovieResultOut(BaseModel):
-    rating_key: int
+    media_id: str
     title: str
     year: int | None
     duration_ms: int
@@ -53,7 +53,7 @@ class SearchResponse(BaseModel):
 
 
 class SubtitleStatusResponse(BaseModel):
-    rating_key: int
+    media_id: str
     # True when neither a sidecar file nor a cached result exists, meaning
     # a subtitle-needing request is about to fall through to a cold
     # embedded-stream extraction (no fast-seek, can take minutes on a large
@@ -64,7 +64,7 @@ class SubtitleStatusResponse(BaseModel):
 
 
 class ResolveResponse(BaseModel):
-    rating_key: int
+    media_id: str
     title: str
     year: int | None
     duration_ms: int
@@ -73,7 +73,7 @@ class ResolveResponse(BaseModel):
 
 
 class RenderRequest(BaseModel):
-    rating_key: int
+    media_id: str
     # Either (start, end) or timecode[, end_timecode] must be given — never
     # both forms at once. A ClipEditView re-render (issue #5) already has an
     # exact numeric span and sends start/end directly, skipping timecode
@@ -122,7 +122,7 @@ class SubtitleEntryOut(BaseModel):
 
 
 class SubtitleDiagnosticResponse(BaseModel):
-    rating_key: int
+    media_id: str
     guid: str
     source: str
     sidecar_path: str | None
@@ -143,7 +143,7 @@ class QuoteMatchOut(BaseModel):
 
 
 class ResolveQuoteResponse(BaseModel):
-    rating_key: int
+    media_id: str
     title: str
     subtitle_source: str
     confident_score: float
@@ -157,7 +157,7 @@ class ResolveQuoteResponse(BaseModel):
 
 
 class LibraryQuoteMatchOut(BaseModel):
-    rating_key: int
+    media_id: str
     title: str
     library_name: str
     start: float
@@ -178,7 +178,7 @@ class LibrarySearchResponse(BaseModel):
 
 
 class RandomQuoteResponse(BaseModel):
-    rating_key: int
+    media_id: str
     title: str
     library_name: str
     start: float
@@ -311,7 +311,7 @@ def _resolve_container_path(movie: MovieResult, settings: Settings) -> str:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     try:
-        return resolve_container_path(movie.plex_path, mappings)
+        return resolve_container_path(movie.source_path, mappings)
     except NoPathMappingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -335,7 +335,7 @@ def _index_if_searchable(settings: Settings, movie: MovieResult, result: Subtitl
         quote_index.upsert_no_subtitle_title(
             settings.quote_index_db_path,
             result.guid,
-            movie.rating_key,
+            movie.media_id,
             movie.title,
             movie.library_name,
         )
@@ -343,7 +343,7 @@ def _index_if_searchable(settings: Settings, movie: MovieResult, result: Subtitl
 
 def _to_out(movie: MovieResult) -> MovieResultOut:
     return MovieResultOut(
-        rating_key=movie.rating_key,
+        media_id=movie.media_id,
         title=movie.title,
         year=movie.year,
         duration_ms=movie.duration_ms,
@@ -358,7 +358,7 @@ async def _movie_library_matches(
     # Shared by /search-quote and /search-quote-extend: both search exactly
     # "every cached movie-library title" — the TV episodes sharing this same
     # search_index (CLAUDE.md Section 4) are filtered out here, once.
-    movie_library_names = app.state.plex.movie_library_names
+    movie_library_names = app.state.media.movie_library_names
     cached_titles = [
         t
         for t in search_index.list_titles(settings.quote_index_db_path)
@@ -398,7 +398,7 @@ def _random_quote_response(result) -> RandomQuoteResponse:
     pool_size/exhausted so the bot can track a reroll journey's history."""
     pick = result.pick
     return RandomQuoteResponse(
-        rating_key=pick.rating_key,
+        media_id=str(pick.rating_key),
         title=pick.title,
         library_name=pick.library_name,
         start=pick.match.start,
@@ -415,7 +415,7 @@ def _library_search_payload(matches: list[LibraryQuoteMatch], qm, truncated: boo
     return {
         "matches": [
             {
-                "rating_key": m.rating_key,
+                "media_id": str(m.rating_key),
                 "title": m.title,
                 "library_name": m.library_name,
                 "start": m.match.start,
@@ -437,7 +437,7 @@ def _library_search_payload(matches: list[LibraryQuoteMatch], qm, truncated: boo
 def create_app(settings: Settings) -> FastAPI:
     app = FastAPI()
     app.state.settings = settings
-    app.state.plex = PlexClient(settings)
+    app.state.media = create_media_client(settings)
     app.state.renderer = ClipRenderer(
         fps=settings.render_defaults.fps,
         width=settings.render_defaults.width,
@@ -457,26 +457,26 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/search", response_model=SearchResponse)
     def search(query: str) -> SearchResponse:
-        results = app.state.plex.search_movies(query)
+        results = app.state.media.search_movies(query)
         return SearchResponse(results=[_to_out(m) for m in results])
 
     @app.get("/search-shows", response_model=SearchResponse)
     def search_shows(query: str) -> SearchResponse:
-        results = app.state.plex.search_shows(query)
+        results = app.state.media.search_shows(query)
         return SearchResponse(results=[_to_out(m) for m in results])
 
-    async def _get_movie(rating_key: int) -> MovieResult:
+    async def _get_movie(media_id: str) -> MovieResult:
         # get_movie() is a synchronous plexapi/requests call — always offload
         # it so a slow Plex response doesn't stall the whole event loop
         # (this worker has no other way to serve concurrent requests).
         try:
-            return await asyncio.to_thread(app.state.plex.get_movie, rating_key)
+            return await asyncio.to_thread(app.state.media.get_movie, media_id)
         except MovieNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    @app.get("/resolve/{rating_key}", response_model=ResolveResponse)
-    async def resolve(rating_key: int) -> ResolveResponse:
-        movie = await _get_movie(rating_key)
+    @app.get("/resolve/{media_id}", response_model=ResolveResponse)
+    async def resolve(media_id: str) -> ResolveResponse:
+        movie = await _get_movie(media_id)
         container_path = _resolve_container_path(movie, settings)
 
         if not os.path.exists(container_path):
@@ -486,7 +486,7 @@ def create_app(settings: Settings) -> FastAPI:
             )
 
         return ResolveResponse(
-            rating_key=movie.rating_key,
+            media_id=movie.media_id,
             title=movie.title,
             year=movie.year,
             duration_ms=movie.duration_ms,
@@ -494,30 +494,30 @@ def create_app(settings: Settings) -> FastAPI:
             library_name=movie.library_name,
         )
 
-    @app.get("/subtitle-status/{rating_key}", response_model=SubtitleStatusResponse)
-    async def subtitle_status(rating_key: int) -> SubtitleStatusResponse:
-        movie = await _get_movie(rating_key)
+    @app.get("/subtitle-status/{media_id}", response_model=SubtitleStatusResponse)
+    async def subtitle_status(media_id: str) -> SubtitleStatusResponse:
+        movie = await _get_movie(media_id)
         try:
             container_path = _resolve_container_path(movie, settings)
         except HTTPException:
             # Best-effort hint endpoint — a path-mapping problem is the real
             # request's job to report clearly, not this one's.
-            return SubtitleStatusResponse(rating_key=rating_key, likely_slow=False)
+            return SubtitleStatusResponse(media_id=media_id, likely_slow=False)
 
         sidecar = find_sidecar_subtitle(Path(container_path))
         cached = search_index.get_entries(settings.quote_index_db_path, movie.guid) is not None
         likely_slow = sidecar is None and not cached
-        return SubtitleStatusResponse(rating_key=rating_key, likely_slow=likely_slow)
+        return SubtitleStatusResponse(media_id=media_id, likely_slow=likely_slow)
 
-    @app.get("/resolve-episode/{show_rating_key}", response_model=ResolveResponse)
-    async def resolve_episode(show_rating_key: int, season: int, episode: int) -> ResolveResponse:
-        # Turns show+season+episode into a concrete rating_key + display
+    @app.get("/resolve-episode/{show_media_id}", response_model=ResolveResponse)
+    async def resolve_episode(show_media_id: str, season: int, episode: int) -> ResolveResponse:
+        # Turns show+season+episode into a concrete media_id + display
         # info — everything downstream (/render, /resolve-quote, etc.) is
         # the unmodified movie flow from here, since it's already generic
-        # over any rating_key.
+        # over any media_id.
         try:
             ep = await asyncio.to_thread(
-                app.state.plex.get_episode, show_rating_key, season, episode
+                app.state.media.get_episode, show_media_id, season, episode
             )
         except EpisodeNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -530,7 +530,7 @@ def create_app(settings: Settings) -> FastAPI:
             )
 
         return ResolveResponse(
-            rating_key=ep.rating_key,
+            media_id=ep.media_id,
             title=ep.title,
             year=ep.year,
             duration_ms=ep.duration_ms,
@@ -540,7 +540,7 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/render")
     async def render(req: RenderRequest) -> Response:
-        movie = await _get_movie(req.rating_key)
+        movie = await _get_movie(req.media_id)
         container_path = _resolve_container_path(movie, settings)
 
         if not os.path.exists(container_path):
@@ -717,8 +717,8 @@ def create_app(settings: Settings) -> FastAPI:
             },
         )
 
-    async def _load_subtitles(rating_key: int) -> tuple[MovieResult, SubtitleResult]:
-        movie = await _get_movie(rating_key)
+    async def _load_subtitles(media_id: str) -> tuple[MovieResult, SubtitleResult]:
+        movie = await _get_movie(media_id)
         container_path = _resolve_container_path(movie, settings)
 
         if not os.path.exists(container_path):
@@ -748,12 +748,12 @@ def create_app(settings: Settings) -> FastAPI:
     # title — useful on its own for verifying extraction against the real
     # library, and as a companion to /resolve-quote for picking/verifying
     # test quotes and finding cue boundaries.
-    @app.get("/subtitles/{rating_key}", response_model=SubtitleDiagnosticResponse)
-    async def subtitles(rating_key: int) -> SubtitleDiagnosticResponse:
-        movie, result = await _load_subtitles(rating_key)
+    @app.get("/subtitles/{media_id}", response_model=SubtitleDiagnosticResponse)
+    async def subtitles(media_id: str) -> SubtitleDiagnosticResponse:
+        movie, result = await _load_subtitles(media_id)
 
         return SubtitleDiagnosticResponse(
-            rating_key=movie.rating_key,
+            media_id=movie.media_id,
             guid=result.guid,
             source=result.source.value,
             sidecar_path=result.sidecar_path,
@@ -767,9 +767,9 @@ def create_app(settings: Settings) -> FastAPI:
             ],
         )
 
-    @app.get("/resolve-quote/{rating_key}", response_model=ResolveQuoteResponse)
-    async def resolve_quote(rating_key: int, quote: str) -> ResolveQuoteResponse:
-        movie, result = await _load_subtitles(rating_key)
+    @app.get("/resolve-quote/{media_id}", response_model=ResolveQuoteResponse)
+    async def resolve_quote(media_id: str, quote: str) -> ResolveQuoteResponse:
+        movie, result = await _load_subtitles(media_id)
 
         if result.source is SubtitleSource.NONE or not result.entries:
             raise HTTPException(
@@ -812,7 +812,7 @@ def create_app(settings: Settings) -> FastAPI:
             )
 
         return ResolveQuoteResponse(
-            rating_key=movie.rating_key,
+            media_id=movie.media_id,
             title=movie.title,
             subtitle_source=result.source.value,
             confident_score=qm.confident_score,
@@ -855,8 +855,8 @@ def create_app(settings: Settings) -> FastAPI:
         # Tier 1 (already-cached titles) only, deliberately — no auto-extend,
         # same reasoning as elsewhere: extracting subtitles for random titles
         # just to serve a for-fun command isn't worth the cost.
-        movie_library_names = app.state.plex.movie_library_names
-        show_library_names = app.state.plex.show_library_names
+        movie_library_names = app.state.media.movie_library_names
+        show_library_names = app.state.media.show_library_names
         if media == "movie":
             allowed_libraries = movie_library_names
         elif media == "tv":
@@ -881,16 +881,16 @@ def create_app(settings: Settings) -> FastAPI:
 
         return _random_quote_response(result)
 
-    @app.get("/random-line/{rating_key}", response_model=RandomQuoteResponse)
+    @app.get("/random-line/{media_id}", response_model=RandomQuoteResponse)
     async def random_line(
-        rating_key: int,
+        media_id: str,
         exclude: list[int] = Query(default=[]),
         most_recent: int | None = None,
     ) -> RandomQuoteResponse:
         # /snip movie with no quote/timecode given: a "filtered random" pick
         # (min-word-count quality filter) scoped to just this one title,
         # extracting on demand if not yet cached — mirrors /resolve-quote.
-        movie, result = await _load_subtitles(rating_key)
+        movie, result = await _load_subtitles(media_id)
 
         if result.source is SubtitleSource.NONE or not result.entries:
             raise HTTPException(
@@ -905,7 +905,7 @@ def create_app(settings: Settings) -> FastAPI:
         cached_titles = [
             CachedTitle(
                 guid=movie.guid,
-                rating_key=movie.rating_key,
+                rating_key=movie.media_id,
                 title=movie.title,
                 library_name=movie.library_name,
             )
@@ -923,9 +923,9 @@ def create_app(settings: Settings) -> FastAPI:
 
         return _random_quote_response(picked)
 
-    @app.get("/random-line-show/{show_rating_key}", response_model=RandomQuoteResponse)
+    @app.get("/random-line-show/{show_media_id}", response_model=RandomQuoteResponse)
     async def random_line_show(
-        show_rating_key: int,
+        show_media_id: str,
         season: int | None = None,
         episode: int | None = None,
         exclude: list[int] = Query(default=[]),
@@ -942,14 +942,14 @@ def create_app(settings: Settings) -> FastAPI:
         if season is not None:
             try:
                 ep = await asyncio.to_thread(
-                    app.state.plex.get_episode, show_rating_key, season, episode
+                    app.state.media.get_episode, show_media_id, season, episode
                 )
             except EpisodeNotFoundError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
             episodes = [ep]
         else:
             try:
-                episodes = await asyncio.to_thread(app.state.plex.list_episodes, show_rating_key)
+                episodes = await asyncio.to_thread(app.state.media.list_episodes, show_media_id)
             except ShowNotFoundError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -960,7 +960,7 @@ def create_app(settings: Settings) -> FastAPI:
             await _ensure_episode_cached(ep)
 
         cached_titles = [
-            CachedTitle(guid=ep.guid, rating_key=ep.rating_key, title=ep.title, library_name=ep.library_name)
+            CachedTitle(guid=ep.guid, rating_key=ep.media_id, title=ep.title, library_name=ep.library_name)
             for ep in episodes
         ]
         picked = pick_random_quote(
@@ -1001,7 +1001,7 @@ def create_app(settings: Settings) -> FastAPI:
                 }) + "\n"
                 return
 
-            movie_library_names = app.state.plex.movie_library_names
+            movie_library_names = app.state.media.movie_library_names
             already_known = {t.guid for t in cached_titles}
             db_path = settings.quote_index_db_path
             # One bulk query up front instead of a per-item
@@ -1032,7 +1032,7 @@ def create_app(settings: Settings) -> FastAPI:
             # nothing changed".
             try:
                 current_updated_ats = await asyncio.to_thread(
-                    app.state.plex.current_section_updated_ats
+                    app.state.media.current_section_updated_ats
                 )
             except Exception as exc:  # noqa: BLE001 - a failed cheap check must fall back to the full enumeration, not skip it
                 logger.warning(
@@ -1043,7 +1043,7 @@ def create_app(settings: Settings) -> FastAPI:
 
             seen: set[str] = set()
             uncached_items: list[MovieResult] = []
-            for library_name, section in app.state.plex.library_sections():
+            for library_name, section in app.state.media.library_sections():
                 if library_name not in movie_library_names:
                     continue
                 stored_updated_at = quote_index.get_section_updated_at(db_path, library_name)
@@ -1051,7 +1051,7 @@ def create_app(settings: Settings) -> FastAPI:
                 if stored_updated_at is not None and live_updated_at == stored_updated_at:
                     continue
                 try:
-                    items = await asyncio.to_thread(app.state.plex.enumerate_section, section)
+                    items = await asyncio.to_thread(app.state.media.enumerate_section, section)
                 except Exception as exc:  # noqa: BLE001 - Plex being briefly unreachable must not fail an otherwise-successful cached search
                     logger.warning("search-quote-extend: could not enumerate '%s': %s", library_name, exc)
                     continue
@@ -1153,10 +1153,10 @@ def create_app(settings: Settings) -> FastAPI:
     # not yet cached — acceptable inline within one request since a show's
     # episode count is small (no progress/ETA UI needed here, unlike
     # /search-quote's still-unbuilt Tier 2).
-    @app.get("/search-episodes-quote/{show_rating_key}", response_model=LibrarySearchResponse)
-    async def search_episodes_quote(show_rating_key: int, quote: str) -> LibrarySearchResponse:
+    @app.get("/search-episodes-quote/{show_media_id}", response_model=LibrarySearchResponse)
+    async def search_episodes_quote(show_media_id: str, quote: str) -> LibrarySearchResponse:
         try:
-            episodes = await asyncio.to_thread(app.state.plex.list_episodes, show_rating_key)
+            episodes = await asyncio.to_thread(app.state.media.list_episodes, show_media_id)
         except ShowNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -1171,7 +1171,7 @@ def create_app(settings: Settings) -> FastAPI:
         cached_titles = [
             CachedTitle(
                 guid=ep.guid,
-                rating_key=ep.rating_key,
+                rating_key=ep.media_id,
                 title=ep.title,
                 library_name=ep.library_name,
             )
@@ -1199,7 +1199,7 @@ def create_app(settings: Settings) -> FastAPI:
         return LibrarySearchResponse(
             matches=[
                 LibraryQuoteMatchOut(
-                    rating_key=m.rating_key,
+                    media_id=str(m.rating_key),
                     title=m.title,
                     library_name=m.library_name,
                     start=m.match.start,

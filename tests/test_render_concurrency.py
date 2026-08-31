@@ -14,14 +14,14 @@ import pytest
 
 from app.settings import LibraryConfig, PathMapping, Settings
 from app.worker import api as api_module
-from app.worker.plex_client import MovieResult
+from app.worker.media_client import MovieResult
 
 
 class _FakePlexClient:
     def __init__(self, settings: Settings, movie: MovieResult) -> None:
         self._movie = movie
 
-    def get_movie(self, rating_key: int) -> MovieResult:
+    def get_movie(self, media_id: str) -> MovieResult:
         return self._movie
 
 
@@ -77,25 +77,25 @@ def _settings(tmp_path, max_concurrent_renders: int = 3) -> Settings:
 
 
 def _movie() -> MovieResult:
-    # plex_path matches the LibraryConfig path_mapping in _settings()
+    # source_path matches the LibraryConfig path_mapping in _settings()
     # (path_prefix "/media" -> container_path=tmp_path) — the real file on
     # disk is written at tmp_path / "movie.mkv" by each test.
     return MovieResult(
-        rating_key=1, title="The Matrix", year=1999, duration_ms=8_160_000,
-        thumb_url=None, plex_path="/media/movie.mkv", guid="guid-1",
+        media_id="1", title="The Matrix", year=1999, duration_ms=8_160_000,
+        thumb_url=None, source_path="/media/movie.mkv", guid="guid-1",
         library_name="Movies",
     )
 
 
 def _make_app(settings: Settings, monkeypatch, renderer):
-    monkeypatch.setattr(api_module, "PlexClient", lambda s: _FakePlexClient(s, _movie()))
+    monkeypatch.setattr(api_module, "create_media_client", lambda s: _FakePlexClient(s, _movie()))
     app = api_module.create_app(settings)
     app.state.renderer = renderer
     return app
 
 
 async def _render(client: httpx.AsyncClient, timecode: str = "62") -> httpx.Response:
-    return await client.post("/render", json={"rating_key": 1, "timecode": timecode})
+    return await client.post("/render", json={"media_id": "1", "timecode": timecode})
 
 
 def test_default_max_concurrent_renders_is_three(tmp_path):

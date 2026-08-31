@@ -85,14 +85,14 @@ async def sync_one_title(settings: Settings, item: MovieResult, *, force: bool =
             if cached is not None:
                 if cached.source is SubtitleSource.NONE:
                     await asyncio.to_thread(
-                        upsert_no_subtitle_title, db_path, item.guid, item.rating_key, item.title, item.library_name
+                        upsert_no_subtitle_title, db_path, item.guid, item.media_id, item.title, item.library_name
                     )
                 else:
                     await asyncio.to_thread(
                         search_index.upsert_title,
                         db_path,
                         item.guid,
-                        item.rating_key,
+                        item.media_id,
                         item.title,
                         item.library_name,
                         cached.source.value,
@@ -105,7 +105,7 @@ async def sync_one_title(settings: Settings, item: MovieResult, *, force: bool =
 
     try:
         container_path = resolve_container_path(
-            item.plex_path, settings.path_mappings_for(item.library_name)
+            item.source_path, settings.path_mappings_for(item.library_name)
         )
     except NoPathMappingError as exc:
         return f"SKIP (no path mapping): {item.title}: {exc}"
@@ -131,7 +131,7 @@ async def sync_one_title(settings: Settings, item: MovieResult, *, force: bool =
         # get_subtitles() already wrote the NONE result into search_index
         # itself, so this is the only bookkeeping left to do here.
         await asyncio.to_thread(
-            upsert_no_subtitle_title, db_path, result.guid, item.rating_key, item.title, item.library_name
+            upsert_no_subtitle_title, db_path, result.guid, item.media_id, item.title, item.library_name
         )
     # else: a searchable result. get_subtitles() (Task 3) already wrote it
     # into search_index itself — no further write needed here, and
@@ -173,7 +173,7 @@ def _spot_check_removed_titles(
     sample = random.sample(live_items, min(_SPOT_CHECK_SAMPLE_SIZE, len(live_items))) if live_items else []
     for item in sample:
         try:
-            container_path = resolve_container_path(item.plex_path, settings.path_mappings_for(item.library_name))
+            container_path = resolve_container_path(item.source_path, settings.path_mappings_for(item.library_name))
         except NoPathMappingError:
             continue  # a separate, unrelated problem — not evidence of a mount failure
         if not os.path.exists(container_path):

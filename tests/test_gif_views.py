@@ -214,7 +214,7 @@ from app.bot.worker_client import LibraryQuoteMatchResult
 
 def _library_match(i: int, score: float = 60.0) -> LibraryQuoteMatchResult:
     return LibraryQuoteMatchResult(
-        rating_key=i,
+        media_id=str(i),
         title=f"Title {i}",
         library_name="Movies",
         start=float(i),
@@ -444,11 +444,11 @@ def test_library_search_view_defaults_to_gif_format_and_clip_kind():
 
 
 def _random_pick(
-    rating_key=1, title="Film", start=0.0, end=2.0, text="Line",
+    rating_key="1", title="Film", start=0.0, end=2.0, text="Line",
     entry_id=1, pool_size=5, exhausted=False,
 ) -> RandomQuoteResult:
     return RandomQuoteResult(
-        rating_key=rating_key, title=title, library_name="Movies",
+        media_id=rating_key, title=title, library_name="Movies",
         start=start, end=end, timecode=f"0:{int(start):02d}", text=text,
         entry_id=entry_id, pool_size=pool_size, exhausted=exhausted,
     )

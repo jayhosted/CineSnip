@@ -98,8 +98,8 @@ class QuoteMatchView(discord.ui.View):
     specific episode). Pass `title=None` when candidates can come from
     DIFFERENT titles instead (/snip tv's whole-show search, whose matches
     are `LibraryQuoteMatchResult`s each carrying their own `.title`/
-    `.rating_key`) — the embed then reads the title off whichever match
-    is currently selected, and the caller reads `.selected.rating_key`
+    `.media_id`) — the embed then reads the title off whichever match
+    is currently selected, and the caller reads `.selected.media_id`
     after Confirm instead of already knowing it up front.
     """
 
@@ -1971,7 +1971,7 @@ class RandomResultView(discord.ui.View):
 
         try:
             render_result = await self._worker.render(
-                picked.rating_key,
+                picked.media_id,
                 str(picked.start),
                 duration=picked.end - picked.start,
                 format=self._format,
@@ -2291,7 +2291,7 @@ class LibrarySearchView(discord.ui.View):
         self.stop()
         await self._cog._generate(
             interaction,
-            str(match.rating_key),
+            str(match.media_id),
             self._quote,
             None,
             None,
@@ -2323,7 +2323,7 @@ class GifCog(commands.Cog):
             label = f"{movie.title} ({movie.year})" if movie.year else movie.title
             label = f"{label} — {movie.library_name}"
             choices.append(
-                app_commands.Choice(name=label[:100], value=str(movie.rating_key))
+                app_commands.Choice(name=label[:100], value=str(movie.media_id))
             )
         return choices
 
@@ -2341,7 +2341,7 @@ class GifCog(commands.Cog):
             label = f"{show.title} ({show.year})" if show.year else show.title
             label = f"{label} — {show.library_name}"
             choices.append(
-                app_commands.Choice(name=label[:100], value=str(show.rating_key))
+                app_commands.Choice(name=label[:100], value=str(show.media_id))
             )
         return choices
 
@@ -2368,7 +2368,7 @@ class GifCog(commands.Cog):
             label = f"{result.title} ({result.year})" if result.year else result.title
             label = f"{label} — {result.library_name}"
             choices.append(
-                app_commands.Choice(name=label[:100], value=str(result.rating_key))
+                app_commands.Choice(name=label[:100], value=str(result.media_id))
             )
         return choices
 
@@ -2793,7 +2793,7 @@ class GifCog(commands.Cog):
 
         try:
             render_result = await self.bot.worker.render(
-                picked.rating_key,
+                picked.media_id,
                 str(picked.start),
                 duration=picked.end - picked.start,
                 format=format,
@@ -2935,7 +2935,7 @@ class GifCog(commands.Cog):
                 )
                 return
             await self._generate(
-                interaction, str(resolved.rating_key), quote, timecode, end_timecode, format,
+                interaction, str(resolved.media_id), quote, timecode, end_timecode, format,
                 kind=kind,
             )
             return
@@ -3009,7 +3009,7 @@ class GifCog(commands.Cog):
         await interaction.edit_original_response(content="Generating…", embed=None, view=None)
         await self._render_and_respond(
             interaction,
-            selected.rating_key,
+            selected.media_id,
             selected.title,
             str(selected.start),
             selected.end - selected.start,

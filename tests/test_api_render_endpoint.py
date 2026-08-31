@@ -8,14 +8,14 @@ from fastapi.testclient import TestClient
 
 from app.settings import LibraryConfig, PathMapping, Settings
 from app.worker import api as api_module
-from app.worker.plex_client import MovieResult
+from app.worker.media_client import MovieResult
 
 
 class _FakePlexClient:
     def __init__(self, settings: Settings, movie: MovieResult) -> None:
         self._movie = movie
 
-    def get_movie(self, rating_key: int) -> MovieResult:
+    def get_movie(self, media_id: str) -> MovieResult:
         return self._movie
 
 
@@ -41,16 +41,16 @@ def _settings(tmp_path) -> Settings:
 
 def _client(settings: Settings, monkeypatch, movie_path) -> TestClient:
     movie = MovieResult(
-        rating_key=1,
+        media_id="1",
         title="The Matrix",
         year=1999,
         duration_ms=8_160_000,
         thumb_url=None,
-        plex_path=str(movie_path),
+        source_path=str(movie_path),
         guid="guid-1",
         library_name="Movies",
     )
-    monkeypatch.setattr(api_module, "PlexClient", lambda s: _FakePlexClient(s, movie))
+    monkeypatch.setattr(api_module, "create_media_client", lambda s: _FakePlexClient(s, movie))
     app = api_module.create_app(settings)
     app.state.renderer = _FakeRenderer()
     return TestClient(app)
@@ -62,7 +62,7 @@ def test_render_echoes_actual_start_and_duration_for_bare_timecode(tmp_path, mon
     movie_path.write_bytes(b"fake")
     client = _client(settings, monkeypatch, "/media/movie.mkv")
 
-    response = client.post("/render", json={"rating_key": 1, "timecode": "62"})
+    response = client.post("/render", json={"media_id": "1", "timecode": "62"})
 
     assert response.status_code == 200
     assert response.headers["X-Clip-Start"] == "62.0"
@@ -77,7 +77,7 @@ def test_render_echoes_explicit_end_timecode_span(tmp_path, monkeypatch):
 
     response = client.post(
         "/render",
-        json={"rating_key": 1, "timecode": "60", "end_timecode": "65"},
+        json={"media_id": "1", "timecode": "60", "end_timecode": "65"},
     )
 
     assert response.status_code == 200
@@ -91,7 +91,7 @@ def test_render_accepts_explicit_start_and_end(tmp_path, monkeypatch):
     movie_path.write_bytes(b"fake")
     client = _client(settings, monkeypatch, "/media/movie.mkv")
 
-    response = client.post("/render", json={"rating_key": 1, "start": 10.0, "end": 15.0})
+    response = client.post("/render", json={"media_id": "1", "start": 10.0, "end": 15.0})
 
     assert response.status_code == 200
     assert response.headers["X-Clip-Start"] == "10.0"
@@ -107,7 +107,7 @@ def test_render_rejects_explicit_span_outside_duration_bounds(tmp_path, monkeypa
     response = client.post(
         "/render",
         json={
-            "rating_key": 1,
+            "media_id": "1",
             "start": 10.0,
             "end": 10.0 + settings.render_defaults.max_duration_seconds + 1,
         },
@@ -122,7 +122,7 @@ def test_render_rejects_end_before_start(tmp_path, monkeypatch):
     movie_path.write_bytes(b"fake")
     client = _client(settings, monkeypatch, "/media/movie.mkv")
 
-    response = client.post("/render", json={"rating_key": 1, "start": 15.0, "end": 10.0})
+    response = client.post("/render", json={"media_id": "1", "start": 15.0, "end": 10.0})
 
     assert response.status_code == 422
 
@@ -133,7 +133,7 @@ def test_render_requires_start_and_end_together(tmp_path, monkeypatch):
     movie_path.write_bytes(b"fake")
     client = _client(settings, monkeypatch, "/media/movie.mkv")
 
-    response = client.post("/render", json={"rating_key": 1, "start": 10.0})
+    response = client.post("/render", json={"media_id": "1", "start": 10.0})
 
     assert response.status_code == 422
 
@@ -144,7 +144,7 @@ def test_render_requires_timecode_or_start_end(tmp_path, monkeypatch):
     movie_path.write_bytes(b"fake")
     client = _client(settings, monkeypatch, "/media/movie.mkv")
 
-    response = client.post("/render", json={"rating_key": 1})
+    response = client.post("/render", json={"media_id": "1"})
 
     assert response.status_code == 422
 
@@ -177,7 +177,7 @@ def test_render_passes_subtitle_overrides_to_the_renderer(tmp_path, monkeypatch)
     response = client.post(
         "/render",
         json={
-            "rating_key": 1,
+            "media_id": "1",
             "start": 10.0,
             "end": 15.0,
             "style": "classic",
@@ -196,7 +196,7 @@ def test_render_mp3_format_gets_audio_media_type(tmp_path, monkeypatch):
     client = _client(settings, monkeypatch, "/media/movie.mkv")
 
     response = client.post(
-        "/render", json={"rating_key": 1, "timecode": "10", "format": "mp3"}
+        "/render", json={"media_id": "1", "timecode": "10", "format": "mp3"}
     )
 
     assert response.status_code == 200
@@ -211,7 +211,7 @@ def test_render_ogg_format_gets_audio_media_type(tmp_path, monkeypatch):
     client = _client(settings, monkeypatch, "/media/movie.mkv")
 
     response = client.post(
-        "/render", json={"rating_key": 1, "timecode": "10", "format": "ogg"}
+        "/render", json={"media_id": "1", "timecode": "10", "format": "ogg"}
     )
 
     assert response.status_code == 200
@@ -235,7 +235,7 @@ def test_render_audio_format_ignores_a_style_request(tmp_path, monkeypatch):
 
     response = client.post(
         "/render",
-        json={"rating_key": 1, "timecode": "10", "format": "mp3", "style": "classic"},
+        json={"media_id": "1", "timecode": "10", "format": "mp3", "style": "classic"},
     )
 
     assert response.status_code == 200
@@ -262,7 +262,7 @@ def test_render_forwards_the_configured_audio_language_to_the_renderer(tmp_path,
     client.app.state.renderer = _CapturingRenderer()
 
     response = client.post(
-        "/render", json={"rating_key": 1, "timecode": "10", "format": "mp3"}
+        "/render", json={"media_id": "1", "timecode": "10", "format": "mp3"}
     )
 
     assert response.status_code == 200

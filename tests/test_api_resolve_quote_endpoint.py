@@ -8,14 +8,14 @@ from fastapi.testclient import TestClient
 
 from app.settings import LibraryConfig, PathMapping, QuoteMatchDefaults, Settings
 from app.worker import api as api_module
-from app.worker.plex_client import MovieResult
+from app.worker.media_client import MovieResult
 
 
 class _FakePlexClient:
     def __init__(self, settings: Settings, movie: MovieResult) -> None:
         self._movie = movie
 
-    def get_movie(self, rating_key: int) -> MovieResult:
+    def get_movie(self, media_id: str) -> MovieResult:
         return self._movie
 
 
@@ -37,16 +37,16 @@ def _settings(tmp_path, fetch_limit: int) -> Settings:
 
 def _client(settings: Settings, monkeypatch) -> TestClient:
     movie = MovieResult(
-        rating_key=1,
+        media_id="1",
         title="The Matrix",
         year=1999,
         duration_ms=8_160_000,
         thumb_url=None,
-        plex_path="/media/movie.mkv",
+        source_path="/media/movie.mkv",
         guid="guid-1",
         library_name="Movies",
     )
-    monkeypatch.setattr(api_module, "PlexClient", lambda s: _FakePlexClient(s, movie))
+    monkeypatch.setattr(api_module, "create_media_client", lambda s: _FakePlexClient(s, movie))
     return TestClient(api_module.create_app(settings))
 
 
