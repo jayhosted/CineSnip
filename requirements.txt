@@ -1,4 +1,4 @@
-discord.py>=2.4,<3
+discord.py>=2.5,<3
 fastapi>=0.115,<1
 uvicorn>=0.32,<1
 # uvloop/httptools are the two real performance-relevant pieces of

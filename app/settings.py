@@ -81,6 +81,14 @@ class RenderDefaults(BaseModel):
     # tag at all (see ffmpeg.py's choose_audio_stream). Doesn't apply to
     # gif/mp4/webm — those formats carry no audio at all (Section 6).
     audio_language: str = "eng"
+    # Discord Soundboard integration (issue #10): when a guild's board is
+    # full, whether/what CineSnip may offer to replace. "cinesnip_only"
+    # only offers sounds CineSnip itself previously added (identified via
+    # SoundboardSound.user, no local tracking table needed); "any" offers
+    # every sound on the board, including ones added by a person or another
+    # bot; "none" disables the replace flow entirely — a full board is a
+    # plain hard error. A 3-way mode, not a boolean plus a scope modifier.
+    soundboard_replace_scope: Literal["cinesnip_only", "any", "none"] = "cinesnip_only"
 
 
 class WorkerConfig(BaseModel):

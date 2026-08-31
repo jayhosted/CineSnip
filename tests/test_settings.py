@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 
 from app.settings import (
     LibraryConfig,
@@ -118,3 +119,26 @@ def test_audio_language_round_trips_through_config_yaml(tmp_path):
 
     reloaded = load_settings(env_path=env_path, config_path=config_path)
     assert reloaded.render_defaults.audio_language == "fre"
+
+
+def test_render_defaults_soundboard_replace_scope_defaults_to_cinesnip_only():
+    assert RenderDefaults().soundboard_replace_scope == "cinesnip_only"
+
+
+def test_soundboard_replace_scope_round_trips_through_config_yaml(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("DISCORD_TOKEN=x\nPLEX_URL=http://x\nPLEX_TOKEN=x\n")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("libraries: []\n")
+
+    settings = load_settings(env_path=env_path, config_path=config_path)
+    settings.render_defaults.soundboard_replace_scope = "any"
+    write_config_yaml(settings, config_path=config_path)
+
+    reloaded = load_settings(env_path=env_path, config_path=config_path)
+    assert reloaded.render_defaults.soundboard_replace_scope == "any"
+
+
+def test_soundboard_replace_scope_rejects_invalid_value():
+    with pytest.raises(ValidationError):
+        RenderDefaults(soundboard_replace_scope="everything")
