@@ -19,8 +19,8 @@
     </div>
     <p class="footnote" style="text-align:left; max-width:none; margin:16px 0 18px;">
       This only rewrites your library selection and path mappings —
-      Discord and Plex connection, and render/cache settings on the other
-      tabs here, are untouched.
+      Discord and {{ "Jellyfin" if settings.media_server == "jellyfin" else "Plex" }} connection, and
+      render/cache settings on the other tabs here, are untouched.
     </p>
     <a href="/wizard/libraries?return_to=libraries" class="btn btn-primary" style="text-decoration:none; display:inline-block;">Edit libraries &rarr;</a>
   </div>

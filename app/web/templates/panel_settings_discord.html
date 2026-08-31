@@ -8,7 +8,8 @@
       &bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;{{ settings.discord_token[-4:] if settings.discord_token else "" }}
     </p>
     <p class="footnote" style="text-align:left; max-width:none; margin:12px 0 18px;">
-      This only rewrites your Discord bot token — Plex, libraries, and
+      This only rewrites your Discord bot token —
+      {{ "Jellyfin" if settings.media_server == "jellyfin" else "Plex" }}, libraries, and
       render/cache settings on the other tabs here are untouched.
     </p>
     <a href="/wizard/discord?return_to=discord" class="btn btn-primary" style="text-decoration:none; display:inline-block;">Edit Discord connection &rarr;</a>
