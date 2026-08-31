@@ -64,7 +64,7 @@ class _FakeWorker:
         self.subtitles = AsyncMock(return_value=[])
 
 
-def _make_view(*, duration=4.0, format="mp3", settings_holder=None) -> AudioClipResultView:
+def _make_view(*, duration=4.0, format="mp3", scope=None) -> AudioClipResultView:
     return AudioClipResultView(
         _FakeWorker(),
         rating_key=1,
@@ -74,7 +74,7 @@ def _make_view(*, duration=4.0, format="mp3", settings_holder=None) -> AudioClip
         clip_start=10.0,
         clip_duration=duration,
         format=format,
-        settings_holder=settings_holder,
+        soundboard_replace_scope=(lambda: scope) if scope is not None else None,
     )
 
 
@@ -177,9 +177,7 @@ def test_add_to_soundboard_uploads_when_board_not_full(monkeypatch):
 
 def test_add_to_soundboard_full_board_none_scope_is_plain_error(monkeypatch):
     async def run():
-        view = _make_view(settings_holder=SimpleNamespace(
-            settings=SimpleNamespace(render_defaults=SimpleNamespace(soundboard_replace_scope="none"))
-        ))
+        view = _make_view(scope="none")
         guild = _guild(create_expressions=True, sound_count=8)  # tier 0 cap is 8
         interaction = _fake_interaction(guild)
         await view.add_to_soundboard.callback(interaction)
@@ -198,11 +196,7 @@ def test_add_to_soundboard_full_board_offers_picker_for_cinesnip_only(monkeypatc
     monkeypatch.setattr(sb, "list_sounds", AsyncMock(return_value=[bot_sound, human_sound]))
 
     async def run():
-        view = _make_view(settings_holder=SimpleNamespace(
-            settings=SimpleNamespace(
-                render_defaults=SimpleNamespace(soundboard_replace_scope="cinesnip_only")
-            )
-        ))
+        view = _make_view(scope="cinesnip_only")
         guild = _guild(create_expressions=True, sound_count=8)
         interaction = _fake_interaction(guild)
         await view.add_to_soundboard.callback(interaction)
@@ -214,6 +208,27 @@ def test_add_to_soundboard_full_board_offers_picker_for_cinesnip_only(monkeypatc
     picker = kwargs["view"]
     assert isinstance(picker, _SoundboardReplacePickerView)
     assert list(picker._candidates.keys()) == [1]
+
+
+def test_add_to_soundboard_full_board_no_eligible_candidates_is_plain_error(monkeypatch):
+    # cinesnip_only scope but every sound on the board belongs to a human —
+    # nothing eligible to offer, so this must be a plain error, not a
+    # picker with zero options.
+    human_sound = SimpleNamespace(id=2, name="human-sound", user=SimpleNamespace(id=1))
+    monkeypatch.setattr(sb, "list_sounds", AsyncMock(return_value=[human_sound]))
+
+    async def run():
+        view = _make_view(scope="cinesnip_only")
+        guild = _guild(create_expressions=True, sound_count=8)
+        interaction = _fake_interaction(guild)
+        await view.add_to_soundboard.callback(interaction)
+        return interaction
+
+    interaction = asyncio.run(run())
+    interaction.followup.send.assert_awaited_once()
+    (msg,), kwargs = interaction.followup.send.await_args
+    assert "nothing eligible to replace" in msg
+    assert "view" not in kwargs
 
 
 def test_replace_picker_delete_then_upload_failure_reports_data_loss_risk(monkeypatch):
@@ -238,6 +253,55 @@ def test_replace_picker_delete_then_upload_failure_reports_data_loss_risk(monkey
     (msg,), _ = interaction.followup.send.await_args
     assert "may now be missing" in msg
     assert "old-sound" in msg
+
+
+def test_replace_picker_denies_pick_without_permission(monkeypatch):
+    sound = SimpleNamespace(id=1, name="old-sound", user=SimpleNamespace(id=1), guild=None)
+    replace_mock = AsyncMock()
+    monkeypatch.setattr(sb, "replace", replace_mock)
+    monkeypatch.setattr(sb, "can_replace", lambda guild, sound, bot_user_id: False)
+
+    async def run():
+        view = _make_view()
+        picker = _SoundboardReplacePickerView(view, [sound], bot_user_id=999)
+        interaction = AsyncMock()
+        interaction.data = {"values": ["1"]}
+        await picker._on_pick(interaction)
+        return interaction
+
+    interaction = asyncio.run(run())
+    replace_mock.assert_not_awaited()
+    interaction.response.send_message.assert_awaited_once()
+    (msg,), kwargs = interaction.response.send_message.await_args
+    assert "permission to replace" in msg
+    assert kwargs["ephemeral"] is True
+
+
+def test_soundboard_disabled_note_shown_only_when_duration_disables_it():
+    async def run():
+        eligible = _make_view(duration=4.0)
+        over_cap = _make_view(duration=6.0)
+        return eligible, over_cap
+
+    eligible, over_cap = asyncio.run(run())
+    assert eligible._soundboard_disabled_note() == ""
+    note = over_cap._soundboard_disabled_note()
+    assert "5.2s" in note
+    assert "end_timecode" in note
+
+
+def test_soundboard_disabled_note_appears_in_re_render_content():
+    async def run():
+        view = _make_view(duration=6.0)
+        interaction = AsyncMock()
+        render_result = SimpleNamespace(content=b"new-bytes", start=10.0, duration=6.0, format="mp3")
+        await view._apply_render_result(interaction, render_result)
+        return interaction
+
+    interaction = asyncio.run(run())
+    interaction.edit_original_response.assert_awaited_once()
+    _, kwargs = interaction.edit_original_response.await_args
+    assert "Add to Soundboard is disabled" in kwargs["content"]
 
 
 def test_replace_picker_success_sends_confirmation(monkeypatch):

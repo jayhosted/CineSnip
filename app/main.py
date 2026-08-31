@@ -47,13 +47,25 @@ async def _stop_worker(server: uvicorn.Server, task: asyncio.Task) -> None:
     await task
 
 
+def _read_soundboard_replace_scope(settings_holder: SettingsHolder) -> str:
+    # Narrow accessor threaded into the bot instead of the whole
+    # SettingsHolder/Settings tree (issue #10 review finding) — reads live
+    # off settings_holder each call, so a /wizard/restart reconfiguration
+    # is picked up without a bot rebuild, but bot-layer code never gets a
+    # handle to discord_token/plex_token/library path mappings/etc.
+    settings = settings_holder.settings
+    if settings is None:
+        return "cinesnip_only"
+    return settings.render_defaults.soundboard_replace_scope
+
+
 async def _start_bot(
     settings: Settings, settings_holder: SettingsHolder
 ) -> tuple[CineSnipBot, asyncio.Task]:
     bot = build_bot(
         f"http://127.0.0.1:{settings.worker.port}",
         dev_guild_id=settings.dev_guild_id,
-        settings_holder=settings_holder,
+        soundboard_replace_scope=lambda: _read_soundboard_replace_scope(settings_holder),
     )
     task = asyncio.create_task(bot.start(settings.discord_token))
     return bot, task

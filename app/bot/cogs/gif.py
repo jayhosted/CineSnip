@@ -324,6 +324,12 @@ def _soundboard_eligible(duration: float, format: str | None) -> bool:
     return format in _SOUNDBOARD_FORMATS and duration <= _SOUNDBOARD_MAX_DURATION_SECONDS
 
 
+_SOUNDBOARD_DISABLED_DURATION_NOTE = (
+    "Add to Soundboard is disabled — clip is over 5.2s. Use Custom Duration / "
+    "end_timecode to trim it, then retry."
+)
+
+
 def _filter_replace_candidates(sounds, scope: str, bot_user_id: int):
     """Narrows a full board's sounds to what soundboard_replace_scope (issue
     #10, Settings.render_defaults) allows offering as a replace target.
@@ -1076,7 +1082,7 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
         clip_start: float,
         clip_duration: float,
         format: str | None = None,
-        settings_holder=None,
+        soundboard_replace_scope: Callable[[], str] | None = None,
     ) -> None:
         # 1800s (30 min), matching ClipEditView — an editing session takes
         # longer than the one-shot 300s a plain post-only view needs.
@@ -1089,20 +1095,17 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
         self._clip_start = clip_start
         self._clip_duration = clip_duration
         self._format = format
-        # Live holder, not a Settings snapshot (issue #10) — read at click
-        # time via _soundboard_replace_scope() so a reconfiguration that
-        # changes soundboard_replace_scope mid-session (this view lives up
-        # to 1800s) is picked up rather than baked in at construction.
-        self._settings_holder = settings_holder
+        # A narrow closure (CineSnipBot.soundboard_replace_scope, issue #10
+        # review finding), not a handle to the whole SettingsHolder/Settings
+        # tree — this view never gets a path to discord_token/plex_token/
+        # library path mappings, only this one field. Called fresh at click
+        # time (not read once here) so a reconfiguration that changes
+        # soundboard_replace_scope mid-session (this view lives up to
+        # 1800s) is picked up rather than baked in at construction.
+        self._soundboard_replace_scope = soundboard_replace_scope or (lambda: "cinesnip_only")
         self._add_duration_merge_toggles()
         self._init_duration_merge()
         self._update_soundboard_button()
-
-    def _soundboard_replace_scope(self) -> str:
-        settings = self._settings_holder.settings if self._settings_holder else None
-        if settings is None:
-            return "cinesnip_only"
-        return settings.render_defaults.soundboard_replace_scope
 
     def _build_merge_embed(self, description: str | None) -> discord.Embed:
         """Same footer-readout styling as ClipEditView._build_merge_embed,
@@ -1180,6 +1183,9 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
         await self._refresh_open_category()
 
         span_line = f"✏️ Edited — {_clip_span_line(render_result.start, render_result.duration)}"
+        disabled_note = self._soundboard_disabled_note()
+        if disabled_note:
+            span_line = f"{span_line}\n{disabled_note}"
 
         file = discord.File(io.BytesIO(self._content), filename=self._filename)
         if self._open_category == "merge":
@@ -1280,6 +1286,16 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
 
     def _update_soundboard_button(self) -> None:
         self.add_to_soundboard.disabled = not _soundboard_eligible(self._clip_duration, self._format)
+
+    def _soundboard_disabled_note(self) -> str:
+        # Only the duration reason gets a visible note — a format other
+        # than mp3/ogg is never actually reachable here (/snip audio's
+        # `format` param is Literal["mp3", "ogg"], issue #6), so there's no
+        # real case where the button is disabled for that reason to
+        # explain.
+        if self.add_to_soundboard.disabled and self._clip_duration > _SOUNDBOARD_MAX_DURATION_SECONDS:
+            return _SOUNDBOARD_DISABLED_DURATION_NOTE
+        return ""
 
 
 class _SoundboardReplacePickerView(discord.ui.View):
@@ -2459,7 +2475,7 @@ class GifCog(commands.Cog):
                 render_result.start,
                 render_result.duration,
                 format=format,
-                settings_holder=getattr(self.bot, "settings_holder", None),
+                soundboard_replace_scope=getattr(self.bot, "soundboard_replace_scope", None),
             )
         else:
             result_view = ClipEditView(
@@ -2476,8 +2492,11 @@ class GifCog(commands.Cog):
                 render_result.start,
                 render_result.duration,
             )
+        notes = [_no_subtitles_note(default_style, render_result.style)]
+        if kind == "audio":
+            notes.append(result_view._soundboard_disabled_note())
         await interaction.edit_original_response(
-            content=_no_subtitles_note(default_style, render_result.style) or None,
+            content="\n".join(n for n in notes if n) or None,
             attachments=[file],
             view=result_view,
         )
