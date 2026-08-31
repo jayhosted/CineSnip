@@ -570,9 +570,9 @@ class _DurationMergeMixin:
     (`_re_render`/`_re_render_timecode` — ClipEditView passes style +
     subtitle_overrides, audio always passes style="none" with no
     overrides) and how the merge-context readout displays on open
-    (`_merge_open_kwargs` — ClipEditView embeds it in the footer next to
-    the rendered gif's image; audio has no image to embed it against, so
-    it goes into the message's plain content instead).
+    (`_merge_open_kwargs` — both embed it in the footer, matching styling,
+    but ClipEditView's embed also sets the rendered gif as its image,
+    which audio has no equivalent of).
 
     Expects the composing view to provide `self._worker`, `self._rating_key`,
     `self._clip_start`, `self._clip_duration`, `self.add_item`/`remove_item`,
@@ -1068,14 +1068,17 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
         self._add_duration_merge_toggles()
         self._init_duration_merge()
 
+    def _build_merge_embed(self, description: str | None) -> discord.Embed:
+        """Same footer-readout styling as ClipEditView._build_merge_embed,
+        for visual consistency between the two Merge Subs screens — minus
+        the image slot, since there's no gif here to set as one."""
+        embed = discord.Embed(description=description) if description else discord.Embed()
+        if self._merge_context_text:
+            embed.set_footer(text=self._merge_context_text[:2048])
+        return embed
+
     def _merge_open_kwargs(self) -> dict:
-        # No image to embed a footer against (unlike ClipEditView, which
-        # has the rendered gif) — the surrounding-lines readout goes
-        # straight into the message's plain content instead.
-        return {
-            "content": self._merge_context_text or "No adjacent subtitle lines.",
-            "embed": None,
-        }
+        return {"content": None, "embed": self._build_merge_embed(description=None)}
 
     async def _re_render(
         self,
@@ -1139,16 +1142,17 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
         await self._refresh_open_category()
 
         span_line = f"✏️ Edited — {_clip_span_line(render_result.start, render_result.duration)}"
-        description = (
-            f"{span_line}\n{self._merge_context_text}"
-            if self._open_category == "merge" and self._merge_context_text
-            else span_line
-        )
 
         file = discord.File(io.BytesIO(self._content), filename=self._filename)
-        await interaction.edit_original_response(
-            content=description, embed=None, attachments=[file], view=self
-        )
+        if self._open_category == "merge":
+            embed = self._build_merge_embed(description=span_line)
+            await interaction.edit_original_response(
+                content=None, embed=embed, attachments=[file], view=self
+            )
+        else:
+            await interaction.edit_original_response(
+                content=span_line, embed=None, attachments=[file], view=self
+            )
 
     @discord.ui.button(label="Post to channel", style=discord.ButtonStyle.primary, row=4)
     async def post(

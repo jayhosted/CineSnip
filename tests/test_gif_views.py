@@ -992,7 +992,10 @@ def test_audio_clip_result_view_merge_previous_extends_start_to_adjacent_entry()
     assert kwargs["end"] == 14.0
 
 
-def test_audio_clip_result_view_merge_open_uses_plain_content_not_embed():
+def test_audio_clip_result_view_merge_open_uses_embed_footer_like_clip_edit_view():
+    # Styling consistency with ClipEditView's Merge Subs screen (issue #5):
+    # the surrounding-lines readout goes in an embed footer, not plain
+    # content — audio just has no gif to set as the embed's image.
     async def run():
         entries = [_entry(0, 5.0, 8.0, "previous line")]
         view = _make_audio_view(_FakeEditWorker(entries=entries))
@@ -1004,8 +1007,9 @@ def test_audio_clip_result_view_merge_open_uses_plain_content_not_embed():
     interaction = asyncio.run(run())
 
     _, kwargs = interaction.edit_original_response.await_args
-    assert kwargs["embed"] is None
-    assert "previous line" in kwargs["content"]
+    assert kwargs["content"] is None
+    assert "previous line" in kwargs["embed"].footer.text
+    assert not kwargs["embed"].image.url
 
 
 def test_audio_clip_result_view_edit_resets_filename_to_generic():
