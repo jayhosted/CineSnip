@@ -921,7 +921,12 @@ def test_audio_clip_result_view_has_duration_merge_toggles_and_post():
         return {item.label: item.row for item in view.children}
 
     rows_by_label = asyncio.run(run())
-    assert rows_by_label == {"⏱ Duration": 1, "🔀 Merge Subs": 1, "Post to channel": 4}
+    assert rows_by_label == {
+        "⏱ Duration": 1,
+        "🔀 Merge Subs": 1,
+        "Post to channel": 4,
+        "Add to Soundboard": 4,
+    }
 
 
 def test_audio_clip_result_view_post_sends_file_and_disables_button():

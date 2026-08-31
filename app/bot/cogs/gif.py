@@ -313,6 +313,29 @@ def _audio_filename(fmt: str, subtitle_text: str | None) -> str:
     return f"clip.{fmt}"
 
 
+_SOUNDBOARD_MAX_DURATION_SECONDS = 5.2
+_SOUNDBOARD_FORMATS = ("mp3", "ogg")
+
+
+def _soundboard_eligible(duration: float, format: str | None) -> bool:
+    """Discord's Soundboard hard-caps a sound at 5.2s and requires mp3/ogg
+    (issue #10) — independent of render_defaults' own [min,max]_duration
+    clamp, which is about clip-length UX, not this API-imposed limit."""
+    return format in _SOUNDBOARD_FORMATS and duration <= _SOUNDBOARD_MAX_DURATION_SECONDS
+
+
+def _filter_replace_candidates(sounds, scope: str, bot_user_id: int):
+    """Narrows a full board's sounds to what soundboard_replace_scope (issue
+    #10, Settings.render_defaults) allows offering as a replace target.
+    "none" is handled by the caller before a full sound list is even
+    fetched, but returns [] here too so this stays a total function."""
+    if scope == "any":
+        return list(sounds)
+    if scope == "cinesnip_only":
+        return [s for s in sounds if s.user is not None and s.user.id == bot_user_id]
+    return []
+
+
 def _format_clip_position(seconds: float) -> str:
     """Like _format_unit_timecode, but keeps one decimal place on the
     seconds component instead of rounding to a whole second — used only by
@@ -1053,6 +1076,7 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
         clip_start: float,
         clip_duration: float,
         format: str | None = None,
+        settings_holder=None,
     ) -> None:
         # 1800s (30 min), matching ClipEditView — an editing session takes
         # longer than the one-shot 300s a plain post-only view needs.
@@ -1065,8 +1089,20 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
         self._clip_start = clip_start
         self._clip_duration = clip_duration
         self._format = format
+        # Live holder, not a Settings snapshot (issue #10) — read at click
+        # time via _soundboard_replace_scope() so a reconfiguration that
+        # changes soundboard_replace_scope mid-session (this view lives up
+        # to 1800s) is picked up rather than baked in at construction.
+        self._settings_holder = settings_holder
         self._add_duration_merge_toggles()
         self._init_duration_merge()
+        self._update_soundboard_button()
+
+    def _soundboard_replace_scope(self) -> str:
+        settings = self._settings_holder.settings if self._settings_holder else None
+        if settings is None:
+            return "cinesnip_only"
+        return settings.render_defaults.soundboard_replace_scope
 
     def _build_merge_embed(self, description: str | None) -> discord.Embed:
         """Same footer-readout styling as ClipEditView._build_merge_embed,
@@ -1140,6 +1176,7 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
         # back to generic if entries aren't cached yet or none overlap.
         window = _entries_in_window(self._all_entries or [], self._clip_start, self._clip_end)
         self._filename = _audio_filename(render_result.format, window[0].text if window else None)
+        self._update_soundboard_button()
         await self._refresh_open_category()
 
         span_line = f"✏️ Edited — {_clip_span_line(render_result.start, render_result.duration)}"
@@ -1177,6 +1214,126 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
             return
         button.disabled = True
         await interaction.edit_original_response(view=self)
+
+    @discord.ui.button(label="Add to Soundboard", style=discord.ButtonStyle.secondary, row=4)
+    async def add_to_soundboard(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        # Local import mirrors other lazy worker/module imports in this
+        # file — app.bot.soundboard, NOT app.soundboard (issue #10).
+        from app.bot import soundboard as sb
+
+        guild = interaction.guild
+        bot_user_id = interaction.client.user.id
+
+        if not sb.can_upload(guild):
+            await interaction.response.send_message(
+                "CineSnip doesn't have the Create Expressions permission on this server. "
+                "Ask the bot's host to update its permissions.",
+                ephemeral=True,
+            )
+            return
+
+        if len(self._content) > 512_000:
+            await interaction.response.send_message(
+                "Clip is too large for the Soundboard even at this length — try a shorter span.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        if sb.is_full(guild):
+            scope = self._soundboard_replace_scope()
+            if scope == "none":
+                await interaction.followup.send("This server's Soundboard is full.", ephemeral=True)
+                return
+            all_sounds = await sb.list_sounds(guild)
+            candidates = _filter_replace_candidates(all_sounds, scope=scope, bot_user_id=bot_user_id)
+            if not candidates:
+                await interaction.followup.send(
+                    "This server's Soundboard is full and there's nothing eligible to replace.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.followup.send(
+                "Soundboard is full — pick a sound to replace:",
+                view=_SoundboardReplacePickerView(self, candidates, bot_user_id),
+                ephemeral=True,
+            )
+            return
+
+        try:
+            await sb.upload(guild, name=self._title[:32], sound=self._content)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "CineSnip doesn't have the Create Expressions permission on this server. "
+                "Ask the bot's host to update its permissions.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException as exc:
+            await interaction.followup.send(f"Couldn't add that to the Soundboard: {exc}", ephemeral=True)
+            return
+
+        await interaction.followup.send("Added to the Soundboard!", ephemeral=True)
+
+    def _update_soundboard_button(self) -> None:
+        self.add_to_soundboard.disabled = not _soundboard_eligible(self._clip_duration, self._format)
+
+
+class _SoundboardReplacePickerView(discord.ui.View):
+    """Follow-up picker shown when the Soundboard is full and
+    soundboard_replace_scope allows a replace (issue #10) — a separate
+    ephemeral view rather than reusing AudioClipResultView's own item rows,
+    since a Select needs its own message here (the result message's own
+    view is already using every row 0-4 slot between Duration/Merge and
+    Post/Add to Soundboard)."""
+
+    def __init__(self, parent: "AudioClipResultView", candidates, bot_user_id: int) -> None:
+        super().__init__(timeout=120)
+        self._parent = parent
+        self._bot_user_id = bot_user_id
+        options = [
+            discord.SelectOption(label=s.name[:100], value=str(s.id)) for s in candidates[:25]
+        ]
+        self._candidates = {s.id: s for s in candidates}
+        select = discord.ui.Select(placeholder="Choose a sound to replace", options=options)
+        select.callback = self._on_pick
+        self.add_item(select)
+
+    async def _on_pick(self, interaction: discord.Interaction) -> None:
+        from app.bot import soundboard as sb
+
+        sound_id = int(interaction.data["values"][0])
+        sound = self._candidates[sound_id]
+        if not sb.can_replace(interaction.guild, sound, self._bot_user_id):
+            await interaction.response.send_message(
+                "CineSnip doesn't have permission to replace that sound on this server.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        # soundboard.replace() deletes the old sound, then uploads the new
+        # one (issue #10 code review flagged this: if the delete succeeds
+        # but the upload then fails, the guild is left with NEITHER sound —
+        # a real data-loss-shaped failure, not just "the replace didn't
+        # happen"). There's no way to tell from here which of the two steps
+        # actually failed, so the message hedges rather than asserting the
+        # delete definitely went through — but it must name this specific
+        # risk, not just say "couldn't replace that sound" the way an
+        # ordinary failure would.
+        try:
+            await sb.replace(sound, name=self._parent._title[:32], new_sound=self._parent._content)
+        except discord.HTTPException as exc:
+            await interaction.followup.send(
+                f"Couldn't replace \"{sound.name}\" on the Soundboard: {exc}. If the old sound "
+                "was already removed before this failed, the Soundboard may now be missing it "
+                "entirely — check the server's Soundboard and re-add it if needed.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send("Replaced on the Soundboard!", ephemeral=True)
 
 
 class _CustomDurationModal(discord.ui.Modal, title="Custom duration"):
@@ -2302,6 +2459,7 @@ class GifCog(commands.Cog):
                 render_result.start,
                 render_result.duration,
                 format=format,
+                settings_holder=getattr(self.bot, "settings_holder", None),
             )
         else:
             result_view = ClipEditView(

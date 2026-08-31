@@ -47,8 +47,14 @@ async def _stop_worker(server: uvicorn.Server, task: asyncio.Task) -> None:
     await task
 
 
-async def _start_bot(settings: Settings) -> tuple[CineSnipBot, asyncio.Task]:
-    bot = build_bot(f"http://127.0.0.1:{settings.worker.port}", dev_guild_id=settings.dev_guild_id)
+async def _start_bot(
+    settings: Settings, settings_holder: SettingsHolder
+) -> tuple[CineSnipBot, asyncio.Task]:
+    bot = build_bot(
+        f"http://127.0.0.1:{settings.worker.port}",
+        dev_guild_id=settings.dev_guild_id,
+        settings_holder=settings_holder,
+    )
     task = asyncio.create_task(bot.start(settings.discord_token))
     return bot, task
 
@@ -145,7 +151,7 @@ async def main() -> None:
                 if bot is not None:
                     settings_holder.bot = None
                     await _stop_bot(bot, bot_task)
-                bot, bot_task = await _start_bot(settings)
+                bot, bot_task = await _start_bot(settings, settings_holder)
                 settings_holder.bot = bot
                 current_discord_token = settings.discord_token
                 current_worker_port = settings.worker.port
