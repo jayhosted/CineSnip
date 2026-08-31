@@ -14,7 +14,7 @@ from app.settings import LibraryConfig, PathMapping
 
 @dataclass
 class MappingRow:
-    plex_prefix: str = ""
+    path_prefix: str = ""
     container_path: str = ""
 
 
@@ -89,9 +89,9 @@ class WizardState:
             LibraryConfig(
                 name=choice.name,
                 path_mappings=[
-                    PathMapping(plex_prefix=row.plex_prefix, container_path=row.container_path)
+                    PathMapping(path_prefix=row.path_prefix, container_path=row.container_path)
                     for row in choice.mapping_rows
-                    if row.plex_prefix and row.container_path
+                    if row.path_prefix and row.container_path
                 ],
                 three_d_format=choice.three_d_format,
             )

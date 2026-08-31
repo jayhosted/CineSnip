@@ -17,7 +17,7 @@ from typing import Iterator
 @dataclass(frozen=True)
 class CachedTitle:
     guid: str
-    rating_key: int
+    media_id: str
     title: str
     library_name: str
     source: str = ""
@@ -39,7 +39,7 @@ def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS cached_titles ("
             "guid TEXT PRIMARY KEY, "
-            "rating_key INTEGER NOT NULL, "
+            "media_id TEXT NOT NULL, "
             "title TEXT NOT NULL, "
             "library_name TEXT NOT NULL, "
             "cached_at TEXT NOT NULL"
@@ -71,7 +71,7 @@ def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS no_subtitle_titles ("
             "guid TEXT PRIMARY KEY, "
-            "rating_key INTEGER NOT NULL, "
+            "media_id TEXT NOT NULL, "
             "title TEXT NOT NULL, "
             "library_name TEXT NOT NULL, "
             "checked_at TEXT NOT NULL"
@@ -128,19 +128,19 @@ def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
 
 
 def upsert_cached_title(
-    db_path: Path, guid: str, rating_key: int, title: str, library_name: str, source: str
+    db_path: Path, guid: str, media_id: str, title: str, library_name: str, source: str
 ) -> None:
     with _connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO cached_titles (guid, rating_key, title, library_name, cached_at, source) "
+            "INSERT INTO cached_titles (guid, media_id, title, library_name, cached_at, source) "
             "VALUES (?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(guid) DO UPDATE SET "
-            "rating_key=excluded.rating_key, "
+            "media_id=excluded.media_id, "
             "title=excluded.title, "
             "library_name=excluded.library_name, "
             "cached_at=excluded.cached_at, "
             "source=excluded.source",
-            (guid, rating_key, title, library_name, datetime.now(timezone.utc).isoformat(), source),
+            (guid, media_id, title, library_name, datetime.now(timezone.utc).isoformat(), source),
         )
 
 
@@ -149,10 +149,10 @@ def list_cached_titles(db_path: Path) -> list[CachedTitle]:
         return []
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT guid, rating_key, title, library_name, source FROM cached_titles"
+            "SELECT guid, media_id, title, library_name, source FROM cached_titles"
         ).fetchall()
     return [
-        CachedTitle(guid=r[0], rating_key=r[1], title=r[2], library_name=r[3], source=r[4] or "")
+        CachedTitle(guid=r[0], media_id=r[1], title=r[2], library_name=r[3], source=r[4] or "")
         for r in rows
     ]
 
@@ -162,12 +162,12 @@ def list_cached_titles_for_library(db_path: Path, library_name: str) -> list[Cac
         return []
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT guid, rating_key, title, library_name, source FROM cached_titles "
+            "SELECT guid, media_id, title, library_name, source FROM cached_titles "
             "WHERE library_name = ?",
             (library_name,),
         ).fetchall()
     return [
-        CachedTitle(guid=r[0], rating_key=r[1], title=r[2], library_name=r[3], source=r[4] or "")
+        CachedTitle(guid=r[0], media_id=r[1], title=r[2], library_name=r[3], source=r[4] or "")
         for r in rows
     ]
 
@@ -213,11 +213,11 @@ def list_cached_titles_missing_source(db_path: Path) -> list[CachedTitle]:
         return []
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT guid, rating_key, title, library_name, source FROM cached_titles "
+            "SELECT guid, media_id, title, library_name, source FROM cached_titles "
             "WHERE source IS NULL OR source = ''"
         ).fetchall()
     return [
-        CachedTitle(guid=r[0], rating_key=r[1], title=r[2], library_name=r[3], source=r[4] or "")
+        CachedTitle(guid=r[0], media_id=r[1], title=r[2], library_name=r[3], source=r[4] or "")
         for r in rows
     ]
 
@@ -228,18 +228,18 @@ def set_cached_title_source(db_path: Path, guid: str, source: str) -> None:
 
 
 def upsert_no_subtitle_title(
-    db_path: Path, guid: str, rating_key: int, title: str, library_name: str
+    db_path: Path, guid: str, media_id: str, title: str, library_name: str
 ) -> None:
     with _connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO no_subtitle_titles (guid, rating_key, title, library_name, checked_at) "
+            "INSERT INTO no_subtitle_titles (guid, media_id, title, library_name, checked_at) "
             "VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT(guid) DO UPDATE SET "
-            "rating_key=excluded.rating_key, "
+            "media_id=excluded.media_id, "
             "title=excluded.title, "
             "library_name=excluded.library_name, "
             "checked_at=excluded.checked_at",
-            (guid, rating_key, title, library_name, datetime.now(timezone.utc).isoformat()),
+            (guid, media_id, title, library_name, datetime.now(timezone.utc).isoformat()),
         )
 
 

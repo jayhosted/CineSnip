@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 
 class PathMapping(BaseModel):
-    plex_prefix: str
+    path_prefix: str
     container_path: str
 
 
@@ -183,8 +183,11 @@ class LibrarySyncDefaults(BaseModel):
 
 class Settings(BaseModel):
     discord_token: str
-    plex_url: str
-    plex_token: str
+    plex_url: str = ""
+    plex_token: str = ""
+    jellyfin_url: str = ""
+    jellyfin_api_key: str = ""
+    media_server: Literal["plex", "jellyfin"] = "plex"
 
     libraries: list[LibraryConfig] = Field(default_factory=list)
     render_defaults: RenderDefaults = Field(default_factory=RenderDefaults)
@@ -199,7 +202,7 @@ class Settings(BaseModel):
     @property
     def quote_index_db_path(self) -> Path:
         # Derived, not a config.yaml field — the index is a rebuildable
-        # cache-of-a-cache (guid -> rating_key/title/library_name for
+        # cache-of-a-cache (guid -> media_id/title/library_name for
         # already-parsed titles), not something an installer needs to
         # configure separately from cache_dir itself.
         return self.cache_dir / "quote_index.db"
@@ -235,6 +238,7 @@ def write_config_yaml(settings: Settings, config_path: Path = Path("config.yaml"
     _write_config_files for that half, which this mirrors the shape of.
     """
     config = {
+        "media_server": settings.media_server,
         "libraries": [lib.model_dump() for lib in settings.libraries],
         "render_defaults": settings.render_defaults.model_dump(),
         "subtitle_defaults": settings.subtitle_defaults.model_dump(),
@@ -264,21 +268,55 @@ def load_settings(
     discord_token = os.environ.get("DISCORD_TOKEN", "").strip()
     plex_url = os.environ.get("PLEX_URL", "").strip()
     plex_token = os.environ.get("PLEX_TOKEN", "").strip()
+    jellyfin_url = os.environ.get("JELLYFIN_URL", "").strip()
+    jellyfin_api_key = os.environ.get("JELLYFIN_API_KEY", "").strip()
     dev_guild_id_raw = os.environ.get("DEV_GUILD_ID", "").strip()
 
-    missing = [
-        name
-        for name, value in [
-            ("DISCORD_TOKEN", discord_token),
-            ("PLEX_URL", plex_url),
-            ("PLEX_TOKEN", plex_token),
+    if not config_path.exists():
+        raise SettingsError(
+            f"{config_path} not found. Copy config.yaml.example to {config_path} "
+            f"and fill in your path mappings — see README.md."
+        )
+
+    with config_path.open("r", encoding="utf-8") as f:
+        raw_config = yaml.safe_load(f) or {}
+
+    media_server = raw_config.get("media_server", "plex")
+
+    missing = [name for name, value in [("DISCORD_TOKEN", discord_token)] if not value]
+    if media_server == "plex":
+        missing += [
+            name
+            for name, value in [("PLEX_URL", plex_url), ("PLEX_TOKEN", plex_token)]
+            if not value
         ]
-        if not value
-    ]
+    elif media_server == "jellyfin":
+        missing += [
+            name
+            for name, value in [
+                ("JELLYFIN_URL", jellyfin_url),
+                ("JELLYFIN_API_KEY", jellyfin_api_key),
+            ]
+            if not value
+        ]
     if missing:
         raise SettingsError(
             f"Missing required .env values: {', '.join(missing)}. "
             f"Copy .env.example to .env and fill them in — see README.md."
+        )
+
+    # Library auto-sync depends on Plex's per-section updatedAt for change
+    # detection; Jellyfin has no analog, so JellyfinClient raises
+    # NotImplementedError there (issue #25). Caught here, at config-load
+    # time, rather than left to surface deep inside the background sync
+    # loop — where its broad "media server unreachable" handler would
+    # swallow it and silently no-op forever.
+    if (raw_config.get("library_sync") or {}).get("enabled") and media_server == "jellyfin":
+        raise SettingsError(
+            "library_sync.enabled is not supported with media_server: jellyfin — "
+            "automatic library sync is Plex-only (issue #25). Set "
+            "library_sync.enabled: false in config.yaml, or switch to "
+            "media_server: plex."
         )
 
     dev_guild_id: int | None = None
@@ -290,20 +328,14 @@ def load_settings(
                 f"DEV_GUILD_ID must be a numeric Discord server ID, got '{dev_guild_id_raw}'."
             ) from exc
 
-    if not config_path.exists():
-        raise SettingsError(
-            f"{config_path} not found. Copy config.yaml.example to {config_path} "
-            f"and fill in your path mappings — see README.md."
-        )
-
-    with config_path.open("r", encoding="utf-8") as f:
-        raw_config = yaml.safe_load(f) or {}
-
     try:
         return Settings(
             discord_token=discord_token,
             plex_url=plex_url,
             plex_token=plex_token,
+            jellyfin_url=jellyfin_url,
+            jellyfin_api_key=jellyfin_api_key,
+            media_server=media_server,
             libraries=[
                 LibraryConfig(**lib) for lib in raw_config.get("libraries", [])
             ],

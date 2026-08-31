@@ -32,7 +32,7 @@ def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
             "CREATE TABLE IF NOT EXISTS titles("
             "title_id INTEGER PRIMARY KEY, "
             "guid TEXT UNIQUE NOT NULL, "
-            "rating_key INTEGER NOT NULL, "
+            "media_id TEXT NOT NULL, "
             "title TEXT NOT NULL, "
             "library_name TEXT NOT NULL, "
             "source TEXT, "
@@ -92,7 +92,7 @@ def _delete_entries_for_title(conn: sqlite3.Connection, title_id: int) -> None:
 def upsert_title(
     db_path: Path,
     guid: str,
-    rating_key: int,
+    media_id: str,
     title: str,
     library_name: str,
     source: str | None,
@@ -113,11 +113,11 @@ def upsert_title(
     with _connect(db_path) as conn:
         conn.execute(
             "INSERT INTO titles "
-            "(guid, rating_key, title, library_name, source, sidecar_path, stream_index, "
+            "(guid, media_id, title, library_name, source, sidecar_path, stream_index, "
             "cached_at, fingerprint_mtime, fingerprint_size) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(guid) DO UPDATE SET "
-            "rating_key=excluded.rating_key, "
+            "media_id=excluded.media_id, "
             "title=excluded.title, "
             "library_name=excluded.library_name, "
             "source=excluded.source, "
@@ -128,7 +128,7 @@ def upsert_title(
             "fingerprint_size=excluded.fingerprint_size",
             (
                 guid,
-                rating_key,
+                media_id,
                 title,
                 library_name,
                 source,
@@ -221,10 +221,10 @@ def list_titles(db_path: Path) -> list[CachedTitle]:
         return []
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT guid, rating_key, title, library_name, source FROM titles"
+            "SELECT guid, media_id, title, library_name, source FROM titles"
         ).fetchall()
     return [
-        CachedTitle(guid=r[0], rating_key=r[1], title=r[2], library_name=r[3], source=r[4] or "")
+        CachedTitle(guid=r[0], media_id=r[1], title=r[2], library_name=r[3], source=r[4] or "")
         for r in rows
     ]
 
@@ -236,12 +236,12 @@ def list_titles_for_library(db_path: Path, library_name: str) -> list[CachedTitl
         return []
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT guid, rating_key, title, library_name, source FROM titles "
+            "SELECT guid, media_id, title, library_name, source FROM titles "
             "WHERE library_name = ?",
             (library_name,),
         ).fetchall()
     return [
-        CachedTitle(guid=r[0], rating_key=r[1], title=r[2], library_name=r[3], source=r[4] or "")
+        CachedTitle(guid=r[0], media_id=r[1], title=r[2], library_name=r[3], source=r[4] or "")
         for r in rows
     ]
 

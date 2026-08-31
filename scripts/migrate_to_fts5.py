@@ -97,7 +97,7 @@ def migrate_one_title(
     search_index.upsert_title(
         db_path,
         cached.guid,
-        cached.rating_key,
+        cached.media_id,
         cached.title,
         cached.library_name,
         result.source.value,

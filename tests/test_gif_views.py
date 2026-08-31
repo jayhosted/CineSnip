@@ -214,7 +214,7 @@ from app.bot.worker_client import LibraryQuoteMatchResult
 
 def _library_match(i: int, score: float = 60.0) -> LibraryQuoteMatchResult:
     return LibraryQuoteMatchResult(
-        rating_key=i,
+        media_id=str(i),
         title=f"Title {i}",
         library_name="Movies",
         start=float(i),
@@ -444,11 +444,11 @@ def test_library_search_view_defaults_to_gif_format_and_clip_kind():
 
 
 def _random_pick(
-    rating_key=1, title="Film", start=0.0, end=2.0, text="Line",
+    media_id="1", title="Film", start=0.0, end=2.0, text="Line",
     entry_id=1, pool_size=5, exhausted=False,
 ) -> RandomQuoteResult:
     return RandomQuoteResult(
-        rating_key=rating_key, title=title, library_name="Movies",
+        media_id=media_id, title=title, library_name="Movies",
         start=start, end=end, timecode=f"0:{int(start):02d}", text=text,
         entry_id=entry_id, pool_size=pool_size, exhausted=exhausted,
     )
@@ -617,7 +617,7 @@ def _make_clip_edit_view(worker) -> ClipEditView:
     # a single wrapping coroutine, not one asyncio.run() per action.
     return ClipEditView(
         worker,
-        rating_key=1,
+        media_id="1",
         title="Title",
         timecode="10",
         duration=4.0,
@@ -829,7 +829,7 @@ def test_clip_edit_view_click_during_in_flight_prefetch_awaits_it_without_refetc
         call_count = 0
         release = asyncio.Event()
 
-        async def slow_subtitles(rating_key: int) -> list[SubtitleEntryResult]:
+        async def slow_subtitles(media_id: str) -> list[SubtitleEntryResult]:
             nonlocal call_count
             call_count += 1
             await release.wait()
@@ -905,7 +905,7 @@ def _make_audio_view(worker, format=None) -> AudioClipResultView:
     # whichever loop is current when it's created.
     return AudioClipResultView(
         worker,
-        rating_key=1,
+        media_id="1",
         title="The Matrix",
         content=b"audio-bytes",
         filename="clip.mp3",

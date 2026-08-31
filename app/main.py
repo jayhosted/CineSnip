@@ -147,7 +147,7 @@ async def main() -> None:
             if worker_server is not None:
                 await _stop_worker(worker_server, worker_task)
             worker_app, worker_server, worker_task = await _start_worker(settings)
-            settings_holder.plex_client = worker_app.state.plex
+            settings_holder.media_client = worker_app.state.media
 
             # discord.py's gateway connection can't swap tokens on an
             # already-connected Client, so only tear down and rebuild the
@@ -171,14 +171,27 @@ async def main() -> None:
             if sync_task is not None:
                 sync_task.cancel()
                 await asyncio.gather(sync_task, return_exceptions=True)
-            if settings.library_sync.enabled:
-                # Reuses the worker's own PlexClient (create_app() sets it
-                # on app.state.plex) rather than opening a second Plex
-                # connection.
+            if settings.library_sync.enabled and settings.media_server == "plex":
+                # Reuses the worker's own media client (create_app() sets it
+                # on app.state.media) rather than opening a second Plex
+                # connection. library_sync is Plex-only (issue #25);
+                # load_settings() rejects jellyfin + library_sync.enabled
+                # before it ever gets here, so the media_server check is a
+                # guard for a Settings built some other way (e.g. the
+                # Settings area toggling sync on in-process), logged loudly
+                # below rather than left to fail inside the sync loop.
                 sync_task = asyncio.create_task(
-                    library_sync.library_sync_task(settings, worker_app.state.plex)
+                    library_sync.library_sync_task(settings, worker_app.state.media)
                 )
             else:
+                if settings.library_sync.enabled:
+                    logger.error(
+                        "library_sync.enabled is set but media_server is '%s' — "
+                        "library auto-sync is only supported with Plex (issue #25). "
+                        "Not starting the sync task; set library_sync.enabled: false "
+                        "in config.yaml to clear this message.",
+                        settings.media_server,
+                    )
                 sync_task = None
 
             reconfigured.clear()

@@ -40,7 +40,7 @@
           <div class="search-results">
           {% for r in results %}
             <button type="button" class="search-result-row"
-              hx-get="/generate/select?rating_key={{ r.rating_key }}&kind={{ kind }}&title={{ r.title | urlencode }}&year={{ r.year or '' }}&library_name={{ r.library_name | urlencode }}"
+              hx-get="/generate/select?media_id={{ r.media_id }}&kind={{ kind }}&title={{ r.title | urlencode }}&year={{ r.year or '' }}&library_name={{ r.library_name | urlencode }}"
               hx-target="#generate-left" hx-swap="outerHTML">
               <span>{{ r.title }}{% if r.year %} <span class="year">({{ r.year }})</span>{% endif %}</span>
               <span class="badge">{{ r.library_name }}</span>
@@ -59,7 +59,7 @@
   {% if selected %}
   <form hx-post="/generate/render-start" hx-target="#generate-right" hx-swap="innerHTML">
     <input type="hidden" name="kind" value="{{ kind }}">
-    <input type="hidden" name="rating_key" value="{{ selected.rating_key }}">
+    <input type="hidden" name="media_id" value="{{ selected.media_id }}">
     <input type="hidden" name="title" value="{{ selected.title }}">
     <input type="hidden" name="year" value="{{ selected.year or '' }}">
     <input type="hidden" name="library_name" value="{{ selected.library_name }}">

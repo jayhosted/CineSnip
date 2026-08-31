@@ -39,13 +39,13 @@ def _size_label(num_bytes: int) -> str:
     return f"{num_bytes / 1024:.0f} KB"
 
 
-async def _subtitle_slow_warning(worker: WorkerClient, rating_key: int) -> str:
+async def _subtitle_slow_warning(worker: WorkerClient, media_id: str) -> str:
     # Mirrors app/bot/cogs/gif.py's _slow_subtitle_warning — kept as this
     # module's own copy rather than importing the bot package directly,
     # since the web app is a thin client of the worker API, not a place to
     # reach into the bot package's internals.
     try:
-        status = await worker.subtitle_status(rating_key)
+        status = await worker.subtitle_status(media_id)
     except httpx.HTTPError:
         return ""
     if not status.likely_slow:
@@ -137,7 +137,7 @@ def register_generate_routes(
 
     async def do_render(
         worker: WorkerClient,
-        rating_key: int,
+        media_id: str,
         timecode: str,
         duration: float | None,
         end_timecode: str | None,
@@ -150,7 +150,7 @@ def register_generate_routes(
     ) -> HTMLResponse:
         try:
             result: RenderResult = await worker.render(
-                rating_key, timecode, duration=duration, end_timecode=end_timecode,
+                media_id, timecode, duration=duration, end_timecode=end_timecode,
                 format=format, style=style,
             )
         except httpx.HTTPError as exc:
@@ -177,7 +177,7 @@ def register_generate_routes(
             # re-POST straight to /generate/render (already-resolved
             # timecode) instead of re-running quote resolution — changing
             # format shouldn't re-trigger the "pick a line" confirm step.
-            rating_key=rating_key,
+            media_id=media_id,
             timecode=timecode,
             duration=duration,
             end_timecode=end_timecode,
@@ -223,7 +223,7 @@ def register_generate_routes(
     @app.get("/generate/select", response_class=HTMLResponse)
     async def generate_select(
         request: Request,
-        rating_key: int,
+        media_id: str,
         kind: str = "film",
         title: str = "",
         year: str = "",
@@ -234,7 +234,7 @@ def register_generate_routes(
         # file of its own to resolve (only its episodes do), and
         # re-fetching what's already in hand is the same redundant-fetch
         # class of bug CLAUDE.md Section 3 already fixed on the bot side.
-        selected = {"rating_key": rating_key, "title": title, "year": int(year) if year else None, "library_name": library_name}
+        selected = {"media_id": media_id, "title": title, "year": int(year) if year else None, "library_name": library_name}
         return fragment(
             "panel_generate_left.html",
             kind=kind, query=None, results=None, selected=selected,
@@ -255,7 +255,7 @@ def register_generate_routes(
         if worker is None:
             return HTMLResponse("")
         form = await request.form()
-        rating_key = int(form["rating_key"])
+        media_id = str(form["media_id"])
         title = str(form.get("title", ""))
         timecode = str(form["timecode"])
         display_timecode = str(form.get("display_timecode", "")) or timecode
@@ -264,7 +264,7 @@ def register_generate_routes(
         style = str(form.get("style") or "none")
         caption = str(form.get("caption", "")) or None
         return await do_render(
-            worker, rating_key, timecode, duration, None, format, style,
+            worker, media_id, timecode, duration, None, format, style,
             title=title, display_timecode=display_timecode, caption=caption,
         )
 
@@ -282,7 +282,7 @@ def register_generate_routes(
         form = await request.form()
 
         kind = str(form.get("kind", "film"))
-        rating_key_posted = int(form["rating_key"])
+        media_id_posted = str(form["media_id"])
         title = str(form.get("title", ""))
         library_name = str(form.get("library_name", "")) or None
         quote = str(form.get("quote", "")).strip() or None
@@ -301,7 +301,7 @@ def register_generate_routes(
             return HTMLResponse('<p class="error-banner">End timecode needs a timecode to start from.</p>')
 
         if kind == "show":
-            show_rating_key = rating_key_posted
+            show_media_id = media_id_posted
             if (season is None) != (episode is None):
                 return HTMLResponse('<p class="error-banner">Give both season and episode, or neither.</p>')
             if timecode and season is None:
@@ -312,28 +312,28 @@ def register_generate_routes(
 
             if season is not None:
                 try:
-                    resolved = await worker.resolve_episode(show_rating_key, season, episode)
+                    resolved = await worker.resolve_episode(show_media_id, season, episode)
                 except httpx.HTTPError as exc:
                     return _error_html(exc)
-                rating_key = resolved.rating_key
+                media_id = resolved.media_id
                 title = resolved.title
                 library_name = resolved.library_name
             else:
                 # No episode given — quote is guaranteed at this point, same
                 # as GifCog.snip_tv's own validation order.
                 try:
-                    result = await worker.search_episodes_quote(show_rating_key, quote)
+                    result = await worker.search_episodes_quote(show_media_id, quote)
                 except httpx.HTTPError as exc:
                     return _error_html(exc)
                 if not result.matches:
                     return HTMLResponse('<p class="error-banner">No matching line found in that show.</p>')
                 return fragment(
                     "panel_generate_matches.html",
-                    matches=result.matches, show_titles=True, rating_key=None,
+                    matches=result.matches, show_titles=True, media_id=None,
                     title=None, library_name=None, format=format, style=style,
                 )
         else:
-            rating_key = rating_key_posted
+            media_id = media_id_posted
 
         if quote and not form.get("_slow_ack"):
             # Cheap upfront check (no ffmpeg) before the potentially
@@ -344,7 +344,7 @@ def register_generate_routes(
             # of a spinner-less button that looks dead. Mirrors the
             # Discord bot's own _slow_subtitle_warning, reached here via
             # htmx's load-triggered self-repost instead of message editing.
-            warning = await _subtitle_slow_warning(worker, rating_key)
+            warning = await _subtitle_slow_warning(worker, media_id)
             if warning:
                 hidden_fields = {k: str(v) for k, v in form.items()}
                 hidden_fields["_slow_ack"] = "1"
@@ -357,7 +357,7 @@ def register_generate_routes(
 
         if quote:
             try:
-                resolved_quote = await worker.resolve_quote(rating_key, quote)
+                resolved_quote = await worker.resolve_quote(media_id, quote)
             except httpx.HTTPError as exc:
                 return _error_html(exc)
             top = resolved_quote.matches[0]
@@ -365,18 +365,18 @@ def register_generate_routes(
                 # A single confident match: same "no separate confirm step"
                 # reasoning as decision #4 — render it directly.
                 return await do_render(
-                    worker, rating_key, str(top.start), top.end - top.start, None, format, style,
+                    worker, media_id, str(top.start), top.end - top.start, None, format, style,
                     title=resolved_quote.title, display_timecode=top.timecode, caption=top.text,
                 )
             return fragment(
                 "panel_generate_matches.html",
-                matches=resolved_quote.matches, show_titles=False, rating_key=rating_key,
+                matches=resolved_quote.matches, show_titles=False, media_id=media_id,
                 title=resolved_quote.title, library_name=library_name, format=format, style=style,
             )
 
         # Bare timecode: whatever style the user picked in the form.
         return await do_render(
-            worker, rating_key, timecode, None, end_timecode, format, style,
+            worker, media_id, timecode, None, end_timecode, format, style,
             title=title, display_timecode=timecode, caption=None,
         )
 

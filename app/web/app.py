@@ -130,7 +130,7 @@ def _suggest_mapping(
     # similar-looking folder name (two libraries can share a folder name
     # like "Movies" on different drives).
     #
-    # Once a real match is found, the plex_prefix isn't just "the sample
+    # Once a real match is found, the path_prefix isn't just "the sample
     # file's parent folder" — that would only be correct for this one title.
     # It's derived by stripping the matched file's own relative path (under
     # the container mount) off the end of the Plex-reported path, leaving
@@ -139,7 +139,7 @@ def _suggest_mapping(
     # "/media/movies-d/Foo (2020)/Foo.mkv" strips "Foo (2020)/Foo.mkv" off
     # both, leaving "D:\Movies" <-> "/media/movies-d".
     #
-    # Returns (container_path, plex_prefix) — either may be None if no
+    # Returns (container_path, path_prefix) — either may be None if no
     # match was found, in which case the user picks/confirms manually.
     if not sample_plex_path:
         return None, None
@@ -170,7 +170,7 @@ def _discover_library_choices_sync(section, filename_index: dict[str, list[tuple
     except Exception:
         items = []
 
-    discovered: dict[str, str] = {}  # container_path -> plex_prefix
+    discovered: dict[str, str] = {}  # container_path -> path_prefix
     for item in items:
         try:
             sample_path = item.media[0].parts[0].file
@@ -180,8 +180,8 @@ def _discover_library_choices_sync(section, filename_index: dict[str, list[tuple
         if container and container not in discovered:
             discovered[container] = prefix or ""
 
-    suggested = [MappingRow(plex_prefix=prefix, container_path=container) for container, prefix in discovered.items()]
-    rows = [MappingRow(plex_prefix=r.plex_prefix, container_path=r.container_path) for r in suggested]
+    suggested = [MappingRow(path_prefix=prefix, container_path=container) for container, prefix in discovered.items()]
+    rows = [MappingRow(path_prefix=r.path_prefix, container_path=r.container_path) for r in suggested]
     if not rows:
         # Nothing auto-detected — still give the user one blank row to fill
         # in by hand, rather than an empty block with only the "+ Add
@@ -244,7 +244,7 @@ async def _seed_wizard_state_from_settings(state: WizardState, settings: Setting
                 choice.three_d_format = saved.three_d_format
                 if saved.path_mappings:
                     choice.mapping_rows = [
-                        MappingRow(plex_prefix=m.plex_prefix, container_path=m.container_path)
+                        MappingRow(path_prefix=m.path_prefix, container_path=m.container_path)
                         for m in saved.path_mappings
                     ]
         state.plex_url = settings.plex_url
@@ -548,7 +548,7 @@ def create_web_app(
             if three_d in ("none", "side_by_side", "over_under"):
                 choice.three_d_format = three_d
             for j, row in enumerate(choice.mapping_rows):
-                row.plex_prefix = str(form.get(f"lib_{i}_mapping_{j}_plex_prefix", "")).strip()
+                row.path_prefix = str(form.get(f"lib_{i}_mapping_{j}_path_prefix", "")).strip()
                 row.container_path = str(form.get(f"lib_{i}_mapping_{j}_container_path", "")).strip()
 
     @app.get("/wizard/libraries", response_class=HTMLResponse)
@@ -598,11 +598,11 @@ def create_web_app(
             if 0 <= suggested_index < len(choice.suggested_rows):
                 suggestion = choice.suggested_rows[suggested_index]
                 already_present = any(
-                    r.container_path == suggestion.container_path and r.plex_prefix == suggestion.plex_prefix
+                    r.container_path == suggestion.container_path and r.path_prefix == suggestion.path_prefix
                     for r in choice.mapping_rows
                 )
                 if not already_present:
-                    choice.mapping_rows.append(MappingRow(suggestion.plex_prefix, suggestion.container_path))
+                    choice.mapping_rows.append(MappingRow(suggestion.path_prefix, suggestion.container_path))
         return render(request, "panel_libraries.html", mounts=media_mount_candidates())
 
     @app.post("/wizard/libraries", response_class=HTMLResponse)
@@ -722,6 +722,12 @@ def _write_config_files(
         interval_hours=existing_sync.interval_hours,
     )
     config = {
+        # Preserved, not re-derived: the wizard's Plex steps don't collect
+        # media_server, so rebuilding it from a default would silently flip
+        # a configured Jellyfin install back to Plex on any reconfiguration
+        # — the same "never discard an edited value" rule as the sections
+        # below. Falls back to the Settings default only on a first run.
+        "media_server": current_settings.media_server if current_settings else "plex",
         "libraries": [lib.model_dump() for lib in state.selected_libraries()],
         "render_defaults": (current_settings.render_defaults if current_settings else RenderDefaults()).model_dump(),
         "subtitle_defaults": (current_settings.subtitle_defaults if current_settings else SubtitleDefaults()).model_dump(),

@@ -12,12 +12,12 @@ def _settings(tmp_path, library_names: list[str]) -> Settings:
     )
 
 
-def _upsert(db_path, guid, rating_key, title, library_name, source):
+def _upsert(db_path, guid, media_id, title, library_name, source):
     # Mirrors the real write path (subtitles.get_subtitles() /
     # library_sync.py) post-migration: sidecar/embedded titles land in
     # search_index.titles, not the legacy quote_index.cached_titles table.
     search_index.upsert_title(
-        db_path, guid=guid, rating_key=rating_key, title=title,
+        db_path, guid=guid, media_id=media_id, title=title,
         library_name=library_name, source=source, sidecar_path=None,
         stream_index=None, entries=[], fingerprint=None,
     )
@@ -25,14 +25,14 @@ def _upsert(db_path, guid, rating_key, title, library_name, source):
 
 def test_coverage_stats_aggregates_across_libraries(tmp_path):
     settings = _settings(tmp_path, ["Movies", "3D"])
-    _upsert(settings.quote_index_db_path, "g1", 1, "F1", "Movies", "sidecar")
-    _upsert(settings.quote_index_db_path, "g2", 2, "F2", "Movies", "embedded")
-    quote_index.upsert_no_subtitle_title(settings.quote_index_db_path, "g3", 3, "F3", "Movies")
-    _upsert(settings.quote_index_db_path, "g4", 4, "F4", "3D", "sidecar")
+    _upsert(settings.quote_index_db_path, "g1", "1", "F1", "Movies", "sidecar")
+    _upsert(settings.quote_index_db_path, "g2", "2", "F2", "Movies", "embedded")
+    quote_index.upsert_no_subtitle_title(settings.quote_index_db_path, "g3", "3", "F3", "Movies")
+    _upsert(settings.quote_index_db_path, "g4", "4", "F4", "3D", "sidecar")
     quote_index.set_library_item_count(settings.quote_index_db_path, "Movies", 5)
     quote_index.set_library_item_count(settings.quote_index_db_path, "3D", 2)
 
-    holder = SettingsHolder(settings=settings, plex_client=None)
+    holder = SettingsHolder(settings=settings, media_client=None)
 
     stats = _coverage_stats(holder)
 
@@ -47,11 +47,11 @@ def test_coverage_stats_excludes_no_subtitle_source_rows_from_buckets(tmp_path):
     # no-subtitle outcome (source="none") — it must not inflate either the
     # sidecar or embedded bucket.
     settings = _settings(tmp_path, ["Movies"])
-    _upsert(settings.quote_index_db_path, "g1", 1, "F1", "Movies", "sidecar")
-    _upsert(settings.quote_index_db_path, "g2", 2, "F2", "Movies", "none")
-    quote_index.upsert_no_subtitle_title(settings.quote_index_db_path, "g2", 2, "F2", "Movies")
+    _upsert(settings.quote_index_db_path, "g1", "1", "F1", "Movies", "sidecar")
+    _upsert(settings.quote_index_db_path, "g2", "2", "F2", "Movies", "none")
+    quote_index.upsert_no_subtitle_title(settings.quote_index_db_path, "g2", "2", "F2", "Movies")
 
-    holder = SettingsHolder(settings=settings, plex_client=None)
+    holder = SettingsHolder(settings=settings, media_client=None)
 
     stats = _coverage_stats(holder)
 
@@ -62,7 +62,7 @@ def test_coverage_stats_excludes_no_subtitle_source_rows_from_buckets(tmp_path):
 
 def test_coverage_stats_handles_no_persisted_count_yet(tmp_path):
     settings = _settings(tmp_path, ["Movies"])
-    holder = SettingsHolder(settings=settings, plex_client=None)
+    holder = SettingsHolder(settings=settings, media_client=None)
 
     stats = _coverage_stats(holder)
 
@@ -72,7 +72,7 @@ def test_coverage_stats_handles_no_persisted_count_yet(tmp_path):
 
 def test_coverage_stats_handles_no_libraries_configured(tmp_path):
     settings = _settings(tmp_path, [])
-    holder = SettingsHolder(settings=settings, plex_client=None)
+    holder = SettingsHolder(settings=settings, media_client=None)
 
     stats = _coverage_stats(holder)
 

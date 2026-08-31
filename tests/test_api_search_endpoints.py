@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from app.settings import Settings
 from app.worker import api as api_module
 from app.worker import search_index
-from app.worker.plex_client import MovieResult
+from app.worker.media_client import MovieResult
 from app.worker.subtitles import SubtitleEntry
 
 
@@ -28,32 +28,32 @@ class _FakePlexClient:
     def __init__(self, settings: Settings, movie_items: list[MovieResult] | None = None) -> None:
         self.movie_library_names = frozenset({"Movies"})
         self.show_library_names = frozenset({"TV Shows"})
-        self._episodes_by_show: dict[int, list[MovieResult]] = {}
+        self._episodes_by_show: dict[str, list[MovieResult]] = {}
         self._movie_items = movie_items or []
-        self._movies_by_rating_key: dict[int, MovieResult] = {}
+        self._movies_by_media_id: dict[str, MovieResult] = {}
 
-    def list_episodes(self, show_rating_key: int) -> list[MovieResult]:
-        return self._episodes_by_show.get(show_rating_key, [])
+    def list_episodes(self, show_media_id: str) -> list[MovieResult]:
+        return self._episodes_by_show.get(show_media_id, [])
 
-    def get_movie(self, rating_key: int) -> MovieResult:
-        from app.worker.plex_client import MovieNotFoundError
+    def get_movie(self, media_id: str) -> MovieResult:
+        from app.worker.media_client import MovieNotFoundError
 
-        movie = self._movies_by_rating_key.get(rating_key)
+        movie = self._movies_by_media_id.get(media_id)
         if movie is None:
-            raise MovieNotFoundError(f"No movie with rating_key {rating_key}")
+            raise MovieNotFoundError(f"No movie with media_id {media_id}")
         return movie
 
-    def get_episode(self, show_rating_key: int, season: int, episode: int) -> MovieResult:
+    def get_episode(self, show_media_id: str, season: int, episode: int) -> MovieResult:
         # MovieResult carries no season/episode fields of its own (Episode
         # formatting bakes "S01E01" into .title instead — CLAUDE.md Section
         # 4) — tests register exactly the one episode under test per show,
         # so returning it unconditionally is enough to exercise this path.
-        from app.worker.plex_client import EpisodeNotFoundError
+        from app.worker.media_client import EpisodeNotFoundError
 
-        episodes = self._episodes_by_show.get(show_rating_key, [])
+        episodes = self._episodes_by_show.get(show_media_id, [])
         if not episodes:
             raise EpisodeNotFoundError(
-                f"No S{season:02d}E{episode:02d} for show {show_rating_key}"
+                f"No S{season:02d}E{episode:02d} for show {show_media_id}"
             )
         return episodes[0]
 
@@ -71,7 +71,7 @@ def _settings(tmp_path) -> Settings:
     )
 
 
-def _write_title(db_path, guid, rating_key, title, library_name, texts):
+def _write_title(db_path, guid, media_id, title, library_name, texts):
     entries = [
         SubtitleEntry(index=i + 1, start=float(i * 5), end=float(i * 5 + 2), text=text)
         for i, text in enumerate(texts)
@@ -79,7 +79,7 @@ def _write_title(db_path, guid, rating_key, title, library_name, texts):
     search_index.upsert_title(
         db_path,
         guid=guid,
-        rating_key=rating_key,
+        media_id=media_id,
         title=title,
         library_name=library_name,
         source="sidecar",
@@ -91,7 +91,7 @@ def _write_title(db_path, guid, rating_key, title, library_name, texts):
 
 
 def _client(settings: Settings, monkeypatch, fake_plex: _FakePlexClient | None = None) -> TestClient:
-    monkeypatch.setattr(api_module, "PlexClient", lambda s: fake_plex or _FakePlexClient(s))
+    monkeypatch.setattr(api_module, "create_media_client", lambda s: fake_plex or _FakePlexClient(s))
     app = api_module.create_app(settings)
     return TestClient(app)
 
@@ -110,7 +110,7 @@ def test_search_quote_endpoint_finds_real_cached_match(tmp_path, monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert len(body["matches"]) == 1
-    assert body["matches"][0]["rating_key"] == 101
+    assert body["matches"][0]["media_id"] == "101"
     assert body["matches"][0]["title"] == "Monty Python"
 
 
@@ -145,8 +145,8 @@ def test_search_quote_endpoint_no_matches_is_empty_not_error(tmp_path, monkeypat
 def test_search_episodes_quote_endpoint_finds_real_cached_match(tmp_path, monkeypatch):
     settings = _settings(tmp_path)
     episode = MovieResult(
-        rating_key=501, title="The Office — S01E01 — Pilot", year=None,
-        duration_ms=1000, thumb_url=None, plex_path="D:\\TV\\office.mkv",
+        media_id="501", title="The Office — S01E01 — Pilot", year=None,
+        duration_ms=1000, thumb_url=None, source_path="D:\\TV\\office.mkv",
         guid="ep-guid-1", library_name="TV Shows",
     )
     _write_title(
@@ -156,7 +156,7 @@ def test_search_episodes_quote_endpoint_finds_real_cached_match(tmp_path, monkey
     )
 
     fake_plex = _FakePlexClient(settings)
-    fake_plex._episodes_by_show[900] = [episode]
+    fake_plex._episodes_by_show["900"] = [episode]
     client = _client(settings, monkeypatch, fake_plex)
 
     resp = client.get("/search-episodes-quote/900", params={"quote": "that's what she said"})
@@ -164,14 +164,14 @@ def test_search_episodes_quote_endpoint_finds_real_cached_match(tmp_path, monkey
     assert resp.status_code == 200
     body = resp.json()
     assert len(body["matches"]) == 1
-    assert body["matches"][0]["rating_key"] == 501
+    assert body["matches"][0]["media_id"] == "501"
 
 
 def test_search_episodes_quote_endpoint_no_matches_is_empty_not_error(tmp_path, monkeypatch):
     settings = _settings(tmp_path)
     episode = MovieResult(
-        rating_key=501, title="The Office — S01E01 — Pilot", year=None,
-        duration_ms=1000, thumb_url=None, plex_path="D:\\TV\\office.mkv",
+        media_id="501", title="The Office — S01E01 — Pilot", year=None,
+        duration_ms=1000, thumb_url=None, source_path="D:\\TV\\office.mkv",
         guid="ep-guid-1", library_name="TV Shows",
     )
     _write_title(
@@ -181,7 +181,7 @@ def test_search_episodes_quote_endpoint_no_matches_is_empty_not_error(tmp_path, 
     )
 
     fake_plex = _FakePlexClient(settings)
-    fake_plex._episodes_by_show[900] = [episode]
+    fake_plex._episodes_by_show["900"] = [episode]
     client = _client(settings, monkeypatch, fake_plex)
 
     resp = client.get("/search-episodes-quote/900", params={"quote": "a phrase that appears nowhere"})
@@ -201,14 +201,14 @@ from app.worker.subtitles import SubtitleResult, SubtitleSource
 # `_write_title`) — reuse it, don't re-import under a different name.
 
 
-def _movie_item(guid, rating_key, title="Film", library_name="Movies", plex_path="D:\\Movies\\film.mkv"):
+def _movie_item(guid, media_id, title="Film", library_name="Movies", source_path="D:\\Movies\\film.mkv"):
     return MovieResult(
-        rating_key=rating_key,
+        media_id=str(media_id),
         title=title,
         year=2000,
         duration_ms=1000,
         thumb_url=None,
-        plex_path=plex_path,
+        source_path=source_path,
         guid=guid,
         library_name=library_name,
     )
@@ -223,7 +223,7 @@ def _settings_with_sync(tmp_path, enabled: bool, cap: int | None = None, mount_r
         libraries = [
             LibraryConfig(
                 name="Movies",
-                path_mappings=[PathMapping(plex_prefix="D:\\Movies", container_path=str(mount_root))],
+                path_mappings=[PathMapping(path_prefix="D:\\Movies", container_path=str(mount_root))],
             )
         ]
     return Settings(
@@ -280,7 +280,7 @@ def test_search_quote_extend_short_circuits_when_nothing_uncached(tmp_path, monk
 
 def test_search_quote_extend_skips_titles_already_marked_no_subtitle(tmp_path, monkeypatch):
     settings = _settings_with_sync(tmp_path, enabled=True)
-    upsert_no_subtitle_title(settings.quote_index_db_path, "guid-2", 102, "Silent Film", "Movies")
+    upsert_no_subtitle_title(settings.quote_index_db_path, "guid-2", "102", "Silent Film", "Movies")
     fake_plex = _FakePlexClient(settings, movie_items=[_movie_item("guid-2", 102, "Silent Film")])
     client = _client(settings, monkeypatch, fake_plex)
 
@@ -303,7 +303,7 @@ def test_search_quote_extend_extracts_uncached_titles_up_to_cap(tmp_path, monkey
 
     async def _fake_get_subtitles(movie, container_video_path, cache_dir, db_path, ffprobe_timeout=180.0, ffmpeg_timeout=180.0):
         search_index.upsert_title(
-            db_path, movie.guid, movie.rating_key, movie.title, movie.library_name,
+            db_path, movie.guid, movie.media_id, movie.title, movie.library_name,
             "sidecar", None, None, found_entries, None,
         )
         return SubtitleResult(guid=movie.guid, source=SubtitleSource.SIDECAR, entries=found_entries)
@@ -313,8 +313,8 @@ def test_search_quote_extend_extracts_uncached_titles_up_to_cap(tmp_path, monkey
     fake_plex = _FakePlexClient(
         settings,
         movie_items=[
-            _movie_item("guid-1", 101, "Monty Python", plex_path="D:\\Movies\\film.mkv"),
-            _movie_item("guid-2", 102, "Uncached Film Two", plex_path="D:\\Movies\\missing.mkv"),
+            _movie_item("guid-1", 101, "Monty Python", source_path="D:\\Movies\\film.mkv"),
+            _movie_item("guid-2", 102, "Uncached Film Two", source_path="D:\\Movies\\missing.mkv"),
         ],
     )
     client = _client(settings, monkeypatch, fake_plex)
@@ -346,7 +346,7 @@ def test_search_quote_extend_does_not_permanently_mark_a_failed_extraction(tmp_p
     monkeypatch.setattr(library_sync_module, "get_subtitles", _boom)
 
     fake_plex = _FakePlexClient(
-        settings, movie_items=[_movie_item("guid-1", 101, "Broken Film", plex_path="D:\\Movies\\film.mkv")]
+        settings, movie_items=[_movie_item("guid-1", 101, "Broken Film", source_path="D:\\Movies\\film.mkv")]
     )
     client = _client(settings, monkeypatch, fake_plex)
 
@@ -402,7 +402,7 @@ def test_search_quote_extend_skip_does_not_consume_cap_budget(tmp_path, monkeypa
 
     async def _fake_get_subtitles(movie, container_video_path, cache_dir, db_path, ffprobe_timeout=180.0, ffmpeg_timeout=180.0):
         search_index.upsert_title(
-            db_path, movie.guid, movie.rating_key, movie.title, movie.library_name,
+            db_path, movie.guid, movie.media_id, movie.title, movie.library_name,
             "sidecar", None, None, found_entries, None,
         )
         return SubtitleResult(guid=movie.guid, source=SubtitleSource.SIDECAR, entries=found_entries)
@@ -410,15 +410,15 @@ def test_search_quote_extend_skip_does_not_consume_cap_budget(tmp_path, monkeypa
     monkeypatch.setattr(library_sync_module, "get_subtitles", _fake_get_subtitles)
 
     # First item in enumeration order has no path mapping covering its
-    # plex_path (mount_root's mapping only covers "D:\Movies") — a SKIP.
+    # source_path (mount_root's mapping only covers "D:\Movies") — a SKIP.
     # Second item does have a matching mapping and an on-disk file — a real,
     # extractable title. With cap=1, the SKIP must not use up the one slot:
     # the extractable title should still be processed in this same call.
     fake_plex = _FakePlexClient(
         settings,
         movie_items=[
-            _movie_item("guid-skip", 100, "Unmapped Film", plex_path="E:\\Other\\weird.mkv"),
-            _movie_item("guid-1", 101, "Monty Python", plex_path="D:\\Movies\\film.mkv"),
+            _movie_item("guid-skip", 100, "Unmapped Film", source_path="E:\\Other\\weird.mkv"),
+            _movie_item("guid-1", 101, "Monty Python", source_path="D:\\Movies\\film.mkv"),
         ],
     )
     client = _client(settings, monkeypatch, fake_plex)
@@ -521,7 +521,7 @@ def test_search_quote_extend_still_enumerates_when_library_changed(tmp_path, mon
     # not a real extraction — this test only cares that enumeration ran.
     fake_plex = _ChangedPlex(
         settings,
-        movie_items=[_movie_item("guid-2", 102, "Another Film", plex_path="D:\\Movies\\missing.mkv")],
+        movie_items=[_movie_item("guid-2", 102, "Another Film", source_path="D:\\Movies\\missing.mkv")],
     )
     client = _client(settings, monkeypatch, fake_plex)
 
@@ -546,7 +546,7 @@ def test_random_quote_endpoint_no_quote_returns_a_cached_line(tmp_path, monkeypa
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["rating_key"] == 101
+    assert body["media_id"] == "101"
     assert body["text"] == "Nobody expects the Spanish Inquisition!"
 
 
@@ -576,7 +576,7 @@ def test_random_quote_endpoint_media_all_includes_tv(tmp_path, monkeypatch):
     resp = client.get("/random-quote", params={"media": "all"})
 
     assert resp.status_code == 200
-    assert resp.json()["rating_key"] == 202
+    assert resp.json()["media_id"] == "202"
 
 
 def test_random_quote_endpoint_with_quote_only_returns_whole_word_match(tmp_path, monkeypatch):
@@ -596,7 +596,7 @@ def test_random_quote_endpoint_with_quote_only_returns_whole_word_match(tmp_path
     resp = client.get("/random-quote", params={"quote": "cat", "media": "movie"})
 
     assert resp.status_code == 200
-    assert resp.json()["rating_key"] == 101
+    assert resp.json()["media_id"] == "101"
 
 
 def test_random_quote_endpoint_returns_404_when_nothing_cached(tmp_path, monkeypatch):
@@ -672,8 +672,8 @@ def test_search_episodes_quote_endpoint_reports_truncated_when_more_than_fetch_l
     episodes = []
     for i in range(4):
         episode = MovieResult(
-            rating_key=500 + i, title=f"The Office — S01E0{i} — Ep{i}", year=None,
-            duration_ms=1000, thumb_url=None, plex_path=f"D:\\TV\\office{i}.mkv",
+            media_id=str(500 + i), title=f"The Office — S01E0{i} — Ep{i}", year=None,
+            duration_ms=1000, thumb_url=None, source_path=f"D:\\TV\\office{i}.mkv",
             guid=f"ep-guid-{i}", library_name="TV Shows",
         )
         episodes.append(episode)
@@ -684,7 +684,7 @@ def test_search_episodes_quote_endpoint_reports_truncated_when_more_than_fetch_l
         )
 
     fake_plex = _FakePlexClient(settings)
-    fake_plex._episodes_by_show[900] = episodes
+    fake_plex._episodes_by_show["900"] = episodes
     client = _client(settings, monkeypatch, fake_plex)
 
     resp = client.get("/search-episodes-quote/900", params={"quote": "that's what she said"})
@@ -706,14 +706,14 @@ def test_random_line_endpoint_filters_short_lines_and_returns_pool_info(tmp_path
         ["Okay.", "Nobody expects the Spanish Inquisition!"],
     )
     fake_plex = _FakePlexClient(settings)
-    fake_plex._movies_by_rating_key[101] = _movie_item("guid-1", 101, "Monty Python")
+    fake_plex._movies_by_media_id["101"] = _movie_item("guid-1", 101, "Monty Python")
     client = _client(settings, monkeypatch, fake_plex)
 
     resp = client.get("/random-line/101")
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["rating_key"] == 101
+    assert body["media_id"] == "101"
     # "Okay." is under the default random_min_words (3) and must never be
     # picked — the only eligible line is the long one.
     assert body["text"] == "Nobody expects the Spanish Inquisition!"
@@ -721,7 +721,7 @@ def test_random_line_endpoint_filters_short_lines_and_returns_pool_info(tmp_path
     assert isinstance(body["entry_id"], int)
 
 
-def test_random_line_endpoint_404_when_rating_key_unknown(tmp_path, monkeypatch):
+def test_random_line_endpoint_404_when_media_id_unknown(tmp_path, monkeypatch):
     settings = _settings_with_sync(tmp_path, enabled=False)
     fake_plex = _FakePlexClient(settings)
     client = _client(settings, monkeypatch, fake_plex)
@@ -734,8 +734,8 @@ def test_random_line_endpoint_404_when_rating_key_unknown(tmp_path, monkeypatch)
 def test_random_line_show_endpoint_whole_show_picks_from_any_episode(tmp_path, monkeypatch):
     settings = _settings(tmp_path)
     episode = MovieResult(
-        rating_key=501, title="The Office — S01E01 — Pilot", year=None,
-        duration_ms=1000, thumb_url=None, plex_path="D:\\TV\\office.mkv",
+        media_id="501", title="The Office — S01E01 — Pilot", year=None,
+        duration_ms=1000, thumb_url=None, source_path="D:\\TV\\office.mkv",
         guid="ep-guid-1", library_name="TV Shows",
     )
     _write_title(
@@ -744,35 +744,35 @@ def test_random_line_show_endpoint_whole_show_picks_from_any_episode(tmp_path, m
         ["That's what she said."],
     )
     fake_plex = _FakePlexClient(settings)
-    fake_plex._episodes_by_show[900] = [episode]
+    fake_plex._episodes_by_show["900"] = [episode]
     client = _client(settings, monkeypatch, fake_plex)
 
     resp = client.get("/random-line-show/900")
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["rating_key"] == 501
+    assert body["media_id"] == "501"
     assert body["text"] == "That's what she said."
 
 
 def test_random_line_show_endpoint_single_episode_scope(tmp_path, monkeypatch):
     settings = _settings(tmp_path)
     ep1 = MovieResult(
-        rating_key=501, title="The Office — S01E01 — Pilot", year=None,
-        duration_ms=1000, thumb_url=None, plex_path="D:\\TV\\office1.mkv",
+        media_id="501", title="The Office — S01E01 — Pilot", year=None,
+        duration_ms=1000, thumb_url=None, source_path="D:\\TV\\office1.mkv",
         guid="ep-guid-1", library_name="TV Shows",
     )
     _write_title(
         settings.quote_index_db_path, "ep-guid-1", 501, ep1.title, "TV Shows", ["Line from episode one."],
     )
     fake_plex = _FakePlexClient(settings)
-    fake_plex._episodes_by_show[900] = [ep1]
+    fake_plex._episodes_by_show["900"] = [ep1]
     client = _client(settings, monkeypatch, fake_plex)
 
     resp = client.get("/random-line-show/900", params={"season": 1, "episode": 1})
 
     assert resp.status_code == 200
-    assert resp.json()["rating_key"] == 501
+    assert resp.json()["media_id"] == "501"
 
 
 def test_random_line_show_endpoint_requires_both_season_and_episode(tmp_path, monkeypatch):
@@ -788,10 +788,10 @@ def test_random_line_show_endpoint_404_when_show_unknown(tmp_path, monkeypatch):
     settings = _settings(tmp_path)
 
     class _NoShowPlex(_FakePlexClient):
-        def list_episodes(self, show_rating_key: int) -> list[MovieResult]:
-            from app.worker.plex_client import ShowNotFoundError
+        def list_episodes(self, show_media_id: str) -> list[MovieResult]:
+            from app.worker.media_client import ShowNotFoundError
 
-            raise ShowNotFoundError(f"No show {show_rating_key}")
+            raise ShowNotFoundError(f"No show {show_media_id}")
 
     client = _client(settings, monkeypatch, _NoShowPlex(settings))
 

@@ -12,11 +12,11 @@ def _settings(tmp_path) -> Settings:
     )
 
 
-def _movie(rating_key=101, title="Film", library_name="Movies"):
-    from app.worker.plex_client import MovieResult
+def _movie(media_id="101", title="Film", library_name="Movies"):
+    from app.worker.media_client import MovieResult
     return MovieResult(
-        rating_key=rating_key, title=title, year=2000, duration_ms=1000,
-        thumb_url=None, plex_path="D:\\Movies\\film.mkv", guid="guid-1", library_name=library_name,
+        media_id=media_id, title=title, year=2000, duration_ms=1000,
+        thumb_url=None, source_path="D:\\Movies\\film.mkv", guid="guid-1", library_name=library_name,
     )
 
 

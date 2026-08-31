@@ -30,7 +30,7 @@ _DEFAULT_ENTRY_SCAN_LIMIT = 4000
 
 @dataclass(frozen=True)
 class LibraryQuoteMatch:
-    rating_key: int
+    media_id: str
     title: str
     library_name: str
     match: QuoteMatch
@@ -135,7 +135,7 @@ def _diversify_and_rank(
                 (
                     rank,
                     LibraryQuoteMatch(
-                        rating_key=cached.rating_key,
+                        media_id=cached.media_id,
                         title=cached.title,
                         library_name=cached.library_name,
                         match=match,
@@ -391,7 +391,7 @@ def pick_random_quote(
                 context_after=(),
             )
             pick = LibraryQuoteMatch(
-                rating_key=cached.rating_key,
+                media_id=cached.media_id,
                 title=cached.title,
                 library_name=cached.library_name,
                 match=match,
@@ -421,7 +421,7 @@ def pick_random_quote(
             )
             pool.append(
                 LibraryQuoteMatch(
-                    rating_key=cached.rating_key,
+                    media_id=cached.media_id,
                     title=cached.title,
                     library_name=cached.library_name,
                     match=match,
@@ -484,7 +484,7 @@ def pick_random_quote(
             for match in literal_matches:
                 pool.append(
                     LibraryQuoteMatch(
-                        rating_key=cached.rating_key,
+                        media_id=cached.media_id,
                         title=cached.title,
                         library_name=cached.library_name,
                         match=match,

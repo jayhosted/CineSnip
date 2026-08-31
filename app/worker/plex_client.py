@@ -1,52 +1,22 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 
 from plexapi.exceptions import NotFound
 from plexapi.server import PlexServer
 
 from app.settings import Settings
-
-
-class MovieNotFoundError(RuntimeError):
-    def __init__(self, rating_key: int):
-        super().__init__(f"No film found with rating_key {rating_key}.")
-        self.rating_key = rating_key
-
-
-class ShowNotFoundError(RuntimeError):
-    def __init__(self, rating_key: int):
-        super().__init__(f"No show found with rating_key {rating_key}.")
-        self.rating_key = rating_key
-
-
-class EpisodeNotFoundError(RuntimeError):
-    def __init__(self, show_rating_key: int, season: int, episode: int):
-        super().__init__(
-            f"No episode S{season:02d}E{episode:02d} found for show "
-            f"rating_key {show_rating_key}."
-        )
-        self.show_rating_key = show_rating_key
-        self.season = season
-        self.episode = episode
-
-
-@dataclass
-class MovieResult:
-    rating_key: int
-    title: str
-    year: int | None
-    duration_ms: int
-    thumb_url: str | None
-    plex_path: str
-    guid: str
-    library_name: str
+from app.worker.media_client import (
+    EpisodeNotFoundError,
+    MovieNotFoundError,
+    MovieResult,
+    ShowNotFoundError,
+)
 
 
 class PlexClient:
     # A single /snip movie invocation calls get_movie() up to three times for
-    # the same rating_key (/resolve, /resolve-quote, /render), each a real
+    # the same media_id (/resolve, /resolve-quote, /render), each a real
     # network round-trip to Plex. This TTL only needs to cover the handful
     # of seconds between those calls within one command — long enough to
     # dedupe that, short enough that a retitled/deleted item doesn't linger.
@@ -72,7 +42,7 @@ class PlexClient:
         # /snip random's media:tv/media:all filtering, which (unlike
         # /search-quote) isn't movie-only by design.
         self.show_library_names = frozenset(s.title for s in self._show_sections)
-        self._movie_cache: dict[int, tuple[float, MovieResult]] = {}
+        self._movie_cache: dict[str, tuple[float, MovieResult]] = {}
 
     def library_sections(self) -> list[tuple[str, object]]:
         # (library_name, plexapi LibrarySection) for every configured
@@ -126,44 +96,44 @@ class PlexClient:
             results.extend(self._show_to_result(s) for s in shows)
         return results[:limit]
 
-    def get_movie(self, rating_key: int) -> MovieResult:
-        cached = self._movie_cache.get(rating_key)
+    def get_movie(self, media_id: str) -> MovieResult:
+        cached = self._movie_cache.get(media_id)
         if cached is not None:
             cached_at, result = cached
             if time.monotonic() - cached_at < self._CACHE_TTL_SECONDS:
                 return result
 
         try:
-            movie = self._server.fetchItem(rating_key)
+            movie = self._server.fetchItem(int(media_id))
         except NotFound as exc:
-            raise MovieNotFoundError(rating_key) from exc
+            raise MovieNotFoundError(media_id) from exc
 
         result = self._to_result(movie)
-        self._movie_cache[rating_key] = (time.monotonic(), result)
+        self._movie_cache[media_id] = (time.monotonic(), result)
         return result
 
-    def get_episode(self, show_rating_key: int, season: int, episode: int) -> MovieResult:
+    def get_episode(self, show_media_id: str, season: int, episode: int) -> MovieResult:
         try:
-            show = self._server.fetchItem(show_rating_key)
+            show = self._server.fetchItem(int(show_media_id))
             ep = show.episode(season=season, episode=episode)
         except NotFound as exc:
-            raise EpisodeNotFoundError(show_rating_key, season, episode) from exc
+            raise EpisodeNotFoundError(show_media_id, season, episode) from exc
 
         result = self._to_result(ep)
-        self._movie_cache[result.rating_key] = (time.monotonic(), result)
+        self._movie_cache[result.media_id] = (time.monotonic(), result)
         return result
 
-    def list_episodes(self, show_rating_key: int) -> list[MovieResult]:
+    def list_episodes(self, show_media_id: str) -> list[MovieResult]:
         try:
-            show = self._server.fetchItem(show_rating_key)
+            show = self._server.fetchItem(int(show_media_id))
             episodes = show.episodes()
         except NotFound as exc:
-            raise ShowNotFoundError(show_rating_key) from exc
+            raise ShowNotFoundError(show_media_id) from exc
 
         results = [self._to_result(ep) for ep in episodes]
         now = time.monotonic()
         for result in results:
-            self._movie_cache[result.rating_key] = (now, result)
+            self._movie_cache[result.media_id] = (now, result)
         return results
 
     @staticmethod
@@ -190,12 +160,12 @@ class PlexClient:
             year = getattr(item, "year", None)
 
         return MovieResult(
-            rating_key=item.ratingKey,
+            media_id=str(item.ratingKey),
             title=title,
             year=year,
             duration_ms=item.duration or 0,
             thumb_url=thumb_url,
-            plex_path=part.file,
+            source_path=part.file,
             guid=item.guid,
             library_name=item.librarySectionTitle,
         )
@@ -203,15 +173,15 @@ class PlexClient:
     @staticmethod
     def _show_to_result(show) -> MovieResult:
         # Used for show_autocomplete only — never fed into /render, so the
-        # placeholder duration/path are harmless; only rating_key/title/
+        # placeholder duration/path are harmless; only media_id/title/
         # year/library_name are ever read from this result.
         return MovieResult(
-            rating_key=show.ratingKey,
+            media_id=str(show.ratingKey),
             title=show.title,
             year=getattr(show, "year", None),
             duration_ms=0,
             thumb_url=show.thumbUrl if getattr(show, "thumb", None) else None,
-            plex_path="",
+            source_path="",
             guid=show.guid,
             library_name=show.librarySectionTitle,
         )

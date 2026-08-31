@@ -44,18 +44,18 @@ SEARCH_EPISODES_TIMEOUT_SECONDS = 900.0
 # to the whole request, so this only needs to cover one title's worst case.
 SEARCH_QUOTE_EXTEND_TIMEOUT_SECONDS = 480.0
 
-# /random-line/{rating_key} (/snip movie's random-pick path) can trigger the
+# /random-line/{media_id} (/snip movie's random-pick path) can trigger the
 # same cold-cache single-title extraction as /resolve-quote.
 RANDOM_LINE_TIMEOUT_SECONDS = 480.0
 
-# /random-line-show/{show_rating_key} (/snip tv's whole-show random-pick
+# /random-line-show/{show_media_id} (/snip tv's whole-show random-pick
 # path) mirrors /search-episodes-quote's serial per-episode extraction.
 RANDOM_LINE_SHOW_TIMEOUT_SECONDS = 900.0
 
 
 @dataclass
 class MovieResult:
-    rating_key: int
+    media_id: str
     title: str
     year: int | None
     duration_ms: int
@@ -65,7 +65,7 @@ class MovieResult:
 
 @dataclass
 class ResolveResult:
-    rating_key: int
+    media_id: str
     title: str
     year: int | None
     duration_ms: int
@@ -75,7 +75,7 @@ class ResolveResult:
 
 @dataclass
 class SubtitleStatusResult:
-    rating_key: int
+    media_id: str
     likely_slow: bool
 
 
@@ -101,7 +101,7 @@ class QuoteMatchResult:
 
 @dataclass
 class ResolveQuoteResult:
-    rating_key: int
+    media_id: str
     title: str
     subtitle_source: str
     confident_score: float
@@ -124,7 +124,7 @@ class RenderResult:
 
 @dataclass
 class LibraryQuoteMatchResult:
-    rating_key: int
+    media_id: str
     title: str
     library_name: str
     start: float
@@ -147,7 +147,7 @@ class LibrarySearchResult:
 
 @dataclass
 class RandomQuoteResult:
-    rating_key: int
+    media_id: str
     title: str
     library_name: str
     start: float
@@ -195,19 +195,19 @@ class WorkerClient:
         response.raise_for_status()
         return [MovieResult(**r) for r in response.json()["results"]]
 
-    async def resolve(self, rating_key: int) -> ResolveResult:
-        response = await self._client.get(f"/resolve/{rating_key}")
+    async def resolve(self, media_id: str) -> ResolveResult:
+        response = await self._client.get(f"/resolve/{media_id}")
         response.raise_for_status()
         return ResolveResult(**response.json())
 
-    async def subtitle_status(self, rating_key: int) -> SubtitleStatusResult:
-        response = await self._client.get(f"/subtitle-status/{rating_key}")
+    async def subtitle_status(self, media_id: str) -> SubtitleStatusResult:
+        response = await self._client.get(f"/subtitle-status/{media_id}")
         response.raise_for_status()
         return SubtitleStatusResult(**response.json())
 
-    async def subtitles(self, rating_key: int) -> list[SubtitleEntryResult]:
+    async def subtitles(self, media_id: str) -> list[SubtitleEntryResult]:
         response = await self._client.get(
-            f"/subtitles/{rating_key}", timeout=SUBTITLES_TIMEOUT_SECONDS
+            f"/subtitles/{media_id}", timeout=SUBTITLES_TIMEOUT_SECONDS
         )
         response.raise_for_status()
         return [SubtitleEntryResult(**e) for e in response.json()["entries"]]
@@ -217,17 +217,17 @@ class WorkerClient:
         response.raise_for_status()
         return [MovieResult(**r) for r in response.json()["results"]]
 
-    async def resolve_episode(self, show_rating_key: int, season: int, episode: int) -> ResolveResult:
+    async def resolve_episode(self, show_media_id: str, season: int, episode: int) -> ResolveResult:
         response = await self._client.get(
-            f"/resolve-episode/{show_rating_key}",
+            f"/resolve-episode/{show_media_id}",
             params={"season": season, "episode": episode},
         )
         response.raise_for_status()
         return ResolveResult(**response.json())
 
-    async def search_episodes_quote(self, show_rating_key: int, quote: str) -> LibrarySearchResult:
+    async def search_episodes_quote(self, show_media_id: str, quote: str) -> LibrarySearchResult:
         response = await self._client.get(
-            f"/search-episodes-quote/{show_rating_key}",
+            f"/search-episodes-quote/{show_media_id}",
             params={"quote": quote},
             timeout=SEARCH_EPISODES_TIMEOUT_SECONDS,
         )
@@ -236,9 +236,9 @@ class WorkerClient:
         payload["matches"] = [LibraryQuoteMatchResult(**m) for m in payload["matches"]]
         return LibrarySearchResult(**payload)
 
-    async def resolve_quote(self, rating_key: int, quote: str) -> ResolveQuoteResult:
+    async def resolve_quote(self, media_id: str, quote: str) -> ResolveQuoteResult:
         response = await self._client.get(
-            f"/resolve-quote/{rating_key}",
+            f"/resolve-quote/{media_id}",
             params={"quote": quote},
             timeout=RESOLVE_QUOTE_TIMEOUT_SECONDS,
         )
@@ -272,7 +272,7 @@ class WorkerClient:
 
     async def random_line(
         self,
-        rating_key: int,
+        media_id: str,
         exclude_entry_ids: frozenset[int] = frozenset(),
         most_recent_entry_id: int | None = None,
     ) -> RandomQuoteResult:
@@ -280,14 +280,14 @@ class WorkerClient:
         if most_recent_entry_id is not None:
             params["most_recent"] = most_recent_entry_id
         response = await self._client.get(
-            f"/random-line/{rating_key}", params=params, timeout=RANDOM_LINE_TIMEOUT_SECONDS
+            f"/random-line/{media_id}", params=params, timeout=RANDOM_LINE_TIMEOUT_SECONDS
         )
         response.raise_for_status()
         return RandomQuoteResult(**response.json())
 
     async def random_line_show(
         self,
-        show_rating_key: int,
+        show_media_id: str,
         season: int | None = None,
         episode: int | None = None,
         exclude_entry_ids: frozenset[int] = frozenset(),
@@ -301,7 +301,7 @@ class WorkerClient:
         if most_recent_entry_id is not None:
             params["most_recent"] = most_recent_entry_id
         response = await self._client.get(
-            f"/random-line-show/{show_rating_key}",
+            f"/random-line-show/{show_media_id}",
             params=params,
             timeout=RANDOM_LINE_SHOW_TIMEOUT_SECONDS,
         )
@@ -326,7 +326,7 @@ class WorkerClient:
 
     async def render(
         self,
-        rating_key: int,
+        media_id: str,
         timecode: str | None = None,
         duration: float | None = None,
         end_timecode: str | None = None,
@@ -339,7 +339,7 @@ class WorkerClient:
         response = await self._client.post(
             "/render",
             json={
-                "rating_key": rating_key,
+                "media_id": str(media_id),
                 "timecode": timecode,
                 "duration": duration,
                 "end_timecode": end_timecode,

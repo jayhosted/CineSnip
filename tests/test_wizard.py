@@ -87,7 +87,7 @@ def _state_with_one_library(*, three_d_format="none"):
         name="Movies",
         section_type="movie",
         selected=True,
-        mapping_rows=[MappingRow(plex_prefix="D:\\Movies", container_path="/media/movies")],
+        mapping_rows=[MappingRow(path_prefix="D:\\Movies", container_path="/media/movies")],
         three_d_format=three_d_format,
     )
     state.library_choices = [choice]
@@ -155,6 +155,37 @@ def test_write_config_files_defaults_track_settings_models_not_a_hardcoded_copy(
     assert raw["quote_match"] == QuoteMatchDefaults().model_dump()
     assert raw["worker"] == WorkerConfig().model_dump()
     assert raw["library_sync"] == LibrarySyncDefaults().model_dump()
+
+
+def test_write_config_files_preserves_media_server_on_reconfiguration(tmp_path):
+    # The wizard's steps only ever collect Plex details, so a /wizard/restart
+    # on a Jellyfin install must carry media_server through rather than
+    # silently dropping it back to the "plex" default.
+    state = _state_with_one_library()
+    state.library_sync_enabled = False
+    current_settings = Settings(
+        discord_token="old",
+        jellyfin_url="http://jf:8096",
+        jellyfin_api_key="key",
+        media_server="jellyfin",
+        libraries=[LibraryConfig(name="Movies")],
+    )
+    env_path = tmp_path / ".env"
+    config_path = tmp_path / "config.yaml"
+
+    _write_config_files(state, current_settings=current_settings, env_path=env_path, config_path=config_path)
+
+    assert yaml.safe_load(config_path.read_text())["media_server"] == "jellyfin"
+
+
+def test_write_config_files_defaults_media_server_to_plex_on_first_run(tmp_path):
+    state = _state_with_one_library()
+    env_path = tmp_path / ".env"
+    config_path = tmp_path / "config.yaml"
+
+    _write_config_files(state, env_path=env_path, config_path=config_path)
+
+    assert yaml.safe_load(config_path.read_text())["media_server"] == "plex"
 
 
 # ---- Sync step (issue #8) --------------------------------------------------
