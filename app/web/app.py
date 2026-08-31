@@ -20,6 +20,7 @@ from plexapi.server import PlexServer
 from app import __version__
 from app.runtime import SettingsHolder
 from app.settings import (
+    LibraryConfig,
     LibrarySyncDefaults,
     QuoteMatchDefaults,
     RenderDefaults,
@@ -31,6 +32,7 @@ from app.web.dashboard import register_dashboard_routes
 from app.web.generate import register_generate_routes
 from app.web.settings import register_settings_routes
 from app.web.state import LibraryChoice, MappingRow, WizardState, media_mount_candidates
+from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +211,106 @@ def _connect_and_discover_sync(plex_url: str, account_token: str | None) -> tupl
     return server_name, choices
 
 
+class _JellyfinAuthError(Exception):
+    """The API key was rejected (401) — distinct from an unreachable server,
+    since the wizard shows a different message for each."""
+
+
+def _discover_library_choices_sync_jellyfin(
+    http: httpx.Client,
+    user_id: str | None,
+    folder: dict,
+    filename_index: dict[str, list[tuple[str, str]]],
+) -> LibraryChoice:
+    # Mirrors _discover_library_choices_sync's job (sample up to 40 items,
+    # auto-suggest a path mapping per distinct mount found) against
+    # Jellyfin's REST API instead of plexapi objects. Fields=MediaSources is
+    # required here — confirmed against a live server (issue #24's
+    # JellyfinClient): list endpoints omit it, and so source_path, unless
+    # explicitly requested.
+    section_type = "movie" if folder.get("CollectionType") == "movies" else "show"
+    item_type = "Movie" if section_type == "movie" else "Episode"
+    params = {
+        "ParentId": folder["ItemId"],
+        "IncludeItemTypes": item_type,
+        "Recursive": "true",
+        "Fields": "MediaSources",
+        "Limit": 40,
+    }
+    try:
+        response = http.get(f"/Users/{user_id}/Items", params=params)
+        response.raise_for_status()
+        items = response.json().get("Items", [])
+    except Exception:
+        items = []
+
+    discovered: dict[str, str] = {}  # container_path -> path_prefix
+    for item in items:
+        sources = item.get("MediaSources") or []
+        if not sources:
+            continue
+        sample_path = sources[0].get("Path") or ""
+        container, prefix = _suggest_mapping(sample_path, filename_index)
+        if container and container not in discovered:
+            discovered[container] = prefix or ""
+
+    suggested = [MappingRow(path_prefix=prefix, container_path=container) for container, prefix in discovered.items()]
+    rows = [MappingRow(path_prefix=r.path_prefix, container_path=r.container_path) for r in suggested]
+    if not rows:
+        rows.append(MappingRow())
+
+    return LibraryChoice(name=folder["Name"], section_type=section_type, mapping_rows=rows, suggested_rows=suggested)
+
+
+def _connect_and_discover_sync_jellyfin(jellyfin_url: str, api_key: str) -> tuple[str, list[LibraryChoice]]:
+    # Same threading contract as _connect_and_discover_sync: real, blocking
+    # network I/O, must run off the event loop via run_in_threadpool.
+    with httpx.Client(base_url=jellyfin_url, headers={"X-Emby-Token": api_key}, timeout=10) as http:
+        info_response = http.get("/System/Info")
+        if info_response.status_code == 401:
+            raise _JellyfinAuthError()
+        info_response.raise_for_status()
+        server_name = info_response.json().get("ServerName") or "Jellyfin"
+
+        # Single-owner install (CLAUDE.md Section 10) — same convention
+        # JellyfinClient.__init__ uses: the first user returned is the one.
+        users_response = http.get("/Users")
+        if users_response.status_code == 401:
+            raise _JellyfinAuthError()
+        users_response.raise_for_status()
+        users = users_response.json()
+        user_id = users[0]["Id"] if users else None
+
+        folders_response = http.get("/Library/VirtualFolders")
+        folders_response.raise_for_status()
+        folders = folders_response.json()
+
+        filename_index = _build_filename_index(media_mount_candidates())
+        choices = [
+            _discover_library_choices_sync_jellyfin(http, user_id, folder, filename_index)
+            for folder in folders
+            if folder.get("CollectionType") in ("movies", "tvshows")
+        ]
+        return server_name, choices
+
+
+def _apply_saved_library_choices(choices: list[LibraryChoice], settings: Settings) -> None:
+    # Shared by both backends' seeding path: overlays whatever's actually
+    # selected/mapped in the live config onto a fresh discovery pass, so
+    # reconfiguring one thing doesn't silently un-pick everything else.
+    saved_by_name = {lib.name: lib for lib in settings.libraries}
+    for choice in choices:
+        saved = saved_by_name.get(choice.name)
+        if saved is not None:
+            choice.selected = True
+            choice.three_d_format = saved.three_d_format
+            if saved.path_mappings:
+                choice.mapping_rows = [
+                    MappingRow(path_prefix=m.path_prefix, container_path=m.container_path)
+                    for m in saved.path_mappings
+                ]
+
+
 async def _seed_wizard_state_from_settings(state: WizardState, settings: Settings) -> None:
     # Reconfiguration entry point (Settings "Edit ___" links): the wizard
     # is reused as-is for editing an already-working install, so a GET into
@@ -223,53 +325,86 @@ async def _seed_wizard_state_from_settings(state: WizardState, settings: Setting
             state.discord_username = payload.get("username", "bot")
             state.discord_bot_id = payload.get("id")
 
-    if state.plex_account_token is None and settings.plex_token:
-        state.plex_account_token = settings.plex_token
+    if state.media_server is None:
+        state.media_server = settings.media_server
 
-    if not state.library_choices and settings.plex_url and state.plex_account_token:
-        try:
-            server_name, choices = await _call_with_timeout(
-                _connect_and_discover_sync, settings.plex_url, state.plex_account_token
-            )
-        except Exception:
-            # Best-effort: if Plex isn't reachable right now, leave the
-            # wizard to its normal blank-state flow rather than failing the
-            # settings page that triggered this seed attempt.
-            return
-        saved_by_name = {lib.name: lib for lib in settings.libraries}
-        for choice in choices:
-            saved = saved_by_name.get(choice.name)
-            if saved is not None:
-                choice.selected = True
-                choice.three_d_format = saved.three_d_format
-                if saved.path_mappings:
-                    choice.mapping_rows = [
-                        MappingRow(path_prefix=m.path_prefix, container_path=m.container_path)
-                        for m in saved.path_mappings
-                    ]
-        state.plex_url = settings.plex_url
-        state.plex_server_name = server_name
-        state.library_choices = choices
+    if settings.media_server == "jellyfin":
+        if state.jellyfin_api_key is None and settings.jellyfin_api_key:
+            state.jellyfin_api_key = settings.jellyfin_api_key
+
+        if not state.library_choices and settings.jellyfin_url and state.jellyfin_api_key:
+            try:
+                server_name, choices = await _call_with_timeout(
+                    _connect_and_discover_sync_jellyfin, settings.jellyfin_url, state.jellyfin_api_key
+                )
+            except Exception:
+                # Best-effort: if Jellyfin isn't reachable right now, leave
+                # the wizard to its normal blank-state flow rather than
+                # failing the settings page that triggered this seed attempt.
+                return
+            _apply_saved_library_choices(choices, settings)
+            state.jellyfin_url = settings.jellyfin_url
+            state.jellyfin_server_name = server_name
+            state.library_choices = choices
+    else:
+        if state.plex_account_token is None and settings.plex_token:
+            state.plex_account_token = settings.plex_token
+
+        if not state.library_choices and settings.plex_url and state.plex_account_token:
+            try:
+                server_name, choices = await _call_with_timeout(
+                    _connect_and_discover_sync, settings.plex_url, state.plex_account_token
+                )
+            except Exception:
+                # Best-effort: if Plex isn't reachable right now, leave the
+                # wizard to its normal blank-state flow rather than failing the
+                # settings page that triggered this seed attempt.
+                return
+            _apply_saved_library_choices(choices, settings)
+            state.plex_url = settings.plex_url
+            state.plex_server_name = server_name
+            state.library_choices = choices
 
     if state.library_sync_enabled is None:
         state.library_sync_enabled = settings.library_sync.enabled
 
 
-def _run_validation_sync(state: WizardState) -> list[tuple[str, bool, str, str]]:
-    # Discord's own check is deliberately NOT here — it needs a live async
-    # HTTP call (_verify_discord_token), and this function runs off the
-    # event loop via run_in_threadpool alongside the Plex checks below.
-    # _validate_panel awaits it separately and prepends the result.
-    from app.worker.path_mapper import NoPathMappingError, resolve_container_path
+def _resolve_check(library: LibraryConfig, sample_paths: list[str]) -> tuple[str, bool, str, str]:
+    # Shared by both backends: validates against the ACTUAL end result (do a
+    # real sample of titles resolve under whatever path_mappings the user
+    # ended up with) rather than anything backend-specific — the two callers
+    # below differ only in how they gather sample_paths.
+    resolved_count = 0
+    total = 0
+    first_problem = None
+    for path in sample_paths:
+        total += 1
+        try:
+            resolved = resolve_container_path(path, library.path_mappings)
+            if Path(resolved).exists():
+                resolved_count += 1
+            elif first_problem is None:
+                first_problem = f"{resolved} not found on disk"
+        except NoPathMappingError as exc:
+            if first_problem is None:
+                first_problem = str(exc)
 
+    ok = total > 0 and resolved_count == total
+    detail = f"{resolved_count}/{total} sample titles resolve" if total else "no titles found to sample"
+    if not ok and first_problem:
+        detail += f" — {first_problem}"
+    return (f"{library.name}: files resolve", ok, detail, "/wizard/libraries")
+
+
+def _run_validation_sync_plex(state: WizardState) -> list[tuple[str, bool, str, str]]:
     checks: list[tuple[str, bool, str, str]] = []
 
     try:
         plex_server = PlexServer(state.plex_url, state.plex_account_token, timeout=10)
         plex_server.friendlyName
-        checks.append(("Plex server reachable", True, state.plex_server_name or state.plex_url, "/wizard/plex"))
+        checks.append(("Plex server reachable", True, state.plex_server_name or state.plex_url, "/wizard/connect"))
     except Exception as exc:
-        checks.append(("Plex server reachable", False, str(exc), "/wizard/plex"))
+        checks.append(("Plex server reachable", False, str(exc), "/wizard/connect"))
         plex_server = None
 
     for library in state.selected_libraries():
@@ -277,42 +412,99 @@ def _run_validation_sync(state: WizardState) -> list[tuple[str, bool, str, str]]
             checks.append((f"{library.name}: files resolve", False, "no path mapping entered", "/wizard/libraries"))
             continue
         if plex_server is None:
-            checks.append((f"{library.name}: files resolve", False, "Plex unreachable", "/wizard/plex"))
+            checks.append((f"{library.name}: files resolve", False, "Plex unreachable", "/wizard/connect"))
             continue
 
         try:
             section = plex_server.library.section(library.name)
             items = section.searchEpisodes(maxresults=10) if section.type == "show" else section.all(maxresults=10)
+            sample_paths = []
+            for item in items:
+                try:
+                    sample_paths.append(item.media[0].parts[0].file)
+                except Exception:
+                    continue
         except Exception as exc:
             checks.append((f"{library.name}: files resolve", False, str(exc), "/wizard/libraries"))
             continue
 
-        resolved_count = 0
-        total = 0
-        first_problem = None
-        for item in items:
-            try:
-                plex_path = item.media[0].parts[0].file
-            except Exception:
-                continue
-            total += 1
-            try:
-                resolved = resolve_container_path(plex_path, library.path_mappings)
-                if Path(resolved).exists():
-                    resolved_count += 1
-                elif first_problem is None:
-                    first_problem = f"{resolved} not found on disk"
-            except NoPathMappingError as exc:
-                if first_problem is None:
-                    first_problem = str(exc)
-
-        ok = total > 0 and resolved_count == total
-        detail = f"{resolved_count}/{total} sample titles resolve" if total else "no titles found to sample"
-        if not ok and first_problem:
-            detail += f" — {first_problem}"
-        checks.append((f"{library.name}: files resolve", ok, detail, "/wizard/libraries"))
+        checks.append(_resolve_check(library, sample_paths))
 
     return checks
+
+
+def _run_validation_sync_jellyfin(state: WizardState) -> list[tuple[str, bool, str, str]]:
+    checks: list[tuple[str, bool, str, str]] = []
+
+    http: httpx.Client | None = None
+    folders_by_name: dict[str, dict] = {}
+    user_id: str | None = None
+    try:
+        http = httpx.Client(
+            base_url=state.jellyfin_url, headers={"X-Emby-Token": state.jellyfin_api_key}, timeout=10
+        )
+        info_response = http.get("/System/Info")
+        info_response.raise_for_status()
+        users = http.get("/Users").json()
+        user_id = users[0]["Id"] if users else None
+        folders = http.get("/Library/VirtualFolders").json()
+        folders_by_name = {f["Name"]: f for f in folders}
+        checks.append(
+            ("Jellyfin server reachable", True, state.jellyfin_server_name or state.jellyfin_url, "/wizard/connect")
+        )
+    except Exception as exc:
+        checks.append(("Jellyfin server reachable", False, str(exc), "/wizard/connect"))
+        http = None
+
+    for library in state.selected_libraries():
+        if not library.path_mappings:
+            checks.append((f"{library.name}: files resolve", False, "no path mapping entered", "/wizard/libraries"))
+            continue
+        if http is None:
+            checks.append((f"{library.name}: files resolve", False, "Jellyfin unreachable", "/wizard/connect"))
+            continue
+        folder = folders_by_name.get(library.name)
+        if folder is None:
+            checks.append((f"{library.name}: files resolve", False, "library not found on Jellyfin", "/wizard/libraries"))
+            continue
+
+        try:
+            item_type = "Movie" if folder.get("CollectionType") == "movies" else "Episode"
+            response = http.get(
+                f"/Users/{user_id}/Items",
+                params={
+                    "ParentId": folder["ItemId"],
+                    "IncludeItemTypes": item_type,
+                    "Recursive": "true",
+                    "Fields": "MediaSources",
+                    "Limit": 10,
+                },
+            )
+            response.raise_for_status()
+            sample_paths = [
+                (item.get("MediaSources") or [{}])[0].get("Path") or ""
+                for item in response.json().get("Items", [])
+            ]
+        except Exception as exc:
+            checks.append((f"{library.name}: files resolve", False, str(exc), "/wizard/libraries"))
+            continue
+
+        checks.append(_resolve_check(library, sample_paths))
+
+    if http is not None:
+        http.close()
+
+    return checks
+
+
+def _run_validation_sync(state: WizardState) -> list[tuple[str, bool, str, str]]:
+    # Discord's own check is deliberately NOT here — it needs a live async
+    # HTTP call (_verify_discord_token), and this function runs off the
+    # event loop via run_in_threadpool alongside the media-server checks
+    # below. _validate_panel awaits it separately and prepends the result.
+    if state.media_server == "jellyfin":
+        return _run_validation_sync_jellyfin(state)
+    return _run_validation_sync_plex(state)
 
 
 def create_web_app(
@@ -357,7 +549,7 @@ def create_web_app(
             return RedirectResponse(
                 {
                     1: "/wizard/discord",
-                    2: "/wizard/plex",
+                    2: "/wizard/connect",
                     3: "/wizard/libraries",
                     4: "/wizard/sync",
                     5: "/wizard/validate",
@@ -417,7 +609,52 @@ def create_web_app(
         invite_url = discord_invite_url(state.discord_bot_id) if state.discord_bot_id else None
         return render(request, "panel_discord_invite.html", invite_url=invite_url)
 
-    # ---- Step 2: Plex --------------------------------------------------
+    # ---- Step 2: connect a media server (backend choice + Plex/Jellyfin) --
+
+    @app.get("/wizard/connect", response_class=HTMLResponse)
+    async def connect_step(request: Request):
+        # The unified step-2 entry point: shows the backend picker on a
+        # fresh wizard, or dispatches straight into whichever backend's own
+        # connect flow once one's chosen — including on a reconfiguration,
+        # where _seed_wizard_state_from_settings has already set
+        # state.media_server from the live config, so this never re-shows
+        # the picker for an already-configured install.
+        state = await _enter_wizard_step(request)
+        if state.media_server is None:
+            return render(request, "panel_backend_choice.html")
+        if state.media_server == "jellyfin":
+            return await jellyfin_step(request)
+        return await plex_step(request)
+
+    @app.post("/wizard/connect", response_class=HTMLResponse)
+    async def connect_choose(request: Request):
+        form = await request.form()
+        choice = str(form.get("media_server", "")).strip()
+        state: WizardState = request.app.state.wizard
+        if choice not in ("plex", "jellyfin"):
+            return render(request, "panel_backend_choice.html", error="Pick a media server to continue.")
+        state.media_server = choice
+        return await connect_step(request)
+
+    @app.get("/wizard/connect/reset")
+    async def connect_reset(request: Request):
+        # Escape hatch from either backend's connect panel: clears the
+        # choice (and anything already collected for it) so /wizard/connect
+        # shows the picker again instead of requiring a full /wizard/restart
+        # just to switch backends.
+        state: WizardState = request.app.state.wizard
+        state.media_server = None
+        state.plex_pin = None
+        state.plex_account_token = None
+        state.plex_url = None
+        state.plex_server_name = None
+        state.jellyfin_url = None
+        state.jellyfin_api_key = None
+        state.jellyfin_server_name = None
+        state.library_choices = []
+        return await connect_step(request)
+
+    # ---- Step 2a: Plex --------------------------------------------------
 
     async def _ensure_pin(state: WizardState) -> MyPlexPinLogin:
         if state.plex_pin is None:
@@ -535,6 +772,57 @@ def create_web_app(
 
         state.plex_url = plex_url
         state.plex_server_name = server_name
+        state.library_choices = choices
+
+        return render(request, "panel_libraries.html", mounts=media_mount_candidates())
+
+    # ---- Step 2b: Jellyfin -----------------------------------------------
+    # No PIN/poll flow needed here, unlike Plex's — a Jellyfin API key is a
+    # single value pasted from Dashboard → API Keys, so this is one form
+    # instead of a multi-step auth dance.
+
+    @app.get("/wizard/jellyfin", response_class=HTMLResponse)
+    async def jellyfin_step(request: Request):
+        await _enter_wizard_step(request)
+        return render(request, "panel_jellyfin_connect.html")
+
+    @app.post("/wizard/jellyfin/connect", response_class=HTMLResponse)
+    async def jellyfin_connect(request: Request):
+        form = await request.form()
+        jellyfin_url = str(form.get("jellyfin_url", "")).strip().rstrip("/")
+        api_key = str(form.get("jellyfin_api_key", "")).strip()
+        state: WizardState = request.app.state.wizard
+
+        if not jellyfin_url or not api_key:
+            return render(
+                request, "panel_jellyfin_connect.html",
+                error="Enter both your Jellyfin server's address and an API key.",
+            )
+
+        try:
+            server_name, choices = await _call_with_timeout(
+                _connect_and_discover_sync_jellyfin, jellyfin_url, api_key
+            )
+        except _JellyfinAuthError:
+            return render(
+                request, "panel_jellyfin_connect.html",
+                error="Jellyfin rejected that API key. Generate a new one from Dashboard → API Keys and try again.",
+            )
+        except asyncio.TimeoutError:
+            return render(
+                request, "panel_jellyfin_connect.html",
+                error=f"Jellyfin at {jellyfin_url} didn't respond within {int(_PLEX_CALL_TIMEOUT_SECONDS)}s. "
+                      f"Double-check the address and that CineSnip's container can actually reach it, then try again.",
+            )
+        except Exception:
+            return render(
+                request, "panel_jellyfin_connect.html",
+                error=f"Couldn't reach a Jellyfin server at {jellyfin_url}. Check the address and that CineSnip's container can reach it.",
+            )
+
+        state.jellyfin_url = jellyfin_url
+        state.jellyfin_api_key = api_key
+        state.jellyfin_server_name = server_name
         state.library_choices = choices
 
         return render(request, "panel_libraries.html", mounts=media_mount_candidates())
@@ -693,17 +981,26 @@ def _write_config_files(
     # same two files, not a new runtime secret-handling path"). Tokens are
     # never logged anywhere in this module — this function is the only place
     # they're written, and only ever to these files.
+    # The wizard now collects one of two credential pairs depending on which
+    # backend was chosen at the /wizard/connect step — state.media_server is
+    # only None if that step was somehow skipped (shouldn't happen — finish()
+    # always re-runs validation, which requires it), so this falls back to
+    # whatever's already on disk, same rationale as media_server below.
+    media_server = state.media_server or (current_settings.media_server if current_settings else "plex")
+
     existing_lines = env_path.read_text().splitlines() if env_path.exists() else []
     kept = [
         line
         for line in existing_lines
-        if not line.startswith(("DISCORD_TOKEN=", "PLEX_URL=", "PLEX_TOKEN="))
+        if not line.startswith(("DISCORD_TOKEN=", "PLEX_URL=", "PLEX_TOKEN=", "JELLYFIN_URL=", "JELLYFIN_API_KEY="))
     ]
-    kept += [
-        f"DISCORD_TOKEN={state.discord_token}",
-        f"PLEX_URL={state.plex_url}",
-        f"PLEX_TOKEN={state.plex_account_token}",
-    ]
+    kept.append(f"DISCORD_TOKEN={state.discord_token}")
+    if media_server == "jellyfin":
+        kept.append(f"JELLYFIN_URL={state.jellyfin_url}")
+        kept.append(f"JELLYFIN_API_KEY={state.jellyfin_api_key}")
+    else:
+        kept.append(f"PLEX_URL={state.plex_url}")
+        kept.append(f"PLEX_TOKEN={state.plex_account_token}")
     env_path.write_text("\n".join(kept) + "\n")
 
     # Everything below "libraries"/"library_sync" is preserved from the
@@ -722,12 +1019,7 @@ def _write_config_files(
         interval_hours=existing_sync.interval_hours,
     )
     config = {
-        # Preserved, not re-derived: the wizard's Plex steps don't collect
-        # media_server, so rebuilding it from a default would silently flip
-        # a configured Jellyfin install back to Plex on any reconfiguration
-        # — the same "never discard an edited value" rule as the sections
-        # below. Falls back to the Settings default only on a first run.
-        "media_server": current_settings.media_server if current_settings else "plex",
+        "media_server": media_server,
         "libraries": [lib.model_dump() for lib in state.selected_libraries()],
         "render_defaults": (current_settings.render_defaults if current_settings else RenderDefaults()).model_dump(),
         "subtitle_defaults": (current_settings.subtitle_defaults if current_settings else SubtitleDefaults()).model_dump(),

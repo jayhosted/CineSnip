@@ -16,15 +16,20 @@ from app.settings import (
 )
 from app.worker import search_index
 
-_TABS = [
-    ("general", "General"),
-    ("render", "Render & Subtitles"),
-    ("audio", "Audio"),
-    ("cache", "Cache & Sync"),
-    ("discord", "Discord"),
-    ("plex", "Plex"),
-    ("libraries", "Libraries"),
-]
+def _tabs_for(settings: Settings) -> list[tuple[str, str]]:
+    # The "plex" tab slug is kept stable regardless of backend (nothing
+    # outside this module needs to know it's really "whichever media server
+    # is configured") — only its label changes, same convention as the
+    # step-nav's step-2 label in the wizard.
+    return [
+        ("general", "General"),
+        ("render", "Render & Subtitles"),
+        ("audio", "Audio"),
+        ("cache", "Cache & Sync"),
+        ("discord", "Discord"),
+        ("plex", "Jellyfin" if settings.media_server == "jellyfin" else "Plex"),
+        ("libraries", "Libraries"),
+    ]
 
 
 def register_settings_routes(
@@ -36,7 +41,7 @@ def register_settings_routes(
     def render_tab(request: Request, tab: str, panel: str, **ctx) -> HTMLResponse:
         settings = settings_holder.settings
         context = {
-            "request": request, "tabs": _TABS, "current_tab": tab,
+            "request": request, "tabs": _tabs_for(settings), "current_tab": tab,
             "settings": settings, **ctx,
         }
         if request.headers.get("HX-Request"):
@@ -195,21 +200,6 @@ def register_settings_routes(
             return render_tab(
                 request, "cache", "panel_settings_cache.html", cached_count=cached_count,
                 error=f"Couldn't save — check your values ({exc}).",
-            )
-
-        # apply() writes config.yaml unconditionally before load_settings()
-        # re-validates it — load_settings() DOES reject this combination,
-        # but only after the bad value is already on disk, which is one
-        # restart too late (issue #24: library_sync has no Jellyfin support,
-        # #25). Reject it here, before the write, not after.
-        if library_sync.enabled and settings.media_server == "jellyfin":
-            cached_count = len(search_index.list_titles(settings.quote_index_db_path))
-            return render_tab(
-                request, "cache", "panel_settings_cache.html", cached_count=cached_count,
-                error=(
-                    "library_sync.enabled is not supported with media_server: "
-                    "jellyfin — see issue #25."
-                ),
             )
 
         updated = settings.model_copy(deep=True)

@@ -61,10 +61,21 @@ class WizardState:
     discord_username: str | None = None
     discord_bot_id: str | None = None
 
+    # None until the backend-choice panel is submitted (fresh install) or
+    # seeded from a live config (reconfiguration) — distinct from "plex",
+    # which means the user (or an existing install) explicitly picked Plex.
+    # Drives both current_step (below) and which of the two connect flows
+    # /wizard/connect dispatches into.
+    media_server: str | None = None
+
     plex_pin: object | None = None  # plexapi.myplex.MyPlexPinLogin, once requested
     plex_account_token: str | None = None
     plex_url: str | None = None
     plex_server_name: str | None = None
+
+    jellyfin_url: str | None = None
+    jellyfin_api_key: str | None = None
+    jellyfin_server_name: str | None = None
 
     library_choices: list[LibraryChoice] = field(default_factory=list)
 
@@ -103,7 +114,12 @@ class WizardState:
     def current_step(self) -> int:
         if not self.discord_username:
             return 1
-        if not self.plex_url:
+        if self.media_server is None:
+            return 2
+        if self.media_server == "jellyfin":
+            if not self.jellyfin_url:
+                return 2
+        elif not self.plex_url:
             return 2
         if not any(c.selected for c in self.library_choices):
             return 3

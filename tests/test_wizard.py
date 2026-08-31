@@ -7,7 +7,12 @@ import yaml
 
 from app.settings import LibraryConfig, LibrarySyncDefaults, QuoteMatchDefaults, RenderDefaults, Settings, SubtitleDefaults, WorkerConfig, load_settings
 from app.web.state import LibraryChoice, MappingRow, WizardState
-from app.web.app import _verify_discord_token, _write_config_files
+from app.web.app import (
+    _JellyfinAuthError,
+    _connect_and_discover_sync_jellyfin,
+    _verify_discord_token,
+    _write_config_files,
+)
 
 
 # ---- Regression: post-wizard settings reload must see the wizard's own
@@ -81,6 +86,7 @@ def _state_with_one_library(*, three_d_format="none"):
     state = WizardState()
     state.discord_token = "disc-token"
     state.discord_username = "cinesnip-bot"
+    state.media_server = "plex"
     state.plex_url = "http://plex:32400"
     state.plex_account_token = "plex-token"
     choice = LibraryChoice(
@@ -157,11 +163,41 @@ def test_write_config_files_defaults_track_settings_models_not_a_hardcoded_copy(
     assert raw["library_sync"] == LibrarySyncDefaults().model_dump()
 
 
-def test_write_config_files_preserves_media_server_on_reconfiguration(tmp_path):
-    # The wizard's steps only ever collect Plex details, so a /wizard/restart
-    # on a Jellyfin install must carry media_server through rather than
-    # silently dropping it back to the "plex" default.
+def test_write_config_files_uses_state_media_server_when_set(tmp_path):
+    # The normal case: /wizard/connect collected media_server onto state
+    # itself (Jellyfin here), which must win over whatever the previously
+    # running config said — e.g. switching an existing Plex install to
+    # Jellyfin via a full wizard re-run.
     state = _state_with_one_library()
+    state.media_server = "jellyfin"
+    state.jellyfin_url = "http://jf:8096"
+    state.jellyfin_api_key = "key"
+    current_settings = Settings(
+        discord_token="old",
+        plex_url="http://plex:32400",
+        plex_token="old",
+        media_server="plex",
+        libraries=[LibraryConfig(name="Movies")],
+    )
+    env_path = tmp_path / ".env"
+    config_path = tmp_path / "config.yaml"
+
+    _write_config_files(state, current_settings=current_settings, env_path=env_path, config_path=config_path)
+
+    assert yaml.safe_load(config_path.read_text())["media_server"] == "jellyfin"
+    lines = env_path.read_text().splitlines()
+    assert "JELLYFIN_URL=http://jf:8096" in lines
+    assert "JELLYFIN_API_KEY=key" in lines
+    assert not any(line.startswith("PLEX_URL=") for line in lines)
+
+
+def test_write_config_files_falls_back_to_current_settings_media_server_if_state_unset(tmp_path):
+    # Defensive fallback for a WizardState that never went through
+    # /wizard/connect (shouldn't happen in the real app — finish() always
+    # re-runs validation, which requires media_server to be set) — must not
+    # silently drop an existing Jellyfin install back to the "plex" default.
+    state = _state_with_one_library()
+    state.media_server = None
     state.library_sync_enabled = False
     current_settings = Settings(
         discord_token="old",
@@ -186,6 +222,81 @@ def test_write_config_files_defaults_media_server_to_plex_on_first_run(tmp_path)
     _write_config_files(state, env_path=env_path, config_path=config_path)
 
     assert yaml.safe_load(config_path.read_text())["media_server"] == "plex"
+
+
+# ---- Backend choice (issue #26) --------------------------------------------
+
+
+def test_current_step_shows_backend_picker_before_any_choice():
+    state = WizardState()
+    state.discord_username = "cinesnip-bot"
+    assert state.media_server is None
+    assert state.current_step == 2
+
+
+def test_current_step_waits_for_jellyfin_url_once_jellyfin_chosen():
+    state = WizardState()
+    state.discord_username = "cinesnip-bot"
+    state.media_server = "jellyfin"
+    assert state.current_step == 2  # jellyfin_url not set yet
+
+    state.jellyfin_url = "http://jf:8096"
+    state.library_choices = [LibraryChoice(name="Movies", section_type="movie", selected=True)]
+    assert state.current_step == 4  # a library is already selected, so straight to Sync
+
+
+def test_current_step_waits_for_plex_url_once_plex_chosen():
+    state = WizardState()
+    state.discord_username = "cinesnip-bot"
+    state.media_server = "plex"
+    assert state.current_step == 2  # plex_url not set yet
+
+
+def _patch_httpx_sync_client(monkeypatch, handler):
+    real_client = httpx.Client
+
+    def fake_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", fake_client)
+
+
+def test_connect_and_discover_sync_jellyfin_raises_on_bad_key(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={})
+
+    _patch_httpx_sync_client(monkeypatch, handler)
+
+    with pytest.raises(_JellyfinAuthError):
+        _connect_and_discover_sync_jellyfin("http://jf.test", "bad-key")
+
+
+def test_connect_and_discover_sync_jellyfin_returns_server_and_libraries(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/System/Info":
+            return httpx.Response(200, json={"ServerName": "MyJellyfin"})
+        if request.url.path == "/Users":
+            return httpx.Response(200, json=[{"Id": "user-1"}])
+        if request.url.path == "/Library/VirtualFolders":
+            return httpx.Response(
+                200,
+                json=[
+                    {"Name": "Movies", "ItemId": "f1", "CollectionType": "movies", "Locations": ["/media/movies"]},
+                    {"Name": "Collections", "ItemId": "f2", "CollectionType": "boxsets", "Locations": []},
+                ],
+            )
+        if request.url.path == "/Users/user-1/Items":
+            return httpx.Response(200, json={"Items": []})
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    _patch_httpx_sync_client(monkeypatch, handler)
+
+    server_name, choices = _connect_and_discover_sync_jellyfin("http://jf.test", "good-key")
+
+    assert server_name == "MyJellyfin"
+    assert [c.name for c in choices] == ["Movies"]  # boxsets folder excluded
+    assert choices[0].section_type == "movie"
 
 
 # ---- Sync step (issue #8) --------------------------------------------------

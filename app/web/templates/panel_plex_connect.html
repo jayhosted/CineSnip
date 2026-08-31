@@ -19,4 +19,5 @@
     <a href="/settings/{{ state.wizard_return_to }}" class="btn-link">&larr; Cancel, back to Settings</a>
     {% endif %}
   </div>
+  <button type="button" class="btn-link" style="display:block; margin-top:10px;" hx-get="/wizard/connect/reset" hx-target="#wizard-panel" hx-swap="innerHTML">Use a different media server?</button>
 </div>

@@ -3,7 +3,7 @@
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
     <h1>Pick your libraries</h1>
   </div>
-  <p class="desc">Choose which Plex libraries CineSnip should search. A library can span more than one folder or drive &mdash; we've suggested a mapping for each one we found; use "Add another location" for one we missed.</p>
+  <p class="desc">Choose which {{ "Jellyfin" if state.media_server == "jellyfin" else "Plex" }} libraries CineSnip should search. A library can span more than one folder or drive &mdash; we've suggested a mapping for each one we found; use "Add another location" for one we missed.</p>
 
   {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
 
@@ -30,7 +30,7 @@
             {% set j = loop.index0 %}
             <div class="mapping-row">
               <input type="text" class="mapping-prefix" name="lib_{{ i }}_mapping_{{ j }}_path_prefix"
-                     placeholder="Plex path, e.g. D:\Movies" value="{{ row.path_prefix }}">
+                     placeholder="{{ 'Jellyfin' if state.media_server == 'jellyfin' else 'Plex' }} path, e.g. D:\Movies" value="{{ row.path_prefix }}">
               <span class="mapping-arrow">&rarr;</span>
               <select name="lib_{{ i }}_mapping_{{ j }}_container_path" class="mapping-container">
                 <option value="" {% if not row.container_path %}selected{% endif %}>&mdash; no mapping &mdash;</option>
@@ -65,7 +65,7 @@
                 hx-target="#wizard-panel" hx-swap="innerHTML">+ Add another location</button>
       </div>
     {% else %}
-      <p style="color: var(--text-tertiary); font-size: 13px;">No movie or show libraries found on this Plex server.</p>
+      <p style="color: var(--text-tertiary); font-size: 13px;">No movie or show libraries found on this {{ "Jellyfin" if state.media_server == "jellyfin" else "Plex" }} server.</p>
     {% endfor %}
     <button class="btn btn-primary btn-block" type="submit" style="margin-top: 8px;"><span class="btn-spinner"></span><span class="btn-label-idle">Continue</span></button>
   </form>

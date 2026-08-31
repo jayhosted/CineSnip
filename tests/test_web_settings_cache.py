@@ -39,18 +39,17 @@ def client(settings_holder, monkeypatch):
     return TestClient(app)
 
 
-def test_cache_save_rejects_library_sync_with_jellyfin_before_writing(client, settings_holder):
+def test_cache_save_allows_library_sync_with_jellyfin(client, settings_holder):
+    # library_sync now works with either backend (issue #25) —
+    # JellyfinClient.current_section_updated_ats() supplies its own change
+    # signal, so this combination is no longer rejected.
     response = client.post(
         "/settings/cache",
         data={"enabled": "on", "interval_hours": "24.0"},
     )
 
     assert response.status_code == 200
-    assert "jellyfin" in response.text.lower()
-    # The write must never have happened — settings_holder.settings is only
-    # ever swapped by fake_write_config_yaml, so it staying untouched proves
-    # apply()/write_config_yaml() was never called.
-    assert settings_holder.settings.library_sync.enabled is False
+    assert settings_holder.settings.library_sync.enabled is True
 
 
 def test_cache_save_allows_library_sync_disabled_with_jellyfin(client, settings_holder):

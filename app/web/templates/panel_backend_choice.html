@@ -1,0 +1,26 @@
+<div class="card">
+  <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18"/></svg>
+    <h1>Which media server do you use?</h1>
+  </div>
+  <p class="desc">CineSnip talks to exactly one media server per install. Pick the one your library actually lives on &mdash; you can change this later from Settings.</p>
+
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+
+  <form hx-post="/wizard/connect" hx-target="#wizard-panel" hx-swap="innerHTML">
+    <div class="kind-toggle" style="margin-bottom:20px;">
+      <label>
+        <input type="radio" name="media_server" value="plex" class="visually-hidden-input" checked>
+        Plex
+      </label>
+      <label>
+        <input type="radio" name="media_server" value="jellyfin" class="visually-hidden-input">
+        Jellyfin
+      </label>
+    </div>
+    <button class="btn btn-primary btn-block" type="submit"><span class="btn-spinner"></span><span class="btn-label-idle">Continue</span></button>
+  </form>
+  {% if state.wizard_return_to %}
+  <a href="/settings/{{ state.wizard_return_to }}" class="btn-link" style="display:inline-block; margin-top:16px;">&larr; Cancel, back to Settings</a>
+  {% endif %}
+</div>

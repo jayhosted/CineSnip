@@ -42,11 +42,11 @@ commands. If you're using Jellyfin, follow the steps below but substitute:
   that library in Jellyfin and check its **Path** in the item details
   (rather than Plex's View XML).
 
-Two known limits with Jellyfin: **library auto-sync (step 8) is Plex-only**
-— setting both `media_server: jellyfin` and `library_sync.enabled: true`
-is refused at startup with a clear error — and the setup wizard's guided
-steps still only cover Plex, so a Jellyfin install is configured by
-hand-editing `.env`/`config.yaml` as described above.
+Library auto-sync (step 8) works with either backend. The steps above are
+for a manual `.env`/`config.yaml` edit; the web app's guided setup wizard
+(`/setup`) also supports choosing Jellyfin — its first step after Discord
+lets you pick a media server, then walks through a Jellyfin API key instead
+of Plex's PIN pairing.
 
 ## 2. Create a Discord bot application
 
@@ -304,7 +304,6 @@ empty on upgrade.
 - **"No path mapping configured for ..." / "File not found on disk"** — that library's `path_mappings` in `config.yaml` don't match what Plex reports or what's actually bind-mounted. Re-check step 5, and confirm the corresponding volume in `docker-compose.yml` points at the right host folder.
 - **"'X' is not a configured library"** — a title resolved to a Plex library that isn't listed under `libraries` in `config.yaml`. Add an entry for it (step 5).
 - **`sqlite3.OperationalError: no such column: media_id`** — an old `cache/quote_index.db` from before Jellyfin support. Stop the container, delete that one file, and start again; it rebuilds itself. See "Upgrading an existing install" above.
-- **"library_sync.enabled is not supported with media_server: jellyfin"** — library auto-sync (step 8) relies on a Plex-only per-library change timestamp. Set `library_sync.enabled: false` in `config.yaml`; use `scripts/build_full_cache.py` for a one-off cache build instead.
 - **ffmpeg errors** — check the container logs for the actual ffmpeg stderr output; this usually means the source file is a format ffmpeg can't read directly, or the mapped path is wrong.
 - **"Couldn't generate the GIF: ... timed out"** — the source file is unusually slow for ffmpeg to seek/decode near that timestamp (raise `render_defaults.timeout_seconds` in `config.yaml` if this happens on files that should be fine), or something is stuck — check `docker compose logs`.
 - **Permission denied writing to `/app/scratch` or `/app/cache`** — the host `scratch/`/`cache/` directory got created by Docker (as `root`) instead of by you before first run. Stop the container, `rm -rf scratch cache && mkdir scratch cache`, then start it again. (Unlike `scratch/`, it's safe to leave `cache/` in place across restarts — only delete it if you actually want to force re-extraction of all subtitles.)

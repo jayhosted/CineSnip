@@ -2,6 +2,18 @@
   <div class="page-header"><h1>Settings</h1><p>Configuration CineSnip doesn't need to ask for during first-run setup.</p></div>
   {% include "settings_tabs.html" %}
 
+  {% if settings.media_server == "jellyfin" %}
+  <div class="card" style="margin-top:18px; max-width:520px;">
+    <label class="field-label">JELLYFIN SERVER</label>
+    <p style="font-family: var(--font-mono); font-size: 13px; color: var(--text-secondary); margin:10px 0 0;">{{ settings.jellyfin_url }}</p>
+    <p class="footnote" style="text-align:left; max-width:none; margin:12px 0 18px;">
+      This only rewrites your Jellyfin server address and API key —
+      Discord, libraries, and render/cache settings on the other tabs here
+      are untouched.
+    </p>
+    <a href="/wizard/connect?return_to=plex" class="btn btn-primary" style="text-decoration:none; display:inline-block;">Edit Jellyfin connection &rarr;</a>
+  </div>
+  {% else %}
   <div class="card" style="margin-top:18px; max-width:520px;">
     <label class="field-label">PLEX SERVER</label>
     <p style="font-family: var(--font-mono); font-size: 13px; color: var(--text-secondary); margin:10px 0 0;">{{ settings.plex_url }}</p>
@@ -10,6 +22,7 @@
       Discord, libraries, and render/cache settings on the other tabs here
       are untouched.
     </p>
-    <a href="/wizard/plex?return_to=plex" class="btn btn-primary" style="text-decoration:none; display:inline-block;">Edit Plex connection &rarr;</a>
+    <a href="/wizard/connect?return_to=plex" class="btn btn-primary" style="text-decoration:none; display:inline-block;">Edit Plex connection &rarr;</a>
   </div>
+  {% endif %}
 </div>
