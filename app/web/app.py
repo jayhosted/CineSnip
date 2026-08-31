@@ -641,8 +641,16 @@ def create_web_app(
         # Escape hatch from either backend's connect panel: clears the
         # choice (and anything already collected for it) so /wizard/connect
         # shows the picker again instead of requiring a full /wizard/restart
-        # just to switch backends.
-        state: WizardState = request.app.state.wizard
+        # just to switch backends. _enter_wizard_step first (not
+        # connect_step, which would call it a second time) so seeding from a
+        # live config and honoring ?return_to= both still happen — but
+        # media_server is cleared AFTER that seeding runs, not before, since
+        # _seed_wizard_state_from_settings's own `if state.media_server is
+        # None: state.media_server = settings.media_server` would otherwise
+        # immediately restore whatever's already configured, making this
+        # link a no-op on any already-set-up install (which is every real
+        # use of it — a fresh wizard has nothing to switch away from yet).
+        state = await _enter_wizard_step(request)
         state.media_server = None
         state.plex_pin = None
         state.plex_account_token = None
@@ -652,7 +660,7 @@ def create_web_app(
         state.jellyfin_api_key = None
         state.jellyfin_server_name = None
         state.library_choices = []
-        return await connect_step(request)
+        return render(request, "panel_backend_choice.html")
 
     # ---- Step 2a: Plex --------------------------------------------------
 

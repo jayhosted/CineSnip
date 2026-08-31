@@ -4,14 +4,17 @@ import os
 import httpx
 import pytest
 import yaml
+from fastapi.testclient import TestClient
 
 from app.settings import LibraryConfig, LibrarySyncDefaults, QuoteMatchDefaults, RenderDefaults, Settings, SubtitleDefaults, WorkerConfig, load_settings
 from app.web.state import LibraryChoice, MappingRow, WizardState
+from app.runtime import SettingsHolder
 from app.web.app import (
     _JellyfinAuthError,
     _connect_and_discover_sync_jellyfin,
     _verify_discord_token,
     _write_config_files,
+    create_web_app,
 )
 
 
@@ -250,6 +253,39 @@ def test_current_step_waits_for_plex_url_once_plex_chosen():
     state.discord_username = "cinesnip-bot"
     state.media_server = "plex"
     assert state.current_step == 2  # plex_url not set yet
+
+
+def test_connect_reset_shows_picker_on_an_already_configured_install():
+    # Regression: on any real (already-set-up) install, /wizard/connect
+    # dispatches through _enter_wizard_step -> _seed_wizard_state_from_settings,
+    # which fills in state.media_server from the live config whenever it's
+    # None. A reset handler that cleared media_server and then re-entered
+    # via connect_step would get it immediately re-seeded back to the
+    # configured backend before the picker ever had a chance to render —
+    # making "Use a different media server?"/"Switch to Jellyfin instead?"
+    # a silent no-op for every real reconfiguration. It must render the
+    # picker directly instead.
+    settings = Settings(
+        discord_token="",  # empty so _seed_wizard_state_from_settings skips the real Discord API call
+        plex_url="http://plex.example",
+        plex_token="",  # empty so it skips the real Plex connection attempt too
+        libraries=[LibraryConfig(name="Movies")],
+    )
+    settings_holder = SettingsHolder(settings=settings)
+
+    async def on_setup_complete():
+        return None
+
+    app = create_web_app(settings_holder, on_setup_complete)
+    client = TestClient(app)
+
+    # First entry seeds state.media_server = "plex" from the live config.
+    client.get("/wizard/connect")
+    # The reset link must actually show the picker, not bounce back to Plex.
+    response = client.get("/wizard/connect/reset")
+
+    assert "Which media server do you use?" in response.text
+    assert "Connect your Plex account" not in response.text
 
 
 def _patch_httpx_sync_client(monkeypatch, handler):
