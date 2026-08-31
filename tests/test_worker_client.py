@@ -257,3 +257,28 @@ def test_render_sends_start_end_and_subtitle_overrides_when_given():
     assert result == RenderResult(
         content=b"clip-bytes", format="gif", style="classic", start=10.0, duration=5.0
     )
+
+
+def test_render_coerces_int_media_id_to_str_in_json_body():
+    """Bare-timecode calls (both /snip movie and /snip tv) still pass an int
+    rating_key through gif.py's int(film) parsing. WorkerClient.render() must
+    coerce it to str before building the request body, since RenderRequest.media_id
+    is typed str and pydantic rejects a raw JSON number outright."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            content=b"clip-bytes",
+            headers={
+                "X-Clip-Format": "gif", "X-Clip-Style": "classic",
+                "X-Clip-Start": "0.0", "X-Clip-Duration": "4.0",
+            },
+        )
+
+    client = _client_with_mock(handler)
+    asyncio.run(client.render(media_id=123, timecode="0:00:01"))
+
+    assert captured["body"]["media_id"] == "123"
+    assert isinstance(captured["body"]["media_id"], str)

@@ -339,7 +339,7 @@ class WorkerClient:
         response = await self._client.post(
             "/render",
             json={
-                "media_id": media_id,
+                "media_id": str(media_id),
                 "timecode": timecode,
                 "duration": duration,
                 "end_timecode": end_timecode,
