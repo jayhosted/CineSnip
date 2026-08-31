@@ -3,7 +3,7 @@
   <div class="match-list">
   {% for m in matches %}
     <form hx-post="/generate/render" hx-target="#generate-right" hx-swap="outerHTML">
-      <input type="hidden" name="rating_key" value="{{ m.rating_key if show_titles else rating_key }}">
+      <input type="hidden" name="media_id" value="{{ m.media_id if show_titles else media_id }}">
       <input type="hidden" name="title" value="{{ m.title if show_titles else title }}">
       <input type="hidden" name="library_name" value="{{ m.library_name if show_titles else (library_name or '') }}">
       <input type="hidden" name="timecode" value="{{ m.start }}">
