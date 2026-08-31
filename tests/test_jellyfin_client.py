@@ -356,8 +356,46 @@ def test_search_shows_scopes_to_configured_show_folders():
     assert results[0].library_name == "TV Shows"
 
 
-def test_current_section_updated_ats_not_implemented():
-    client = _client_with_mock(lambda request: httpx.Response(200, json={}))
+def test_current_section_updated_ats_combines_newest_date_and_count():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["SortBy"] == "DateCreated"
+        assert request.url.params["SortOrder"] == "Descending"
+        assert request.url.params["Limit"] == "1"
+        if request.url.params["ParentId"] == "f1":
+            assert request.url.params["IncludeItemTypes"] == "Movie"
+            return httpx.Response(
+                200,
+                json={
+                    "Items": [{"DateCreated": "2024-01-01T00:00:00.0000000Z"}],
+                    "TotalRecordCount": 42,
+                },
+            )
+        assert request.url.params["IncludeItemTypes"] == "Episode"
+        return httpx.Response(200, json={"Items": [], "TotalRecordCount": 0})
 
-    with pytest.raises(NotImplementedError):
-        client.current_section_updated_ats()
+    client = _client_with_mock(
+        handler,
+        movie_folders=[_folder("Movies", "movies", ["/media/movies"], item_id="f1")],
+        show_folders=[],
+    )
+
+    result = client.current_section_updated_ats()
+
+    import datetime
+
+    expected = int(
+        datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc).timestamp()
+    ) * 10_000_000 + 42
+    assert result == {"Movies": expected}
+
+
+def test_current_section_updated_ats_handles_empty_library():
+    client = _client_with_mock(
+        lambda request: httpx.Response(200, json={"Items": [], "TotalRecordCount": 0}),
+        movie_folders=[_folder("Movies", "movies", ["/media/movies"], item_id="f1")],
+        show_folders=[],
+    )
+
+    result = client.current_section_updated_ats()
+
+    assert result == {"Movies": 0}

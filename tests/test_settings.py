@@ -181,11 +181,10 @@ def test_media_server_jellyfin_succeeds_with_jellyfin_env(tmp_path):
     assert settings.jellyfin_api_key == "key"
 
 
-def test_jellyfin_plus_library_sync_enabled_is_rejected_at_load(tmp_path):
-    # library_sync is Plex-only (issue #25): JellyfinClient raises
-    # NotImplementedError for it, and the sync loop's broad
-    # "server unreachable" handler would swallow that into a silent no-op —
-    # so the combination has to fail here instead, at config-load time.
+def test_jellyfin_plus_library_sync_enabled_loads(tmp_path):
+    # library_sync now works with either backend (issue #25) — Jellyfin's
+    # JellyfinClient.current_section_updated_ats() supplies its own change
+    # signal, so this combination is no longer rejected at config-load time.
     env = tmp_path / ".env"
     env.write_text(
         "DISCORD_TOKEN=t\nJELLYFIN_URL=http://jf:8096\nJELLYFIN_API_KEY=key\n"
@@ -195,8 +194,7 @@ def test_jellyfin_plus_library_sync_enabled_is_rejected_at_load(tmp_path):
         "media_server: jellyfin\nlibraries: []\nlibrary_sync:\n  enabled: true\n"
     )
 
-    with pytest.raises(SettingsError, match="library_sync"):
-        load_settings(env_path=env, config_path=config)
+    assert load_settings(env_path=env, config_path=config).library_sync.enabled is True
 
 
 def test_jellyfin_with_library_sync_disabled_still_loads(tmp_path):

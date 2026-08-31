@@ -119,7 +119,7 @@ def test_enumeration_failure_touches_nothing_and_updates_no_state(tmp_path):
 
     result = asyncio.run(sync_library(settings, plex, "Movies", section=None, updated_at=200))
 
-    assert result.plex_error is True
+    assert result.media_error is True
     assert result.added == 0
     assert result.removed == 0
     # State must NOT be bumped to 200 — the old value (100) needs to still

@@ -8,8 +8,8 @@ from dataclasses import dataclass
 
 from app.settings import Settings, SettingsError
 from app.worker import search_index
+from app.worker.media_client import MediaClient, MovieResult
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
-from app.worker.plex_client import MovieResult, PlexClient
 from app.worker.quote_index import (
     append_sync_log,
     finish_sync_run,
@@ -31,7 +31,7 @@ from app.worker.subtitles import (
 
 logger = logging.getLogger("cinesnip.library_sync")
 
-# How many titles Plex still lists as present get spot-checked on disk
+# How many titles the media server still lists as present get spot-checked on disk
 # before trusting an apparent removal enough to actually delete cache
 # entries — not config, since it's a safety-margin constant, not something
 # an installer should need to tune.
@@ -41,7 +41,7 @@ _SPOT_CHECK_SAMPLE_SIZE = 10
 @dataclass
 class LibrarySyncResult:
     library_name: str
-    plex_error: bool = False
+    media_error: bool = False
     added: int = 0
     already_cached: int = 0
     skipped_no_mapping: int = 0
@@ -165,7 +165,7 @@ def _mount_check(settings: Settings, library_name: str) -> bool:
 def _spot_check_removed_titles(
     settings: Settings, library_name: str, live_items: list[MovieResult]
 ) -> str | None:
-    """Layer 2: a random sample of titles Plex still lists must actually
+    """Layer 2: a random sample of titles the media server still lists must actually
     resolve on disk before an apparent removal is trusted. Runs entirely
     synchronously (real filesystem stats against mounted media drives) —
     callers must run this via asyncio.to_thread, same as _mount_check.
@@ -178,7 +178,7 @@ def _spot_check_removed_titles(
             continue  # a separate, unrelated problem — not evidence of a mount failure
         if not os.path.exists(container_path):
             logger.warning(
-                "library sync: spot check failed for '%s' — a title Plex still lists "
+                "library sync: spot check failed for '%s' — a title the media server still lists "
                 "('%s') has no file on disk — skipping cleanup this cycle",
                 library_name,
                 item.title,
@@ -190,7 +190,7 @@ def _spot_check_removed_titles(
 
 async def sync_library(
     settings: Settings,
-    plex: PlexClient,
+    media: MediaClient,
     library_name: str,
     section,
     updated_at: int,
@@ -198,14 +198,14 @@ async def sync_library(
     result = LibrarySyncResult(library_name=library_name)
 
     try:
-        live_items = await asyncio.to_thread(plex.enumerate_section, section)
-    except Exception as exc:  # noqa: BLE001 - Plex being briefly unreachable must not crash the sync loop
+        live_items = await asyncio.to_thread(media.enumerate_section, section)
+    except Exception as exc:  # noqa: BLE001 - media server being briefly unreachable must not crash the sync loop
         logger.warning(
-            "library sync: could not enumerate '%s' — Plex unreachable, skipping this cycle: %s",
+            "library sync: could not enumerate '%s' — media server unreachable, skipping this cycle: %s",
             library_name,
             exc,
         )
-        result.plex_error = True
+        result.media_error = True
         return result
 
     total_items = len(live_items)
@@ -293,7 +293,7 @@ async def sync_library(
     return result
 
 
-async def run_library_sync_once(settings: Settings, plex: PlexClient) -> list[LibrarySyncResult]:
+async def run_library_sync_once(settings: Settings, media: MediaClient) -> list[LibrarySyncResult]:
     db_path = settings.quote_index_db_path
     if not await asyncio.to_thread(start_sync_run, db_path):
         logger.info("library sync: skipped — a run is already in progress")
@@ -302,12 +302,12 @@ async def run_library_sync_once(settings: Settings, plex: PlexClient) -> list[Li
     results: list[LibrarySyncResult] = []
     try:
         try:
-            current = await asyncio.to_thread(plex.current_section_updated_ats)
-        except Exception as exc:  # noqa: BLE001 - Plex being briefly unreachable must not crash the sync loop
-            logger.warning("library sync: could not check for library changes — Plex unreachable: %s", exc)
+            current = await asyncio.to_thread(media.current_section_updated_ats)
+        except Exception as exc:  # noqa: BLE001 - media server being briefly unreachable must not crash the sync loop
+            logger.warning("library sync: could not check for library changes — media server unreachable: %s", exc)
             return []
 
-        sections_by_name = dict(plex.library_sections())
+        sections_by_name = dict(media.library_sections())
 
         for library_name, updated_at in current.items():
             stored = await asyncio.to_thread(get_section_updated_at, db_path, library_name)
@@ -316,7 +316,7 @@ async def run_library_sync_once(settings: Settings, plex: PlexClient) -> list[Li
                 continue
 
             section = sections_by_name[library_name]
-            result = await sync_library(settings, plex, library_name, section, updated_at)
+            result = await sync_library(settings, media, library_name, section, updated_at)
             results.append(result)
             skip_note = f" (cleanup skipped: {result.removal_skipped_reason})" if result.removal_skipped_reason else ""
             logger.info(
@@ -337,7 +337,7 @@ async def run_library_sync_once(settings: Settings, plex: PlexClient) -> list[Li
         await asyncio.to_thread(finish_sync_run, db_path, new_count=sum(r.added for r in results))
 
 
-async def library_sync_task(settings: Settings, plex: PlexClient) -> None:
+async def library_sync_task(settings: Settings, media: MediaClient) -> None:
     """Joined into app/main.py's asyncio.gather() when library_sync.enabled
     is set. Runs once immediately (so enabling the feature doesn't wait a
     full interval), then sleeps and repeats. Wraps each cycle so one bad
@@ -345,7 +345,7 @@ async def library_sync_task(settings: Settings, plex: PlexClient) -> None:
     """
     while True:
         try:
-            await run_library_sync_once(settings, plex)
+            await run_library_sync_once(settings, media)
         except Exception:
             logger.exception("library sync: unexpected error in sync cycle")
         await asyncio.sleep(settings.library_sync.interval_hours * 3600)

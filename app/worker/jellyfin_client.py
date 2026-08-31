@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import httpx
 
 from app.settings import Settings
@@ -100,11 +102,45 @@ class JellyfinClient:
         ]
 
     def current_section_updated_ats(self) -> dict[str, int]:
-        # No Jellyfin analog to Plex's per-section updatedAt — library_sync
-        # stays Plex-only for this slice (issue #25).
-        raise NotImplementedError(
-            "library_sync is not supported with media_server: jellyfin (issue #25)."
-        )
+        # Jellyfin has no single field mirroring Plex's per-section
+        # updatedAt (confirmed against a live server: CollectionFolder's own
+        # DateLastMediaAdded is left at Jellyfin's zero-value sentinel,
+        # "0001-01-01T00:00:00Z", on a real populated library — not a
+        # trustworthy signal). Built from two cheap per-folder calls instead:
+        # the newest item's DateCreated (catches additions/replacements) and
+        # the folder's total item count (catches removals, which don't
+        # change any existing item's DateCreated). Combined into one opaque
+        # int — nothing outside this method interprets its structure, same
+        # contract as Plex's own timestamp-shaped value.
+        result: dict[str, int] = {}
+        for name, section in self.library_sections():
+            result[name] = self._section_version(section)
+        return result
+
+    def _section_version(self, section: dict) -> int:
+        item_type = "Movie" if section.get("CollectionType") == "movies" else "Episode"
+        params = {
+            "ParentId": section["ItemId"],
+            "IncludeItemTypes": item_type,
+            "Recursive": "true",
+            "Fields": "DateCreated",
+            "SortBy": "DateCreated",
+            "SortOrder": "Descending",
+            "Limit": 1,
+            "EnableTotalRecordCount": "true",
+        }
+        response = self._http.get(f"/Users/{self._user_id}/Items", params=params)
+        response.raise_for_status()
+        payload = response.json()
+
+        items = payload.get("Items") or []
+        if items and items[0].get("DateCreated"):
+            newest = datetime.fromisoformat(items[0]["DateCreated"])
+        else:
+            newest = datetime.fromtimestamp(0, tz=timezone.utc)
+        count = payload.get("TotalRecordCount") or 0
+
+        return int(newest.timestamp()) * 10_000_000 + (count % 10_000_000)
 
     def _search_folders(
         self, folders: list[dict], item_type: str, query: str, limit: int

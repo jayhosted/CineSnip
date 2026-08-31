@@ -167,15 +167,17 @@ class QuoteMatchDefaults(BaseModel):
 
 class LibrarySyncDefaults(BaseModel):
     # Off by default — this is background work that can delete cache
-    # entries (for titles removed from Plex), so it must be an explicit
-    # opt-in rather than something that just starts happening. Section
-    # updatedAt-based change detection (see app/worker/library_sync.py) is
-    # what makes this safe/cheap enough to offer at all.
+    # entries (for titles removed from the media server), so it must be an
+    # explicit opt-in rather than something that just starts happening.
+    # Cheap per-library change detection (Plex's section.updatedAt, or
+    # JellyfinClient's own synthetic equivalent — see
+    # app/worker/library_sync.py and jellyfin_client.py) is what makes this
+    # safe/cheap enough to offer at all, for either backend.
     enabled: bool = False
-    # The cheap "did anything change" check (a handful of section.reload()
-    # calls) runs every wake-up regardless of this value — a short interval
-    # costs almost nothing on cycles where nothing changed, since the
-    # expensive full enumeration only happens when a section's updatedAt
+    # The cheap "did anything change" check (a handful of per-library
+    # lookups) runs every wake-up regardless of this value — a short
+    # interval costs almost nothing on cycles where nothing changed, since
+    # the expensive full enumeration only happens when a library's version
     # actually moved. 24h matches how infrequently a personal library
     # typically changes; lower it if you add content more often.
     interval_hours: float = 24.0
@@ -303,20 +305,6 @@ def load_settings(
         raise SettingsError(
             f"Missing required .env values: {', '.join(missing)}. "
             f"Copy .env.example to .env and fill them in — see README.md."
-        )
-
-    # Library auto-sync depends on Plex's per-section updatedAt for change
-    # detection; Jellyfin has no analog, so JellyfinClient raises
-    # NotImplementedError there (issue #25). Caught here, at config-load
-    # time, rather than left to surface deep inside the background sync
-    # loop — where its broad "media server unreachable" handler would
-    # swallow it and silently no-op forever.
-    if (raw_config.get("library_sync") or {}).get("enabled") and media_server == "jellyfin":
-        raise SettingsError(
-            "library_sync.enabled is not supported with media_server: jellyfin — "
-            "automatic library sync is Plex-only (issue #25). Set "
-            "library_sync.enabled: false in config.yaml, or switch to "
-            "media_server: plex."
         )
 
     dev_guild_id: int | None = None
