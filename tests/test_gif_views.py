@@ -1012,7 +1012,7 @@ def test_audio_clip_result_view_merge_open_uses_embed_footer_like_clip_edit_view
     assert not kwargs["embed"].image.url
 
 
-def test_audio_clip_result_view_edit_resets_filename_to_generic():
+def test_audio_clip_result_view_edit_with_no_cached_entries_falls_back_to_generic_filename():
     async def run():
         worker = _FakeEditWorker()
         worker.render.return_value = _FakeRenderResult2(format="mp3", start=9.0, duration=5.0)
@@ -1028,6 +1028,31 @@ def test_audio_clip_result_view_edit_resets_filename_to_generic():
     assert view._filename == "clip.mp3"
     assert view._clip_start == 9.0
     assert view._clip_duration == 5.0
+
+
+def test_audio_clip_result_view_edit_uses_first_line_in_the_new_window_as_filename():
+    # A merge/nudge that pulls a multi-line window into the clip must not
+    # revert to the generic "clip.mp3" — it should keep reflecting a
+    # subtitle line, specifically the first (earliest-start) one now in
+    # the window, the same way the initial render's filename does.
+    async def run():
+        entries = [
+            _entry(0, 9.0, 9.5, "Whoa"),
+            _entry(1, 10.0, 13.0, "Neo wakes up"),
+        ]
+        worker = _FakeEditWorker(entries=entries)
+        worker.render.return_value = _FakeRenderResult2(format="mp3", start=9.0, duration=5.0)
+        view = _make_audio_view(worker)
+        await view._ensure_entries()
+        await view._open_duration()
+        start_left = next(b for b in view._category_buttons if b.label == "Start ← 1s")
+
+        await start_left.callback(_fake_interaction())
+        return view
+
+    view = asyncio.run(run())
+
+    assert view._filename == "whoa.mp3"
 
 
 # _render_and_respond's audio filename (issue #6 follow-up): reflects the

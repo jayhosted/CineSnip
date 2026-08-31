@@ -1130,15 +1130,16 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
         )
 
     async def _apply_render_result(self, interaction: discord.Interaction, render_result) -> None:
-        # Filename reverts to the generic "clip.<ext>" once editing starts
-        # — matches ClipEditView's existing precedent of dropping any
-        # special name (there, a style-derived one; here, the quote-slug
-        # name _audio_filename gave the initial render) rather than
-        # re-deriving a new descriptive name from the edited window.
         self._content = render_result.content
-        self._filename = f"clip.{render_result.format}"
         self._clip_start = render_result.start
         self._clip_duration = render_result.duration
+        # Filename keeps reflecting a subtitle line after a nudge/merge,
+        # same as the initial render — specifically the first (earliest-
+        # start) line now in the window, so a merge that pulls in more
+        # dialogue doesn't just collapse to the generic "clip.<ext>". Falls
+        # back to generic if entries aren't cached yet or none overlap.
+        window = _entries_in_window(self._all_entries or [], self._clip_start, self._clip_end)
+        self._filename = _audio_filename(render_result.format, window[0].text if window else None)
         await self._refresh_open_category()
 
         span_line = f"✏️ Edited — {_clip_span_line(render_result.start, render_result.duration)}"
