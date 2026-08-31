@@ -89,6 +89,17 @@ class RenderDefaults(BaseModel):
     # bot; "none" disables the replace flow entirely — a full board is a
     # plain hard error. A 3-way mode, not a boolean plus a scope modifier.
     soundboard_replace_scope: Literal["cinesnip_only", "any", "none"] = "cinesnip_only"
+    # Global cap on simultaneous ffmpeg+gifsicle render work (issue #17's
+    # definitive concurrency benchmark) — a render beyond this limit waits
+    # for a free slot rather than failing. Layered on top of, not a
+    # replacement for, the two CPU optimizations that benchmark also
+    # produced (single-pass GIF encoding, bounded-parallelism gifsicle
+    # search): those cut the cost of one render; this bounds how many can
+    # run at once regardless of that cost. 3 was the measured knee point —
+    # comfortable timeout margin and no host CPU saturation on the
+    # benchmark hardware up to 3 concurrent renders, with the margin
+    # shrinking (though not yet gone) by 5.
+    max_concurrent_renders: int = 3
 
 
 class WorkerConfig(BaseModel):

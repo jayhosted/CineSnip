@@ -444,6 +444,12 @@ def create_app(settings: Settings) -> FastAPI:
         timeout_seconds=settings.render_defaults.timeout_seconds,
         crop_cache_db_path=settings.quote_index_db_path,
     )
+    # Global cap on simultaneous ffmpeg+gifsicle render work (issue #17) —
+    # layered on top of, not a replacement for, the single-pass GIF
+    # encoding and bounded-parallelism gifsicle search that same benchmark
+    # produced. A render beyond the limit waits for a free slot rather
+    # than failing.
+    app.state.render_semaphore = asyncio.Semaphore(settings.render_defaults.max_concurrent_renders)
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
@@ -657,23 +663,28 @@ def create_app(settings: Settings) -> FastAPI:
         resolved_style = requested_style if style_preset is not None else "none"
 
         try:
-            clip_bytes = await _render_within_size_limit(
-                app.state.renderer,
-                container_path,
-                start,
-                clip_duration,
-                settings.scratch_dir,
-                clip_format,
-                subtitle_entries,
-                style_preset,
-                settings.three_d_format_for(movie.library_name),
-                subtitle_overrides or None,
-                settings.render_defaults.fps,
-                settings.render_defaults.width,
-                settings.render_defaults.max_file_size_bytes,
-                gifsicle_timeout_seconds=settings.render_defaults.gifsicle_timeout_seconds,
-                audio_language=settings.render_defaults.audio_language,
-            )
+            # Only the actual ffmpeg+gifsicle work is gated — everything
+            # above (Plex fetch, subtitle extraction/lookup) already
+            # happened outside the semaphore, so a request waiting for a
+            # render slot isn't also holding one up over unrelated I/O.
+            async with app.state.render_semaphore:
+                clip_bytes = await _render_within_size_limit(
+                    app.state.renderer,
+                    container_path,
+                    start,
+                    clip_duration,
+                    settings.scratch_dir,
+                    clip_format,
+                    subtitle_entries,
+                    style_preset,
+                    settings.three_d_format_for(movie.library_name),
+                    subtitle_overrides or None,
+                    settings.render_defaults.fps,
+                    settings.render_defaults.width,
+                    settings.render_defaults.max_file_size_bytes,
+                    gifsicle_timeout_seconds=settings.render_defaults.gifsicle_timeout_seconds,
+                    audio_language=settings.render_defaults.audio_language,
+                )
         except RenderTimeoutError as exc:
             raise HTTPException(status_code=504, detail=str(exc)) from exc
         except RuntimeError as exc:

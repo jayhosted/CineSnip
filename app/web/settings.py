@@ -108,13 +108,15 @@ def register_settings_routes(
                 format=str(form["format"]),
                 min_duration_seconds=float(form["min_duration_seconds"]),
                 max_duration_seconds=float(form["max_duration_seconds"]),
-                # gifsicle_timeout_seconds/max_file_size_bytes/audio_language
-                # aren't in this form (audio_language lives on its own Audio
-                # tab) — preserved from the existing settings rather than
+                # gifsicle_timeout_seconds/max_file_size_bytes/audio_language/
+                # max_concurrent_renders aren't in this form (audio_language
+                # lives on its own Audio tab; max_concurrent_renders has no
+                # UI yet) — preserved from the existing settings rather than
                 # silently reset to RenderDefaults' own Pydantic defaults.
                 gifsicle_timeout_seconds=settings.render_defaults.gifsicle_timeout_seconds,
                 max_file_size_bytes=settings.render_defaults.max_file_size_bytes,
                 audio_language=settings.render_defaults.audio_language,
+                max_concurrent_renders=settings.render_defaults.max_concurrent_renders,
             )
             quote_match = QuoteMatchDefaults(
                 fetch_limit=int(form["fetch_limit"]),
