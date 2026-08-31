@@ -798,3 +798,43 @@ def test_random_line_show_endpoint_404_when_show_unknown(tmp_path, monkeypatch):
     resp = client.get("/random-line-show/900")
 
     assert resp.status_code == 404
+
+
+def test_random_line_show_endpoint_404_when_show_unknown_single_episode_scope(tmp_path, monkeypatch):
+    # get_episode() (unlike list_episodes()) can also raise ShowNotFoundError
+    # — on Jellyfin, a 404 on /Shows/{id}/Episodes means the show itself
+    # doesn't exist, distinct from EpisodeNotFoundError (the show exists but
+    # has no such season/episode). This call site only caught the latter
+    # (ultrareview finding, issue #24) — a stale show media_id in the
+    # season+episode branch leaked as an unhandled 500.
+    settings = _settings(tmp_path)
+
+    class _NoShowPlex(_FakePlexClient):
+        def get_episode(self, show_media_id: str, season: int, episode: int) -> MovieResult:
+            from app.worker.media_client import ShowNotFoundError
+
+            raise ShowNotFoundError(f"No show {show_media_id}")
+
+    client = _client(settings, monkeypatch, _NoShowPlex(settings))
+
+    resp = client.get("/random-line-show/900", params={"season": 1, "episode": 1})
+
+    assert resp.status_code == 404
+
+
+def test_resolve_episode_endpoint_404_when_show_unknown(tmp_path, monkeypatch):
+    # Same gap as random-line-show above, in /resolve-episode's own
+    # get_episode() call site (ultrareview finding, issue #24).
+    settings = _settings(tmp_path)
+
+    class _NoShowPlex(_FakePlexClient):
+        def get_episode(self, show_media_id: str, season: int, episode: int) -> MovieResult:
+            from app.worker.media_client import ShowNotFoundError
+
+            raise ShowNotFoundError(f"No show {show_media_id}")
+
+    client = _client(settings, monkeypatch, _NoShowPlex(settings))
+
+    resp = client.get("/resolve-episode/900", params={"season": 1, "episode": 1})
+
+    assert resp.status_code == 404

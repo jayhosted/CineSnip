@@ -105,7 +105,13 @@ class PlexClient:
 
         try:
             movie = self._server.fetchItem(int(media_id))
-        except NotFound as exc:
+        except (NotFound, ValueError) as exc:
+            # ValueError: media_id isn't a Plex rating key at all — a
+            # non-numeric autocomplete value the caller never validates
+            # (media_id is opaque everywhere above this layer, since a
+            # Jellyfin GUID can't be int()'d either). A real typo here used
+            # to raise unhandled straight out of int(), a bare 500 instead
+            # of the same clean 404 a stale-but-numeric id already gets.
             raise MovieNotFoundError(media_id) from exc
 
         result = self._to_result(movie)
@@ -116,7 +122,7 @@ class PlexClient:
         try:
             show = self._server.fetchItem(int(show_media_id))
             ep = show.episode(season=season, episode=episode)
-        except NotFound as exc:
+        except (NotFound, ValueError) as exc:
             raise EpisodeNotFoundError(show_media_id, season, episode) from exc
 
         result = self._to_result(ep)
@@ -127,7 +133,7 @@ class PlexClient:
         try:
             show = self._server.fetchItem(int(show_media_id))
             episodes = show.episodes()
-        except NotFound as exc:
+        except (NotFound, ValueError) as exc:
             raise ShowNotFoundError(show_media_id) from exc
 
         results = [self._to_result(ep) for ep in episodes]

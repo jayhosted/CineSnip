@@ -519,7 +519,7 @@ def create_app(settings: Settings) -> FastAPI:
             ep = await asyncio.to_thread(
                 app.state.media.get_episode, show_media_id, season, episode
             )
-        except EpisodeNotFoundError as exc:
+        except (EpisodeNotFoundError, ShowNotFoundError) as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
         container_path = _resolve_container_path(ep, settings)
@@ -944,7 +944,7 @@ def create_app(settings: Settings) -> FastAPI:
                 ep = await asyncio.to_thread(
                     app.state.media.get_episode, show_media_id, season, episode
                 )
-            except EpisodeNotFoundError as exc:
+            except (EpisodeNotFoundError, ShowNotFoundError) as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
             episodes = [ep]
         else:

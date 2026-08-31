@@ -87,7 +87,68 @@ def test_get_movie_not_found_raises():
         client.get_movie("missing")
 
 
-def test_search_movies_filters_by_item_type():
+def test_get_movie_raises_for_status_on_non_404_error():
+    # A bad API key, a Jellyfin 5xx, or a reverse-proxy 502 must not be
+    # silently treated as a success body — that produced a bare KeyError
+    # on item["Id"] instead of a clear connection error (ultrareview
+    # finding, issue #24).
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "unauthorized"})
+
+    client = _client_with_mock(handler)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        client.get_movie("abc-123")
+
+
+def test_to_result_tolerates_explicit_null_fields():
+    # Jellyfin returns these as JSON null under ordinary conditions (an
+    # unassigned-episode special, an item ffprobe hasn't reached yet, and
+    # every Series item for RunTimeTicks) — dict.get(key, default) only
+    # fires its default when the key is MISSING, not when it's present
+    # with null, so this used to crash (ultrareview finding, issue #24).
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "Id": "series-1",
+                "Name": "Some Show",
+                "Type": "Series",
+                "RunTimeTicks": None,
+                "MediaSources": [{"Path": None}],
+            },
+        )
+
+    client = _client_with_mock(handler)
+    result = client.get_movie("series-1")
+
+    assert result.duration_ms == 0
+    assert result.source_path == ""
+
+
+def test_to_result_tolerates_null_episode_numbers():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "Id": "e1",
+                "Name": "Untitled Special",
+                "SeriesName": "Some Show",
+                "Type": "Episode",
+                "ParentIndexNumber": None,
+                "IndexNumber": None,
+                "RunTimeTicks": None,
+                "MediaSources": [{}],
+            },
+        )
+
+    client = _client_with_mock(handler)
+    result = client.get_movie("e1")
+
+    assert result.title == "Some Show — S00E00 — Untitled Special"
+
+
+def test_search_movies_sends_limit_and_filters_by_item_type():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params["searchTerm"] == "matrix"
         assert request.url.params["IncludeItemTypes"] == "Movie"
@@ -97,6 +158,10 @@ def test_search_movies_filters_by_item_type():
         # manual verification (issue #24). Without this, source_path is
         # always "" and every render fails.
         assert request.url.params["Fields"] == "MediaSources"
+        # Without Limit, Jellyfin returns the folder's entire matching set
+        # regardless of what the caller asked for — wasted transfer/parse
+        # on a per-keystroke autocomplete call (ultrareview finding).
+        assert request.url.params["Limit"] == "7"
         return httpx.Response(
             200,
             json={
@@ -115,7 +180,7 @@ def test_search_movies_filters_by_item_type():
         )
 
     client = _client_with_mock(handler)
-    results = client.search_movies("matrix")
+    results = client.search_movies("matrix", limit=7)
 
     assert len(results) == 1
     assert results[0].media_id == "m1"
