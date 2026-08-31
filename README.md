@@ -12,6 +12,42 @@ one Docker container. Searches across every Plex library you configure.
 - A running Plex server, reachable from the machine running Docker
 - The films you want to clip already in a Plex movie library
 
+## Choosing a media server: Plex or Jellyfin
+
+CineSnip talks to **one** media server per install, chosen by `media_server`
+in `config.yaml`:
+
+```yaml
+media_server: plex   # or: jellyfin
+```
+
+The numbered steps below are written for Plex (the default). Everything
+except how CineSnip authenticates and enumerates libraries is identical for
+Jellyfin — same `libraries`/`path_mappings`, same bind mounts, same
+commands. If you're using Jellyfin, follow the steps below but substitute:
+
+- **Step 3 (token)** — instead of a Plex token, create a Jellyfin API key:
+  in Jellyfin, **Dashboard → Advanced → API Keys → +**, give it a name, and
+  copy the key.
+- **Step 4 (`.env`)** — leave `PLEX_URL`/`PLEX_TOKEN` unset and fill in
+  instead:
+  - `JELLYFIN_URL` — where the container can reach Jellyfin, e.g.
+    `http://host.docker.internal:8096` (Jellyfin native on the Docker host)
+    or `http://jellyfin:8096` (Jellyfin in its own container on a shared
+    Docker network)
+  - `JELLYFIN_API_KEY` — the key from above
+- **Step 5 (`config.yaml`)** — set `media_server: jellyfin`, and make each
+  `libraries` entry's `name` match that library's display name in Jellyfin
+  exactly. To find the path prefix for `path_mappings`, open any title in
+  that library in Jellyfin and check its **Path** in the item details
+  (rather than Plex's View XML).
+
+Two known limits with Jellyfin: **library auto-sync (step 8) is Plex-only**
+— setting both `media_server: jellyfin` and `library_sync.enabled: true`
+is refused at startup with a clear error — and the setup wizard's guided
+steps still only cover Plex, so a Jellyfin install is configured by
+hand-editing `.env`/`config.yaml` as described above.
+
 ## 2. Create a Discord bot application
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**.
@@ -72,9 +108,9 @@ For each library you want CineSnip to search:
 2. For each folder that library spans, in Plex open a title in it → **...**
    → **Get Info** → **View XML**, and note the `file="..."` path Plex
    reports for its media part.
-3. Add a `path_mappings` entry under that library where `plex_prefix` is
-   that path's folder prefix (exactly as Plex reports it, backslashes and
-   all if Plex runs on Windows), and `container_path` matches the mount
+3. Add a `path_mappings` entry under that library where `path_prefix` is
+   that path's folder prefix (exactly as your media server reports it,
+   backslashes and all if it runs on Windows), and `container_path` matches the mount
    target for that same folder in `docker-compose.yml`.
 
 If a library only lives in one folder, it only needs one `path_mappings`
@@ -228,6 +264,23 @@ quiet day.
 
 ## Upgrading an existing install
 
+**Upgrading to the version that added Jellyfin support: delete
+`cache/quote_index.db` once, before starting the container.**
+
+```bash
+docker compose down
+rm cache/quote_index.db
+docker compose up -d
+```
+
+Media items are now keyed by a media-server-agnostic `media_id TEXT`
+instead of Plex's numeric `rating_key INTEGER`, and there's no in-place
+migration for that column — the index is a rebuildable cache, so deleting
+it is the migration. Nothing you can't get back is lost: the cache refills
+as titles get touched again (or all at once via `scripts/build_full_cache.py`
+/ library auto-sync). Skipping this leaves the container failing with
+`sqlite3.OperationalError: no such column: media_id`.
+
 If you already had CineSnip running before its subtitle search moved to
 SQLite+FTS5, your existing per-title JSON cache isn't automatically
 migrated into the new index — after upgrading, run the one-off migration
@@ -250,6 +303,8 @@ empty on upgrade.
 - **Bot fails to log in (401)** — `DISCORD_TOKEN` in `.env` is wrong or was reset since you copied it.
 - **"No path mapping configured for ..." / "File not found on disk"** — that library's `path_mappings` in `config.yaml` don't match what Plex reports or what's actually bind-mounted. Re-check step 5, and confirm the corresponding volume in `docker-compose.yml` points at the right host folder.
 - **"'X' is not a configured library"** — a title resolved to a Plex library that isn't listed under `libraries` in `config.yaml`. Add an entry for it (step 5).
+- **`sqlite3.OperationalError: no such column: media_id`** — an old `cache/quote_index.db` from before Jellyfin support. Stop the container, delete that one file, and start again; it rebuilds itself. See "Upgrading an existing install" above.
+- **"library_sync.enabled is not supported with media_server: jellyfin"** — library auto-sync (step 8) relies on a Plex-only per-library change timestamp. Set `library_sync.enabled: false` in `config.yaml`; use `scripts/build_full_cache.py` for a one-off cache build instead.
 - **ffmpeg errors** — check the container logs for the actual ffmpeg stderr output; this usually means the source file is a format ffmpeg can't read directly, or the mapped path is wrong.
 - **"Couldn't generate the GIF: ... timed out"** — the source file is unusually slow for ffmpeg to seek/decode near that timestamp (raise `render_defaults.timeout_seconds` in `config.yaml` if this happens on files that should be fine), or something is stuck — check `docker compose logs`.
 - **Permission denied writing to `/app/scratch` or `/app/cache`** — the host `scratch/`/`cache/` directory got created by Docker (as `root`) instead of by you before first run. Stop the container, `rm -rf scratch cache && mkdir scratch cache`, then start it again. (Unlike `scratch/`, it's safe to leave `cache/` in place across restarts — only delete it if you actually want to force re-extraction of all subtitles.)
