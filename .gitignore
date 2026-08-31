@@ -2,6 +2,9 @@
 .env
 config.yaml
 docker-compose.yml
+docker-compose.jellyfin.yml
+jellyfin-config/
+jellyfin-cache/
 
 # Python
 __pycache__/
