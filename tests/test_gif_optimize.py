@@ -3,7 +3,13 @@ import asyncio
 import pytest
 
 from app.worker import gif_optimize
-from app.worker.gif_optimize import _LOSSY_CANDIDATES, GifOptimizeError, _pick_best, optimize_gif
+from app.worker.gif_optimize import (
+    _GROUP_SIZE,
+    _LOSSY_CANDIDATES,
+    GifOptimizeError,
+    _pick_best,
+    optimize_gif,
+)
 
 
 def test_picks_smallest_n_that_fits_not_the_smallest_overall():
@@ -105,3 +111,118 @@ def test_optimize_gif_survives_some_lossy_passes_failing(monkeypatch):
     monkeypatch.setattr(gif_optimize, "run_and_capture", flaky_run_and_capture)
     result = asyncio.run(optimize_gif(b"source-gif-bytes", max_bytes=100))
     assert result == b"x" * 40
+
+
+# Bounded-parallelism regression coverage (issue #17): candidates now run
+# in fixed-size ascending groups (_GROUP_SIZE at a time) instead of all 5
+# concurrently, to cap gifsicle process/CPU contention under multiple
+# simultaneous renders. The selection rule must stay exactly what it was
+# before grouping — lowest-N-that-fits wins, decided by ascending index
+# within each completed group, never by which candidate happens to finish
+# first — and grouping must not launch candidates beyond what's needed to
+# find a fit.
+
+
+def _lossy_n_from_args(args: list[str]) -> int | None:
+    for arg in args:
+        if arg.startswith("--lossy="):
+            return int(arg.split("=", 1)[1])
+    return None
+
+
+def test_bounded_group_picks_lower_loss_candidate_when_both_in_group_fit(monkeypatch):
+    # _GROUP_SIZE=2 groups (2, 5) together first. Both fit; N=2 (lower
+    # loss, earlier index) must win over N=5, even though N=5 is smaller.
+    async def fake_run_and_capture(args, timeout_seconds, error_prefix, **kwargs):
+        n = _lossy_n_from_args(args)
+        if n == 2:
+            return b"x" * 90
+        if n == 5:
+            return b"x" * 50
+        return b"x" * 1000  # -O3 baseline, still too big; other lossy levels unused
+
+    monkeypatch.setattr(gif_optimize, "run_and_capture", fake_run_and_capture)
+    result = asyncio.run(optimize_gif(b"source-gif-bytes", max_bytes=100))
+    assert result == b"x" * 90
+
+
+def test_bounded_group_picks_second_candidate_when_only_it_fits(monkeypatch):
+    # Within the first group (2, 5), only N=5 fits — it must win, since
+    # N=2 doesn't satisfy the size constraint at all.
+    async def fake_run_and_capture(args, timeout_seconds, error_prefix, **kwargs):
+        n = _lossy_n_from_args(args)
+        if n == 2:
+            return b"x" * 500  # too big
+        if n == 5:
+            return b"x" * 90  # fits
+        return b"x" * 1000  # -O3 baseline, still too big
+
+    monkeypatch.setattr(gif_optimize, "run_and_capture", fake_run_and_capture)
+    result = asyncio.run(optimize_gif(b"source-gif-bytes", max_bytes=100))
+    assert result == b"x" * 90
+
+
+def test_bounded_advances_to_next_group_when_first_group_has_no_fit(monkeypatch):
+    # Group 1 (2, 5) both too big; group 2 (10, 20) — N=10 fits. Confirms
+    # evaluation actually moves on to the next group rather than settling
+    # for group 1's smallest-but-still-oversized result.
+    call_log = []
+
+    async def fake_run_and_capture(args, timeout_seconds, error_prefix, **kwargs):
+        n = _lossy_n_from_args(args)
+        call_log.append(n)
+        if n in (2, 5, 20):
+            return b"x" * 500  # too big
+        if n == 10:
+            return b"x" * 90  # fits — first index within group 2 that does
+        return b"x" * 1000  # -O3 baseline / group 3 (N=30), if ever called
+
+    monkeypatch.setattr(gif_optimize, "run_and_capture", fake_run_and_capture)
+    result = asyncio.run(optimize_gif(b"source-gif-bytes", max_bytes=100))
+    assert result == b"x" * 90
+    # Group 2 (10, 20) is launched together, so N=20 does run — but N=10
+    # (earlier index in that group) wins, so group 3 (N=30) is never needed.
+    assert 30 not in call_log
+
+
+def test_bounded_does_not_select_a_faster_finishing_higher_loss_candidate(monkeypatch):
+    # N=5 (higher loss, later index) is made to finish first by sleeping
+    # less than N=2. Both fit. The lower-loss N=2 must still win — the
+    # group is fully awaited (via gather) before ascending-index selection
+    # runs, so finish order can't influence the outcome.
+    async def fake_run_and_capture(args, timeout_seconds, error_prefix, **kwargs):
+        n = _lossy_n_from_args(args)
+        if n == 2:
+            await asyncio.sleep(0.02)
+            return b"x" * 90
+        if n == 5:
+            await asyncio.sleep(0.0)
+            return b"x" * 50
+        return b"x" * 1000  # -O3 baseline, still too big
+
+    monkeypatch.setattr(gif_optimize, "run_and_capture", fake_run_and_capture)
+    result = asyncio.run(optimize_gif(b"source-gif-bytes", max_bytes=100))
+    assert result == b"x" * 90
+
+
+def test_bounded_stops_after_first_fitting_group_no_extra_candidates_launched(monkeypatch):
+    # N=2 alone (first candidate in the first group) already fits — N=5
+    # (rest of that group) still runs since the whole group is launched
+    # together, but nothing from any later group should ever be invoked.
+    call_log = []
+
+    async def fake_run_and_capture(args, timeout_seconds, error_prefix, **kwargs):
+        n = _lossy_n_from_args(args)
+        call_log.append(n)
+        if n == 2:
+            return b"x" * 90  # fits immediately
+        if n == 5:
+            return b"x" * 80
+        return b"x" * 1000  # -O3 baseline / group-2+ candidates, if ever called
+
+    monkeypatch.setattr(gif_optimize, "run_and_capture", fake_run_and_capture)
+    result = asyncio.run(optimize_gif(b"source-gif-bytes", max_bytes=100))
+    assert result == b"x" * 90
+    lossy_calls = [n for n in call_log if n is not None]
+    assert set(lossy_calls) == {2, 5}  # only the first group ever ran
+    assert len(lossy_calls) == _GROUP_SIZE

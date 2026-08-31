@@ -16,10 +16,12 @@ _LOSSY_CANDIDATES: tuple[int, ...] = (2, 5, 10, 20, 30)
 
 
 def _pick_best(baseline: bytes, lossy_results: list[bytes | None], max_bytes: int) -> bytes:
-    """Picks the best result among the lossless baseline and the parallel
-    --lossy candidates. lossy_results is ordered the same as
-    _LOSSY_CANDIDATES (ascending N, i.e. best-quality-first) — a None
-    entry means that candidate's gifsicle pass failed and is skipped.
+    """Picks the best result among a baseline and a set of --lossy
+    candidates run concurrently (originally all 5 at once; now one
+    _GROUP_SIZE-sized group at a time — see _optimize_gif_unsafe).
+    lossy_results is ordered the same as the candidates it was called
+    with (ascending N, i.e. best-quality-first) — a None entry means that
+    candidate's gifsicle pass failed and is skipped.
 
     Prefers the *first* (lowest-N, highest-quality) candidate that fits
     max_bytes over any smaller-but-lower-quality one — we only need to
@@ -62,6 +64,21 @@ async def _run_gifsicle_to_bytes(
     return result
 
 
+# Candidates run in fixed-size ascending groups rather than all at once —
+# issue #17's concurrency benchmarking found launching all 5 in parallel
+# repeatedly wasted the majority of the CPU (real oversized clips only
+# ever needed the first 1-2 candidates to find a fit; the rest were
+# thrown away by _pick_best) while also being the single biggest driver
+# of contention when several users render at once. A bounded group still
+# gets some parallelism — most clips resolve within one group, so
+# solo-request latency stays close to the fully-parallel case — but caps
+# how many gifsicle processes ever run at once, which is what actually
+# matters once multiple renders overlap. Group size of 2 was the smallest
+# grouping that never lost to full parallelism on solo latency in that
+# benchmarking, on either of the two real oversized clips tested.
+_GROUP_SIZE = 2
+
+
 async def _optimize_gif_unsafe(
     gif_bytes: bytes, max_bytes: int, timeout_seconds: float
 ) -> bytes:
@@ -88,10 +105,25 @@ async def _optimize_gif_unsafe(
             # whichever candidates did succeed.
             return None
 
-    lossy_results = await asyncio.gather(
-        *(_lossy_attempt(n) for n in _LOSSY_CANDIDATES)
-    )
-    return _pick_best(baseline, list(lossy_results), max_bytes)
+    # `smallest` threads forward as _pick_best's "baseline" argument on
+    # each iteration — since it's already established not to fit (we only
+    # keep looping while that's true), _pick_best's own fitting-check
+    # against it is a no-op, and its "nothing fit" fallback naturally
+    # folds this group's attempts into the running smallest-so-far,
+    # carrying it into the next group unchanged.
+    smallest = baseline
+    for group_start in range(0, len(_LOSSY_CANDIDATES), _GROUP_SIZE):
+        group = _LOSSY_CANDIDATES[group_start : group_start + _GROUP_SIZE]
+        # gather() preserves input order in its result list regardless of
+        # completion order, so _pick_best always picks by ascending N
+        # (lowest loss) — never by whichever candidate happens to finish
+        # first. Only once this whole group has completed does the next
+        # group (if needed) get launched.
+        group_results = await asyncio.gather(*(_lossy_attempt(n) for n in group))
+        smallest = _pick_best(smallest, group_results, max_bytes)
+        if len(smallest) <= max_bytes:
+            return smallest
+    return smallest
 
 
 async def optimize_gif(
@@ -99,9 +131,10 @@ async def optimize_gif(
 ) -> bytes:
     """Re-optimizes an already-rendered GIF with gifsicle, without ever
     touching resolution or frame rate. Tries -O3 (lossless) first; if the
-    result still exceeds max_bytes, launches several --lossy=N --gamma=1
-    passes (see _LOSSY_CANDIDATES) in parallel and keeps the best-fitting
-    one via _pick_best. --gamma=1 is required on gifsicle >=1.96 — it
+    result still exceeds max_bytes, tries --lossy=N --gamma=1 passes (see
+    _LOSSY_CANDIDATES), _GROUP_SIZE at a time, stopping as soon as a group
+    produces a fit (see _optimize_gif_unsafe/_pick_best for the selection
+    rules). --gamma=1 is required on gifsicle >=1.96 — it
     restores the pre-1.96 linear-space --lossy math this candidate list
     was tuned against; the 1.96 default (sRGB-perceptual) needs much
     larger N values for equivalent compression. Runs entirely over
