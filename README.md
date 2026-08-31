@@ -52,7 +52,7 @@ of Plex's PIN pairing.
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**.
 2. Open the **Bot** tab → **Reset Token** → copy the token (you'll paste this into `.env` in step 4). Keep it secret — treat it like a password.
-3. **On the same Bot tab, under Authorization Flow, turn OFF "Public Bot."** This is important: CineSnip is tied to *your* Plex library, and a public bot can be added to any server by anyone via the "Add to Server" button on its profile — which would hand them browse/generate access to your media. With Public Bot off, only you can generate a working invite URL; you can still invite it to as many of your own servers as you like, it just can't be self-service-invited by someone else.
+3. **On the same Bot tab, under Authorization Flow, turn OFF "Public Bot."** This is important: CineSnip is tied to *your* Plex library, and a public bot can be added to any server by anyone via the "Add to Server" button on its profile — which would hand them browse/generate access to your media. With Public Bot off, only you can generate a working invite URL; you can still invite it to as many of your own servers as you like, it just can't be self-service-invited by someone else. Note that **there's currently no per-user allowlist** — anyone already in a server you invite the bot to can browse and generate from your library, so only invite it to servers where you're comfortable with everyone having that access.
 4. No privileged intents are needed for the MVP (it's slash-command-only).
 5. Open **OAuth2 → URL Generator**:
    - Scopes: `bot`, `applications.commands`
@@ -136,6 +136,18 @@ Watch the logs for two ready signals: uvicorn ("Uvicorn running on
 http://127.0.0.1:8000") and discord.py logging in successfully. No ports
 need to be published — the worker API is loopback-only inside the
 container, and the bot only makes outbound connections to Discord.
+
+**Security note on the setup wizard / `/generate` web app (port 1919):**
+`docker-compose.yml.example` publishes port 1919 bound to all interfaces,
+not just `127.0.0.1` — deliberately, so other devices on your own LAN can
+reach `/generate` and reconfigure setup without extra steps. That means
+anyone else on the same network can also reach `/wizard`, which accepts
+raw Discord bot tokens and Plex/Jellyfin credentials — there's no login on
+this app. Only run this on a network you trust, and **never port-forward
+port 1919 on your router** (that would expose token entry to the whole
+internet, not just your LAN). If you only need the web app from the machine
+running Docker itself, change the port line in your `docker-compose.yml`
+to `"127.0.0.1:1919:1919"` to restrict it to localhost.
 
 ## 7. Try it
 
