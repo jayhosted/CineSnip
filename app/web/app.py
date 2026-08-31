@@ -53,7 +53,9 @@ _PLEX_CALL_TIMEOUT_SECONDS = 45.0
 # see). "Use Application Commands" isn't a permission bit at all — it comes
 # from the `applications.commands` OAuth2 scope in the invite URL below,
 # not the permissions bitmask.
-_DISCORD_INVITE_PERMISSIONS = 1024 + 2048 + 16384 + 32768
+# Create Expressions (8796093022208, 1 << 43) — needed for the Soundboard
+# "Add to Soundboard" feature (issue #10) to upload/manage guild sounds.
+_DISCORD_INVITE_PERMISSIONS = 1024 + 2048 + 16384 + 32768 + 8796093022208
 
 
 def discord_invite_url(bot_id: str) -> str:

@@ -921,7 +921,12 @@ def test_audio_clip_result_view_has_duration_merge_toggles_and_post():
         return {item.label: item.row for item in view.children}
 
     rows_by_label = asyncio.run(run())
-    assert rows_by_label == {"⏱ Duration": 1, "🔀 Merge Subs": 1, "Post to channel": 4}
+    assert rows_by_label == {
+        "⏱ Duration": 1,
+        "🔀 Merge Subs": 1,
+        "Post to channel": 4,
+        "Add to Soundboard": 4,
+    }
 
 
 def test_audio_clip_result_view_post_sends_file_and_disables_button():
@@ -1095,6 +1100,32 @@ def test_render_and_respond_audio_filename_uses_subtitle_text():
 
     _, kwargs = interaction.edit_original_response.await_args
     assert kwargs["attachments"][0].filename == "i-know-kung-fu.mp3"
+
+
+def test_render_and_respond_audio_over_5_2s_shows_soundboard_disabled_note():
+    from types import SimpleNamespace
+
+    from app.bot.cogs.gif import GifCog
+
+    worker = SimpleNamespace(
+        render=AsyncMock(return_value=_FakeRenderResultWithSpan(duration=6.0)),
+        subtitles=AsyncMock(return_value=[]),
+    )
+    cog = GifCog(bot=SimpleNamespace(worker=worker))
+    interaction = _fake_interaction()
+
+    async def run():
+        await cog._render_and_respond(
+            interaction, 1, "The Matrix", "10", 6.0, None, "mp3", "none",
+            kind="audio", subtitle_text=None,
+        )
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+
+    _, kwargs = interaction.edit_original_response.await_args
+    assert "Add to Soundboard is disabled" in kwargs["content"]
+    assert "end_timecode" in kwargs["content"]
 
 
 def test_render_and_respond_audio_filename_falls_back_without_subtitle_text():
