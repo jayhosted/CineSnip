@@ -709,15 +709,32 @@ def create_web_app(
     @app.post("/wizard/plex/reauth", response_class=HTMLResponse)
     async def plex_reauth(request: Request):
         # Escape hatch for the token-skip above: clears the existing
-        # account token (this session's or seeded from live config) so the
-        # next /wizard/plex visit runs a fresh PIN pairing instead — for
-        # switching Plex accounts, or recovering from a token Plex itself
-        # revoked (the 401 plex_connect below can hit if the seeded token
-        # is stale).
-        state: WizardState = request.app.state.wizard
+        # account token (this session's or seeded from live config) so a
+        # fresh PIN pairing starts instead — for switching Plex accounts, or
+        # recovering from a token Plex itself revoked (the 401 plex_connect
+        # below can hit if the seeded token is stale). _enter_wizard_step
+        # first (not plex_step, which would call it again and immediately
+        # re-seed state.plex_account_token right back from live settings —
+        # the identical trap connect_reset's own comment above documents for
+        # state.media_server) so seeding/return_to still happen, but the
+        # token is cleared AFTER that seeding runs, and the PIN flow is
+        # started directly here rather than delegating back to plex_step.
+        state = await _enter_wizard_step(request)
         state.plex_account_token = None
         state.plex_pin = None
-        return await plex_step(request)
+        try:
+            pin = await _ensure_pin(state)
+        except asyncio.TimeoutError:
+            return render(
+                request, "panel_plex_pin.html", pin=None,
+                error=f"plex.tv didn't respond within {int(_PLEX_CALL_TIMEOUT_SECONDS)}s. Check your network and try again.",
+            )
+        except Exception:
+            return render(
+                request, "panel_plex_pin.html", pin=None,
+                error="Couldn't get a code from plex.tv. Check your network and try again.",
+            )
+        return render(request, "panel_plex_pin.html", pin=pin)
 
     @app.get("/wizard/plex/status", response_class=HTMLResponse)
     async def plex_status(request: Request):

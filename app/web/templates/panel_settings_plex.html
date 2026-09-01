@@ -28,9 +28,9 @@
     </p>
     <a href="/wizard/connect?return_to=plex" class="btn btn-primary" style="text-decoration:none; display:inline-block;">Edit Plex connection &rarr;</a>
   </div>
-    <form method="post" action="/wizard/connect/reset?return_to=plex" style="display:inline-block; margin-top:14px;">
-      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
-      <button type="submit" class="btn-link">Switch to Jellyfin instead?</button>
-    </form>
+  <form method="post" action="/wizard/connect/reset?return_to=plex" style="display:inline-block; margin-top:14px;">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+    <button type="submit" class="btn-link">Switch to Jellyfin instead?</button>
+  </form>
   {% endif %}
 </div>

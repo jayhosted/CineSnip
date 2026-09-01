@@ -290,7 +290,53 @@ def test_connect_reset_shows_picker_on_an_already_configured_install():
     response = client.post("/wizard/connect/reset", data={"csrf_token": token})
 
     assert "Which media server do you use?" in response.text
-    assert "Connect your Plex account" not in response.text
+
+
+def test_plex_reauth_starts_fresh_pin_pairing_on_an_already_configured_install(monkeypatch):
+    # Regression (ultrareview finding): plex_reauth cleared
+    # state.plex_account_token then delegated to plex_step, which re-enters
+    # via _enter_wizard_step -> _seed_wizard_state_from_settings — the same
+    # seeder that immediately re-fills a None token from live settings
+    # (test_connect_reset_shows_picker_on_an_already_configured_install
+    # above documents the identical trap for state.media_server). That made
+    # "Not the right Plex account?" a silent no-op on every real,
+    # already-configured install — the only install where it's ever
+    # actually clicked. It must start a fresh PIN pairing instead.
+    monkeypatch.setattr(
+        "app.web.app._connect_and_discover_sync",
+        lambda plex_url, account_token: ("My Plex Server", []),
+    )
+
+    class _FakePinLogin:
+        def __init__(self, **kwargs):
+            self.pin = "ABCD"
+            self.expired = False
+
+    monkeypatch.setattr("app.web.app.MyPlexPinLogin", _FakePinLogin)
+
+    settings = Settings(
+        discord_token="",  # empty so _seed_wizard_state_from_settings skips the real Discord API call
+        plex_url="http://plex.example",
+        plex_token="live-token",
+        libraries=[LibraryConfig(name="Movies")],
+    )
+    settings_holder = SettingsHolder(settings=settings)
+
+    async def on_setup_complete():
+        return None
+
+    app = create_web_app(settings_holder, on_setup_complete)
+    client = TestClient(app)
+
+    # First entry seeds state.plex_account_token = "live-token" from the
+    # live config, and skips straight to panel_plex_connect.html.
+    client.get("/wizard/plex")
+    token = client.cookies.get(CSRF_COOKIE_NAME)
+
+    response = client.post("/wizard/plex/reauth", data={"csrf_token": token})
+
+    assert "Connect your Plex account" in response.text
+    assert "Plex account connected" not in response.text
 
 
 def _patch_httpx_sync_client(monkeypatch, handler):

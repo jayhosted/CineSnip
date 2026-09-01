@@ -97,7 +97,14 @@ class CSRFMiddleware:
                 headers.append(
                     (
                         b"set-cookie",
-                        f"{CSRF_COOKIE_NAME}={token}; Path=/; SameSite=Lax".encode(),
+                        # HttpOnly: nothing here ever reads the cookie from
+                        # JS — the token reaches the page via server-side
+                        # interpolation (hx-headers on <body>, hidden form
+                        # fields), never document.cookie — so this closes
+                        # off one passive cookie-theft channel (a leaky
+                        # subresource, a stray logged document.cookie
+                        # snapshot) for free.
+                        f"{CSRF_COOKIE_NAME}={token}; Path=/; SameSite=Lax; HttpOnly".encode(),
                     )
                 )
                 message = {**message, "headers": headers}
