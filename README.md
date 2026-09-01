@@ -1,16 +1,16 @@
 # CineSnip
 
-Generate short clips from your own Plex library, straight into Discord.
+Generate short clips from your own Plex or Jellyfin library, straight into Discord.
 
 `/snip movie` for films, `/snip tv` for TV episodes: give it a title and either a
 `quote` (fuzzy-matched against subtitles) or a `timecode` (e.g. `1:23:45`),
-one Docker container. Searches across every Plex library you configure.
+one Docker container. Searches across every library you configure.
 
 ## 1. Prerequisites
 
 - Docker + Docker Compose
-- A running Plex server, reachable from the machine running Docker
-- The films you want to clip already in a Plex movie library
+- A running Plex or Jellyfin server, reachable from the machine running Docker
+- The films you want to clip already in a movie library on that server
 
 ## Choosing a media server: Plex or Jellyfin
 
@@ -52,7 +52,7 @@ of Plex's PIN pairing.
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**.
 2. Open the **Bot** tab → **Reset Token** → copy the token (you'll paste this into `.env` in step 4). Keep it secret — treat it like a password.
-3. **On the same Bot tab, under Authorization Flow, turn OFF "Public Bot."** This is important: CineSnip is tied to *your* Plex library, and a public bot can be added to any server by anyone via the "Add to Server" button on its profile — which would hand them browse/generate access to your media. With Public Bot off, only you can generate a working invite URL; you can still invite it to as many of your own servers as you like, it just can't be self-service-invited by someone else. Note that **there's currently no per-user allowlist** — anyone already in a server you invite the bot to can browse and generate from your library, so only invite it to servers where you're comfortable with everyone having that access.
+3. **On the same Bot tab, under Authorization Flow, turn OFF "Public Bot."** This is important: CineSnip is tied to *your* media library, and a public bot can be added to any server by anyone via the "Add to Server" button on its profile — which would hand them browse/generate access to your media. With Public Bot off, only you can generate a working invite URL; you can still invite it to as many of your own servers as you like, it just can't be self-service-invited by someone else. Note that **there's currently no per-user allowlist** — anyone already in a server you invite the bot to can browse and generate from your library, so only invite it to servers where you're comfortable with everyone having that access.
 4. No privileged intents are needed for the MVP (it's slash-command-only).
 5. Open **OAuth2 → URL Generator**:
    - Scopes: `bot`, `applications.commands`
@@ -93,10 +93,10 @@ libraries span — e.g. `"/path/on/your/host/Movies:/media/movies:ro"`. Each
 `container_path` you choose here (the part after the `:`) is what you'll
 reference as `container_path` in `config.yaml`'s `path_mappings` below.
 
-`libraries` lists every Plex library CineSnip should search, each with its
-own `path_mappings` telling CineSnip how to translate the file path Plex
-reports into the path the container actually sees (via the bind mounts in
-`docker-compose.yml`). CineSnip searches across all configured libraries by
+`libraries` lists every library CineSnip should search, each with its
+own `path_mappings` telling CineSnip how to translate the file path your
+media server reports into the path the container actually sees (via the
+bind mounts in `docker-compose.yml`). CineSnip searches across all configured libraries by
 default — if the same title exists in more than one (e.g. a regular Movies
 library and a separate 4K one), results are labeled with which library they
 came from.
@@ -124,8 +124,9 @@ yourself first — the container runs as a non-root user, and if Docker
 creates these directories for you on first launch (because they don't
 exist yet), they'll be owned by `root` and the container won't be able to
 write to them. Unlike `scratch/` (cleared on every startup), `cache/` is
-persistent — it holds parsed subtitles keyed by Plex media GUID so a
-title's subtitles are only ever extracted once:
+persistent — it holds parsed subtitles keyed by each title's unique ID
+from your media server, so a title's subtitles are only ever extracted
+once:
 
 ```bash
 mkdir -p scratch cache
@@ -194,7 +195,7 @@ clicking play.
 `/snip search quote:<text>` searches for a line across every film CineSnip
 has *already read subtitles for* — from any prior `/snip movie` or `/snip search`
 use — instead of requiring you to pick a film up front. Cached results come
-back instantly (no re-parsing, no Plex calls). If `library_sync` is enabled
+back instantly (no re-parsing, no calls to your media server). If `library_sync` is enabled
 in `config.yaml`, a search that doesn't fully cover the library then keeps
 going in the background, extracting subtitles for more not-yet-cached
 titles on the spot (up to `quote_match.library_extend_cap` per search) and
@@ -238,22 +239,24 @@ library_sync:
   interval_hours: 24
 ```
 
-What it does, each time it runs: it asks Plex for each library's own
-`updatedAt` timestamp — a cheap check, confirmed not to fire on routine
-per-title actions like Refresh Metadata or Analyze, only on genuine
-scanner-detected adds/removals — and does nothing further unless something
+What it does, each time it runs: it asks your media server for each
+library's own change-tracking signal — Plex's `updatedAt` timestamp
+(confirmed not to fire on routine per-title actions like Refresh Metadata
+or Analyze, only on genuine scanner-detected adds/removals), or, for Jellyfin, which has no equivalent single field, an
+equally cheap signal built from that library's newest item date plus its
+total item count — and does nothing further unless something
 actually changed. When a library *has* changed, it extracts and caches
 subtitles for any new titles, and **removes cache entries for titles no
-longer in Plex**.
+longer present**.
 
 **That last part is worth reading carefully before enabling this**: it can
 delete cache files. Two independent safety checks have to both pass before
-any deletion happens, specifically so a Plex outage or a dead/disconnected
-drive can never be mistaken for genuine content removal:
+any deletion happens, specifically so a media-server outage or a
+dead/disconnected drive can never be mistaken for genuine content removal:
 1. A **mount check** — every path this library depends on must actually be
    reachable and non-empty on disk right now.
-2. A **spot check** — a sample of *other* titles Plex still says are
-   present must also actually exist on disk.
+2. A **spot check** — a sample of *other* titles your media server still
+   says are present must also actually exist on disk.
 
 If either check fails, cleanup is skipped for that whole library and
 retried on the next cycle — new titles still get added normally either way,
@@ -261,7 +264,7 @@ only the cache-removal step is held back. Nothing is ever silently lost:
 the worst case of a false trigger is a delayed cleanup, not a wrongful one.
 
 `interval_hours` controls how often it wakes up to check — the check itself
-is nearly free when nothing's changed (a handful of lightweight Plex calls,
+is nearly free when nothing's changed (a handful of lightweight media-server calls,
 not a full library scan), so a short interval costs very little even on a
 quiet day.
 
@@ -295,7 +298,7 @@ docker compose exec cinesnip .venv/bin/python scripts/migrate_to_fts5.py
 
 (or the equivalent outside Docker if you run CineSnip natively). It's a
 pure local read of your already-cached subtitles into the new index —
-no Plex or ffmpeg calls — and it's safe to re-run; a title already migrated
+no calls to your media server or ffmpeg — and it's safe to re-run; a title already migrated
 is skipped unless you pass `--force`. Until you run it (or enable library
 auto-sync above, which backfills titles gradually as they're touched),
 `/snip search` will silently return no results, since the new index starts
@@ -306,15 +309,16 @@ empty on upgrade.
 CineSnip is a self-hosted, single-owner application. Its web interface
 (the setup wizard, `/generate`, `/settings`) is an **administrative
 interface** — it manages your Discord bot token, Plex/Jellyfin
-credentials, and library configuration — and is intended to be reached
-from your own trusted local network, not the public internet.
+credentials, and library configuration, and has no login of its own.
+Anyone who can reach it can view and change that configuration, so treat
+network access to it as equivalent to administrative access to CineSnip.
+It's intended for use on a trusted local network, like most self-hosted
+admin UIs — not for direct exposure to the public internet.
 
 - By default, `docker-compose.yml.example` publishes port 1919 bound to
   all interfaces (`0.0.0.0`), not just `127.0.0.1`, so other devices on
   your LAN can reach `/generate` and reconfigure setup without extra
-  steps. Treat access to this port the same as you would treat access to
-  your Plex admin dashboard or router settings — anyone who can reach it
-  can view/change your configuration.
+  steps.
 - If you only need the web app from the machine running Docker itself,
   bind it to localhost instead by changing the port line in your
   `docker-compose.yml`:
@@ -324,12 +328,12 @@ from your own trusted local network, not the public internet.
     - "127.0.0.1:1919:1919"
   ```
 
-- **Never port-forward port 1919 on your router.** That turns LAN-only
-  access into public internet access. If you need to reach the web app
-  remotely, put it behind a reverse proxy that adds its own
-  authentication (e.g. a proxy with basic auth, or a VPN/tailnet like
-  Tailscale/WireGuard into your LAN) rather than exposing it directly —
-  CineSnip's web app has no login of its own.
+- Because the admin UI has no built-in login, direct public-internet
+  exposure (including router port-forwarding) isn't the supported
+  deployment model. If you need to reach it remotely, put it behind an
+  authenticated reverse proxy (e.g. one adding basic auth or SSO) or
+  reach your LAN over a VPN/tailnet (e.g. Tailscale, WireGuard) instead of
+  exposing it directly.
 - The worker's internal API is loopback-only inside the container with no
   port published at all, and is unaffected by any of the above.
 
@@ -347,8 +351,8 @@ access.
 ## Troubleshooting
 
 - **Bot fails to log in (401)** — `DISCORD_TOKEN` in `.env` is wrong or was reset since you copied it.
-- **"No path mapping configured for ..." / "File not found on disk"** — that library's `path_mappings` in `config.yaml` don't match what Plex reports or what's actually bind-mounted. Re-check step 5, and confirm the corresponding volume in `docker-compose.yml` points at the right host folder.
-- **"'X' is not a configured library"** — a title resolved to a Plex library that isn't listed under `libraries` in `config.yaml`. Add an entry for it (step 5).
+- **"No path mapping configured for ..." / "File not found on disk"** — that library's `path_mappings` in `config.yaml` don't match what your media server reports or what's actually bind-mounted. Re-check step 5, and confirm the corresponding volume in `docker-compose.yml` points at the right host folder.
+- **"'X' is not a configured library"** — a title resolved to a library that isn't listed under `libraries` in `config.yaml`. Add an entry for it (step 5).
 - **`sqlite3.OperationalError: no such column: media_id`** — an old `cache/quote_index.db` from before Jellyfin support. Stop the container, delete that one file, and start again; it rebuilds itself. See "Upgrading an existing install" above.
 - **ffmpeg errors** — check the container logs for the actual ffmpeg stderr output; this usually means the source file is a format ffmpeg can't read directly, or the mapped path is wrong.
 - **"Couldn't generate the GIF: ... timed out"** — the source file is unusually slow for ffmpeg to seek/decode near that timestamp (raise `render_defaults.timeout_seconds` in `config.yaml` if this happens on files that should be fine), or something is stuck — check `docker compose logs`.
