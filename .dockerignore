@@ -19,6 +19,8 @@ docker-compose.yml.example
 docker-compose.jellyfin.yml
 docker-compose.jellyfin-test.yml
 docker-compose.override.yml
+scratch-jellyfin-test/
+cache-jellyfin-test/
 *.db
 *.sqlite3
 __pycache__/
@@ -27,3 +29,6 @@ __pycache__/
 venv/
 .pytest_cache/
 .impeccable/
+.claude/
+*.log
+.DS_Store

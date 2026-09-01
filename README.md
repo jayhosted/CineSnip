@@ -137,17 +137,8 @@ http://127.0.0.1:8000") and discord.py logging in successfully. No ports
 need to be published — the worker API is loopback-only inside the
 container, and the bot only makes outbound connections to Discord.
 
-**Security note on the setup wizard / `/generate` web app (port 1919):**
-`docker-compose.yml.example` publishes port 1919 bound to all interfaces,
-not just `127.0.0.1` — deliberately, so other devices on your own LAN can
-reach `/generate` and reconfigure setup without extra steps. That means
-anyone else on the same network can also reach `/wizard`, which accepts
-raw Discord bot tokens and Plex/Jellyfin credentials — there's no login on
-this app. Only run this on a network you trust, and **never port-forward
-port 1919 on your router** (that would expose token entry to the whole
-internet, not just your LAN). If you only need the web app from the machine
-running Docker itself, change the port line in your `docker-compose.yml`
-to `"127.0.0.1:1919:1919"` to restrict it to localhost.
+See [Security & deployment](#security--deployment) below before exposing
+port 1919 beyond your own machine.
 
 ## 7. Try it
 
@@ -309,6 +300,49 @@ is skipped unless you pass `--force`. Until you run it (or enable library
 auto-sync above, which backfills titles gradually as they're touched),
 `/snip search` will silently return no results, since the new index starts
 empty on upgrade.
+
+## Security & deployment
+
+CineSnip is a self-hosted, single-owner application. Its web interface
+(the setup wizard, `/generate`, `/settings`) is an **administrative
+interface** — it manages your Discord bot token, Plex/Jellyfin
+credentials, and library configuration — and is intended to be reached
+from your own trusted local network, not the public internet.
+
+- By default, `docker-compose.yml.example` publishes port 1919 bound to
+  all interfaces (`0.0.0.0`), not just `127.0.0.1`, so other devices on
+  your LAN can reach `/generate` and reconfigure setup without extra
+  steps. Treat access to this port the same as you would treat access to
+  your Plex admin dashboard or router settings — anyone who can reach it
+  can view/change your configuration.
+- If you only need the web app from the machine running Docker itself,
+  bind it to localhost instead by changing the port line in your
+  `docker-compose.yml`:
+
+  ```yaml
+  ports:
+    - "127.0.0.1:1919:1919"
+  ```
+
+- **Never port-forward port 1919 on your router.** That turns LAN-only
+  access into public internet access. If you need to reach the web app
+  remotely, put it behind a reverse proxy that adds its own
+  authentication (e.g. a proxy with basic auth, or a VPN/tailnet like
+  Tailscale/WireGuard into your LAN) rather than exposing it directly —
+  CineSnip's web app has no login of its own.
+- The worker's internal API is loopback-only inside the container with no
+  port published at all, and is unaffected by any of the above.
+
+**Discord access model:** CineSnip currently has no per-user or per-role
+allowlist. Anyone who can use slash commands in a Discord server the bot
+has been invited to can browse your library and generate clips from it —
+access control happens at the level of "which servers you invite the bot
+to," not per-individual. This is a current product limitation, not a bug —
+an admin-configurable allowlist and rate-limiting are on the roadmap but
+not yet built. Keep **Public Bot** disabled (step 2 above) so the bot can't be
+self-service-invited to a server you didn't choose, and only invite it to
+servers where you're comfortable with everyone in them having that
+access.
 
 ## Troubleshooting
 

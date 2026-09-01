@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import posixpath
+
 from app.settings import PathMapping
 
 
@@ -38,6 +40,15 @@ def resolve_container_path(source_path: str, mappings: list[PathMapping]) -> str
         normalized_prefix = _normalize(mapping.path_prefix)
         if normalized_path.startswith(normalized_prefix):
             remainder = normalized_path[len(normalized_prefix) :]
-            return mapping.container_path.rstrip("/") + remainder
+            container_root = mapping.container_path.rstrip("/")
+            resolved = posixpath.normpath(container_root + remainder)
+            # The media server's reported path is untrusted input (Section 9)
+            # — collapse any ".." segments and confirm the result still sits
+            # under the mapped root before returning it, so a compromised or
+            # malicious media server can't traverse out of its bind mount
+            # (e.g. into /app/.env) via a crafted file path.
+            if resolved != container_root and not resolved.startswith(container_root + "/"):
+                raise NoPathMappingError(source_path)
+            return resolved
 
     raise NoPathMappingError(source_path)

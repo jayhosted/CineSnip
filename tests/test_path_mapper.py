@@ -89,6 +89,19 @@ def test_strips_windows_extended_length_unc_prefix():
     assert result == "/media/movies/Film (2020)/Film.mkv"
 
 
+def test_rejects_path_traversal_outside_mapped_root():
+    # A compromised/malicious media server reporting a crafted file path
+    # (e.g. containing "..") must not be able to resolve outside its
+    # mapped bind mount — see docs/build-notes/plex-integration.md.
+    mappings = [
+        PathMapping(path_prefix="D:\\Movies", container_path="/media/movies-d"),
+    ]
+    source_path = "D:\\Movies\\..\\..\\app\\.env"
+
+    with pytest.raises(NoPathMappingError):
+        resolve_container_path(source_path, mappings)
+
+
 def test_raises_when_no_mapping_matches():
     mappings = [
         PathMapping(
