@@ -42,6 +42,15 @@ class PlexClient:
         # /snip random's media:tv/media:all filtering, which (unlike
         # /search-quote) isn't movie-only by design.
         self.show_library_names = frozenset(s.title for s in self._show_sections)
+        # Every library CineSnip can return results for — used to scope
+        # fetchItem() lookups below. A Plex ratingKey is opaque input
+        # (Discord command params and web app form fields aren't validated
+        # against autocomplete — a user can hand-type any numeric id), so
+        # without this check fetchItem() would happily return metadata for
+        # ANY library on the same Plex server, including ones the admin
+        # never configured CineSnip to expose (pre-publication security
+        # audit finding).
+        self._configured_library_names = self.movie_library_names | self.show_library_names
         self._movie_cache: dict[str, tuple[float, MovieResult]] = {}
 
     def library_sections(self) -> list[tuple[str, object]]:
@@ -105,6 +114,12 @@ class PlexClient:
 
         try:
             movie = self._server.fetchItem(int(media_id))
+            if movie.librarySectionTitle not in self._configured_library_names:
+                # Same "not found" response an out-of-range/stale id already
+                # gets — a ratingKey that resolves on Plex but outside
+                # CineSnip's configured libraries must not be distinguishable
+                # from one that doesn't exist at all.
+                raise NotFound()
         except (NotFound, ValueError) as exc:
             # ValueError: media_id isn't a Plex rating key at all — a
             # non-numeric autocomplete value the caller never validates
@@ -114,13 +129,22 @@ class PlexClient:
             # of the same clean 404 a stale-but-numeric id already gets.
             raise MovieNotFoundError(media_id) from exc
 
-        result = self._to_result(movie)
+        try:
+            result = self._to_result(movie)
+        except (AttributeError, IndexError) as exc:
+            # Not a resolvable video item (e.g. a playlist/collection/artist
+            # ratingKey handed in by hand rather than picked from
+            # autocomplete) — same clean 404 as any other unresolvable id,
+            # not an unhandled crash.
+            raise MovieNotFoundError(media_id) from exc
         self._movie_cache[media_id] = (time.monotonic(), result)
         return result
 
     def get_episode(self, show_media_id: str, season: int, episode: int) -> MovieResult:
         try:
             show = self._server.fetchItem(int(show_media_id))
+            if show.librarySectionTitle not in self.show_library_names:
+                raise NotFound()
             ep = show.episode(season=season, episode=episode)
         except (NotFound, ValueError) as exc:
             raise EpisodeNotFoundError(show_media_id, season, episode) from exc
@@ -132,6 +156,8 @@ class PlexClient:
     def list_episodes(self, show_media_id: str) -> list[MovieResult]:
         try:
             show = self._server.fetchItem(int(show_media_id))
+            if show.librarySectionTitle not in self.show_library_names:
+                raise NotFound()
             episodes = show.episodes()
         except (NotFound, ValueError) as exc:
             raise ShowNotFoundError(show_media_id) from exc

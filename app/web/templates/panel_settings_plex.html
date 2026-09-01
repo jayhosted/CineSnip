@@ -13,7 +13,10 @@
     </p>
     <a href="/wizard/connect?return_to=plex" class="btn btn-primary" style="text-decoration:none; display:inline-block;">Edit Jellyfin connection &rarr;</a>
   </div>
-  <a href="/wizard/connect/reset?return_to=plex" class="btn-link" style="display:inline-block; margin-top:14px;">Switch to Plex instead?</a>
+  <form method="post" action="/wizard/connect/reset?return_to=plex" style="display:inline-block; margin-top:14px;">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+    <button type="submit" class="btn-link">Switch to Plex instead?</button>
+  </form>
   {% else %}
   <div class="card" style="margin-top:18px; max-width:520px;">
     <label class="field-label">PLEX SERVER</label>
@@ -25,6 +28,9 @@
     </p>
     <a href="/wizard/connect?return_to=plex" class="btn btn-primary" style="text-decoration:none; display:inline-block;">Edit Plex connection &rarr;</a>
   </div>
-  <a href="/wizard/connect/reset?return_to=plex" class="btn-link" style="display:inline-block; margin-top:14px;">Switch to Jellyfin instead?</a>
+    <form method="post" action="/wizard/connect/reset?return_to=plex" style="display:inline-block; margin-top:14px;">
+      <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+      <button type="submit" class="btn-link">Switch to Jellyfin instead?</button>
+    </form>
   {% endif %}
 </div>

@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/htmx.min.js"></script>
 </head>
-<body>
+<body hx-headers='{"X-CSRF-Token": "{{ request.state.csrf_token }}"}'>
 <div class="app-shell">
 
   <div class="mobile-topbar">

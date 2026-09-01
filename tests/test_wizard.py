@@ -16,6 +16,7 @@ from app.web.app import (
     _write_config_files,
     create_web_app,
 )
+from app.web.csrf import CSRF_COOKIE_NAME
 
 
 # ---- Regression: post-wizard settings reload must see the wizard's own
@@ -282,7 +283,11 @@ def test_connect_reset_shows_picker_on_an_already_configured_install():
     # First entry seeds state.media_server = "plex" from the live config.
     client.get("/wizard/connect")
     # The reset link must actually show the picker, not bounce back to Plex.
-    response = client.get("/wizard/connect/reset")
+    # /wizard/connect/reset is a side-effecting POST (not GET, closed off as
+    # a CSRF vector — see app/web/csrf.py), so it needs the CSRF token the
+    # page load above just got.
+    token = client.cookies.get(CSRF_COOKIE_NAME)
+    response = client.post("/wizard/connect/reset", data={"csrf_token": token})
 
     assert "Which media server do you use?" in response.text
     assert "Connect your Plex account" not in response.text

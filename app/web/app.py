@@ -28,6 +28,7 @@ from app.settings import (
     SubtitleDefaults,
     WorkerConfig,
 )
+from app.web.csrf import CSRFMiddleware
 from app.web.dashboard import register_dashboard_routes
 from app.web.generate import register_generate_routes
 from app.web.settings import register_settings_routes
@@ -515,6 +516,10 @@ def create_web_app(
     # do anything useful; once it's set, /generate also comes alive and
     # /wizard/... stays reachable as the reconfiguration entry point.
     app = FastAPI(title="CineSnip")
+    # Applied to the whole app (wizard + dashboard + settings + generate) so
+    # every state-changing route is covered, not just the ones known to be
+    # sensitive today — see app/web/csrf.py for why.
+    app.add_middleware(CSRFMiddleware)
     app.state.wizard = WizardState()
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
     templates.env.globals["app_version"] = __version__
@@ -636,7 +641,7 @@ def create_web_app(
         state.media_server = choice
         return await connect_step(request)
 
-    @app.get("/wizard/connect/reset")
+    @app.post("/wizard/connect/reset")
     async def connect_reset(request: Request):
         # Escape hatch from either backend's connect panel: clears the
         # choice (and anything already collected for it) so /wizard/connect
@@ -701,7 +706,7 @@ def create_web_app(
             )
         return render(request, "panel_plex_pin.html", pin=pin)
 
-    @app.get("/wizard/plex/reauth", response_class=HTMLResponse)
+    @app.post("/wizard/plex/reauth", response_class=HTMLResponse)
     async def plex_reauth(request: Request):
         # Escape hatch for the token-skip above: clears the existing
         # account token (this session's or seeded from live config) so the

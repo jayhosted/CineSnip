@@ -79,7 +79,35 @@ def _match_embed(
     return embed
 
 
-class QuoteMatchView(discord.ui.View):
+class _InvokerOnlyView(discord.ui.View):
+    """Base for every result/confirm view below: restricts every button,
+    select, and modal-trigger to the Discord user who actually ran the
+    command this message came from. discord.py's default View has no such
+    restriction on its own — without an interaction_check override, any
+    server member who can see the message (it's posted publicly once
+    "Post to channel" is used, and even before that a shared-visibility
+    channel exposes it) can click someone else's in-progress
+    confirm/style/edit/post controls. Confirmed as a real gap in the
+    pre-publication security audit — CLAUDE.md Section 9's "no per-user
+    allowlist" gap is about who can run a command at all; this is a
+    separate, narrower issue about who can operate a view once it exists.
+    """
+
+    def __init__(self, invoker_id: int, *, timeout: float | None) -> None:
+        super().__init__(timeout=timeout)
+        self.invoker_id = invoker_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.invoker_id:
+            return True
+        await interaction.response.send_message(
+            "Only the person who ran this command can use these controls.",
+            ephemeral=True,
+        )
+        return False
+
+
+class QuoteMatchView(_InvokerOnlyView):
     """Confirm/cancel a quote match, with a select menu to browse
     alternatives. Per CLAUDE.md decision #4, browsing alternatives never
     stops the view or re-asks the film step — only Confirm/Cancel does.
@@ -105,6 +133,7 @@ class QuoteMatchView(discord.ui.View):
 
     def __init__(
         self,
+        invoker_id: int,
         title: str | None,
         matches: list[QuoteMatchResult] | list[LibraryQuoteMatchResult],
         min_score: float,
@@ -118,7 +147,7 @@ class QuoteMatchView(discord.ui.View):
         # idle timeout, not a session cap — discord.py resets it on every
         # click (see _scheduled_task in its View), so 10 minutes only
         # matters if the user walks away entirely.
-        super().__init__(timeout=600)
+        super().__init__(invoker_id, timeout=600)
         self._title = title
         self.matches = matches
         self.min_score = min_score
@@ -937,7 +966,7 @@ class _DurationMergeMixin:
             await self._open_merge()
 
 
-class ClipResultView(discord.ui.View):
+class ClipResultView(_InvokerOnlyView):
     """Shown once a clip has rendered: Post to channel, plus a style
     dropdown that re-renders in place if you want a different look —
     generation itself no longer waits on a style choice up front (CLAUDE.md
@@ -946,6 +975,7 @@ class ClipResultView(discord.ui.View):
 
     def __init__(
         self,
+        invoker_id: int,
         worker,
         media_id: str,
         title: str,
@@ -959,7 +989,7 @@ class ClipResultView(discord.ui.View):
         clip_start: float,
         clip_duration: float,
     ) -> None:
-        super().__init__(timeout=300)
+        super().__init__(invoker_id, timeout=300)
         self._worker = worker
         self._media_id = media_id
         self._title = title
@@ -1075,7 +1105,7 @@ class ClipResultView(discord.ui.View):
         await interaction.edit_original_response(view=self)
 
 
-class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
+class AudioClipResultView(_InvokerOnlyView, _DurationMergeMixin):
     """Result view for /snip audio (issue #6): Post to channel, plus the
     same ⏱ Duration / 🔀 Merge Subs span-editing controls as ClipEditView
     (issue #21, via _DurationMergeMixin). No style-select and no ✏️ Edit
@@ -1085,6 +1115,7 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
 
     def __init__(
         self,
+        invoker_id: int,
         worker,
         media_id: str,
         title: str,
@@ -1098,7 +1129,7 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
     ) -> None:
         # 1800s (30 min), matching ClipEditView — an editing session takes
         # longer than the one-shot 300s a plain post-only view needs.
-        super().__init__(timeout=1800)
+        super().__init__(invoker_id, timeout=1800)
         self._worker = worker
         self._media_id = media_id
         self._title = title
@@ -1340,16 +1371,18 @@ class AudioClipResultView(discord.ui.View, _DurationMergeMixin):
         return ""
 
 
-class _SoundboardReplacePickerView(discord.ui.View):
+class _SoundboardReplacePickerView(_InvokerOnlyView):
     """Follow-up picker shown when the Soundboard is full and
     soundboard_replace_scope allows a replace (issue #10) — a separate
     ephemeral view rather than reusing AudioClipResultView's own item rows,
     since a Select needs its own message here (the result message's own
     view is already using every row 0-4 slot between Duration/Merge and
-    Post/Add to Soundboard)."""
+    Post/Add to Soundboard). Restricted to the same invoker as its parent
+    view (not a new parameter — just reads parent.invoker_id) since this
+    is reached only from that view's own "Add to Soundboard" button."""
 
     def __init__(self, parent: "AudioClipResultView", candidates, bot_user_id: int) -> None:
-        super().__init__(timeout=120)
+        super().__init__(parent.invoker_id, timeout=120)
         self._parent = parent
         self._bot_user_id = bot_user_id
         options = [
@@ -1878,7 +1911,7 @@ class _RandomHistoryEntry:
         self.filename = filename
 
 
-class RandomResultView(discord.ui.View):
+class RandomResultView(_InvokerOnlyView):
     """Shown by /snip random and by /snip movie's/tv's random-pick path (no
     quote/timecode given): Shuffle (re-roll + re-render in place, same
     message-edit pattern as ClipResultView's style swap), Previous (steps
@@ -1901,6 +1934,7 @@ class RandomResultView(discord.ui.View):
 
     def __init__(
         self,
+        invoker_id: int,
         worker,
         fetch: RandomFetch,
         initial_pick: RandomQuoteResult,
@@ -1910,7 +1944,7 @@ class RandomResultView(discord.ui.View):
         style: str = "classic",
         kind: Literal["clip", "audio"] = "clip",
     ) -> None:
-        super().__init__(timeout=300)
+        super().__init__(invoker_id, timeout=300)
         self._worker = worker
         self._fetch = fetch
         # format/style/kind let /snip audio's random-pick path (issue #6)
@@ -2138,7 +2172,7 @@ def _library_results_embed(
     return embed
 
 
-class LibrarySearchView(discord.ui.View):
+class LibrarySearchView(_InvokerOnlyView):
     """Shown by /snip search (films) and /snip tv's show-wide search
     (episodes): pick a result from cross-title matches, then funnel into the
     normal quote-confirm -> render pipeline (CLAUDE.md Section 2: "just a
@@ -2156,6 +2190,7 @@ class LibrarySearchView(discord.ui.View):
 
     def __init__(
         self,
+        invoker_id: int,
         cog: "GifCog",
         quote: str,
         matches: list[LibraryQuoteMatchResult],
@@ -2166,7 +2201,7 @@ class LibrarySearchView(discord.ui.View):
         kind: Literal["clip", "audio"] = "clip",
     ) -> None:
         # See QuoteMatchView's __init__ for why this isn't 120s anymore.
-        super().__init__(timeout=600)
+        super().__init__(invoker_id, timeout=600)
         self._cog = cog
         self._quote = quote
         self._matches = matches
@@ -2438,6 +2473,7 @@ class GifCog(commands.Cog):
                 )
 
             match_view = QuoteMatchView(
+                interaction.user.id,
                 resolved.title,
                 resolved_quote.matches,
                 resolved_quote.min_score,
@@ -2565,6 +2601,7 @@ class GifCog(commands.Cog):
         # _DurationMergeMixin.
         if kind == "audio":
             result_view = AudioClipResultView(
+                interaction.user.id,
                 self.bot.worker,
                 media_id,
                 title,
@@ -2578,6 +2615,7 @@ class GifCog(commands.Cog):
             )
         else:
             result_view = ClipEditView(
+                interaction.user.id,
                 self.bot.worker,
                 media_id,
                 title,
@@ -2737,6 +2775,7 @@ class GifCog(commands.Cog):
         remaining_uncached = final_event.remaining_uncached if final_event else None
         final_truncated = (final_event.truncated if final_event else cached_truncated) or False
         view = LibrarySearchView(
+            interaction.user.id,
             self,
             quote,
             final_matches,
@@ -2806,7 +2845,7 @@ class GifCog(commands.Cog):
         )
         file = discord.File(io.BytesIO(render_result.content), filename=filename)
         view = RandomResultView(
-            self.bot.worker, fetch, picked, render_result.content, filename,
+            interaction.user.id, self.bot.worker, fetch, picked, render_result.content, filename,
             format=format, style=style, kind=kind,
         )
         # CLAUDE.md's "Celina" fix: a single-match pool must say so up
@@ -2971,6 +3010,7 @@ class GifCog(commands.Cog):
         # step first. title=None: LibraryQuoteMatchResult carries its own
         # per-episode title, unlike a single already-known film.
         match_view = QuoteMatchView(
+            interaction.user.id,
             None,
             result.matches,
             result.min_score,

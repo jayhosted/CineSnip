@@ -37,14 +37,14 @@ def test_quote_match_view_timeout_gives_time_to_browse_multiple_pages():
     # up to 50 now possible across several pages, that timed out too fast
     # mid-browse.
     matches = [_quote_match(i) for i in range(20)]
-    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+    view = QuoteMatchView(999, "Title", matches, min_score=50.0, confident_score=85.0)
 
     assert view.timeout == 600
 
 
 def test_quote_match_view_below_confident_score_opens_first_page_select():
     matches = [_quote_match(i, score=60.0) for i in range(20)]
-    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+    view = QuoteMatchView(999, "Title", matches, min_score=50.0, confident_score=85.0)
 
     assert view._select is not None
     assert [opt.value for opt in view._select.options] == [str(i) for i in range(_PAGE_SIZE)]
@@ -58,7 +58,7 @@ def test_quote_match_view_confident_top_match_still_opens_select_immediately():
     # (and its Next/Previous paging) is shown immediately regardless of
     # the top match's score.
     matches = [_quote_match(0, score=95.0)] + [_quote_match(i, score=60.0) for i in range(1, 20)]
-    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+    view = QuoteMatchView(999, "Title", matches, min_score=50.0, confident_score=85.0)
 
     assert view._select is not None
     assert len(view._select.options) == _PAGE_SIZE
@@ -69,7 +69,7 @@ def test_quote_match_view_confident_top_match_still_opens_select_immediately():
 
 def test_quote_match_view_next_then_previous_round_trips():
     matches = [_quote_match(i, score=60.0) for i in range(20)]
-    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+    view = QuoteMatchView(999, "Title", matches, min_score=50.0, confident_score=85.0)
 
     asyncio.run(view._on_next(_fake_interaction()))
     assert view._page == 1
@@ -89,7 +89,7 @@ def test_quote_match_view_next_then_previous_round_trips():
 
 def test_quote_match_view_select_on_second_page_resolves_absolute_index():
     matches = [_quote_match(i, score=60.0) for i in range(20)]
-    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+    view = QuoteMatchView(999, "Title", matches, min_score=50.0, confident_score=85.0)
 
     asyncio.run(view._on_next(_fake_interaction()))
     view._select._values = ["10"]
@@ -102,7 +102,7 @@ def test_quote_match_view_select_on_second_page_resolves_absolute_index():
 
 def test_quote_match_view_no_page_buttons_when_batch_fits_one_page():
     matches = [_quote_match(i, score=60.0) for i in range(8)]
-    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+    view = QuoteMatchView(999, "Title", matches, min_score=50.0, confident_score=85.0)
 
     assert view._prev_button is None
     assert view._next_button is None
@@ -110,7 +110,7 @@ def test_quote_match_view_no_page_buttons_when_batch_fits_one_page():
 
 def test_quote_match_view_next_past_last_page_is_a_noop():
     matches = [_quote_match(i, score=60.0) for i in range(20)]  # 3 pages: 0,1,2
-    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+    view = QuoteMatchView(999, "Title", matches, min_score=50.0, confident_score=85.0)
 
     asyncio.run(view._on_next(_fake_interaction()))
     asyncio.run(view._on_next(_fake_interaction()))
@@ -123,7 +123,7 @@ def test_quote_match_view_next_past_last_page_is_a_noop():
 
 def test_quote_match_view_previous_before_first_page_is_a_noop():
     matches = [_quote_match(i, score=60.0) for i in range(20)]
-    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+    view = QuoteMatchView(999, "Title", matches, min_score=50.0, confident_score=85.0)
 
     asyncio.run(view._on_previous(_fake_interaction()))
     assert view._page == 0
@@ -132,7 +132,7 @@ def test_quote_match_view_previous_before_first_page_is_a_noop():
 
 def test_quote_match_view_footer_shows_page_of_pages_not_raw_count():
     matches = [_quote_match(i, score=60.0) for i in range(20)]  # 3 pages
-    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+    view = QuoteMatchView(999, "Title", matches, min_score=50.0, confident_score=85.0)
 
     assert view.embed().footer.text == "Page 1 of 3"
 
@@ -142,7 +142,7 @@ def test_quote_match_view_footer_shows_page_of_pages_not_raw_count():
 
 def test_quote_match_view_footer_omitted_when_batch_fits_one_page():
     matches = [_quote_match(i, score=60.0) for i in range(3)]
-    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+    view = QuoteMatchView(999, "Title", matches, min_score=50.0, confident_score=85.0)
 
     assert view.embed().footer.text is None
 
@@ -150,7 +150,7 @@ def test_quote_match_view_footer_omitted_when_batch_fits_one_page():
 def test_quote_match_view_truncated_note_only_on_last_page():
     matches = [_quote_match(i, score=60.0) for i in range(20)]  # 3 pages
     view = QuoteMatchView(
-        "Title", matches, min_score=50.0, confident_score=85.0, truncated=True
+        999, "Title", matches, min_score=50.0, confident_score=85.0, truncated=True
     )
 
     assert view.embed().footer.text == "Page 1 of 3"
@@ -166,7 +166,7 @@ def test_quote_match_view_truncated_note_only_on_last_page():
 def test_quote_match_view_no_truncated_note_when_not_truncated():
     matches = [_quote_match(i, score=60.0) for i in range(20)]
     view = QuoteMatchView(
-        "Title", matches, min_score=50.0, confident_score=85.0, truncated=False
+        999, "Title", matches, min_score=50.0, confident_score=85.0, truncated=False
     )
 
     asyncio.run(view._on_next(_fake_interaction()))
@@ -176,7 +176,7 @@ def test_quote_match_view_no_truncated_note_when_not_truncated():
 
 def test_quote_match_view_component_rows_put_confirm_cancel_below_pagination():
     matches = [_quote_match(i, score=60.0) for i in range(20)]
-    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+    view = QuoteMatchView(999, "Title", matches, min_score=50.0, confident_score=85.0)
 
     rows = {item.label: item.row for item in view.children if hasattr(item, "label")}
     assert rows["◀ Previous"] == 2
@@ -191,7 +191,7 @@ def test_quote_match_view_component_rows_put_confirm_cancel_below_pagination():
 
 def test_quote_match_view_component_rows_no_pagination_puts_confirm_below_select():
     matches = [_quote_match(i, score=60.0) for i in range(3)]
-    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+    view = QuoteMatchView(999, "Title", matches, min_score=50.0, confident_score=85.0)
 
     rows = {item.label: item.row for item in view.children if hasattr(item, "label")}
     assert view._select.row == 1
@@ -201,7 +201,7 @@ def test_quote_match_view_component_rows_no_pagination_puts_confirm_below_select
 
 def test_quote_match_view_component_rows_single_match_puts_confirm_on_row_one():
     matches = [_quote_match(0, score=60.0)]
-    view = QuoteMatchView("Title", matches, min_score=50.0, confident_score=85.0)
+    view = QuoteMatchView(999, "Title", matches, min_score=50.0, confident_score=85.0)
 
     rows = {item.label: item.row for item in view.children if hasattr(item, "label")}
     assert rows["Confirm"] == 1
@@ -229,7 +229,7 @@ def _library_match(i: int, score: float = 60.0) -> LibraryQuoteMatchResult:
 
 def test_quote_match_view_uses_fixed_title_when_given():
     matches = [_quote_match(i) for i in range(3)]
-    view = QuoteMatchView("Fixed Title", matches, min_score=50.0, confident_score=85.0)
+    view = QuoteMatchView(999, "Fixed Title", matches, min_score=50.0, confident_score=85.0)
 
     assert view.embed().title == "Fixed Title"
 
@@ -239,14 +239,14 @@ def test_quote_match_view_uses_per_match_title_when_title_is_none():
     # from different episodes, so there's no single fixed title to show —
     # title=None means "read it off whichever match is currently selected".
     matches = [_library_match(i) for i in range(3)]
-    view = QuoteMatchView(None, matches, min_score=50.0, confident_score=85.0)
+    view = QuoteMatchView(999, None, matches, min_score=50.0, confident_score=85.0)
 
     assert view.embed().title == matches[0].title
 
 
 def test_quote_match_view_per_match_title_follows_selection():
     matches = [_library_match(i) for i in range(3)]
-    view = QuoteMatchView(None, matches, min_score=50.0, confident_score=85.0)
+    view = QuoteMatchView(999, None, matches, min_score=50.0, confident_score=85.0)
 
     view._select._values = ["2"]
     asyncio.run(view._on_select(_fake_interaction()))
@@ -270,14 +270,14 @@ class _FakeCog:
 
 def test_library_search_view_timeout_gives_time_to_browse_multiple_pages():
     matches = [_library_match(i) for i in range(20)]
-    view = LibrarySearchView(_FakeCog(), "quote", matches)
+    view = LibrarySearchView(999, _FakeCog(), "quote", matches)
 
     assert view.timeout == 600
 
 
 def test_library_search_view_first_page_has_eight_options_and_next_enabled():
     matches = [_library_match(i) for i in range(20)]
-    view = LibrarySearchView(_FakeCog(), "quote", matches)
+    view = LibrarySearchView(999, _FakeCog(), "quote", matches)
 
     assert len(view._select.options) == _PAGE_SIZE
     assert [opt.value for opt in view._select.options] == [str(i) for i in range(8)]
@@ -287,7 +287,7 @@ def test_library_search_view_first_page_has_eight_options_and_next_enabled():
 
 def test_library_search_view_embed_shows_only_current_page_with_footer():
     matches = [_library_match(i) for i in range(20)]
-    view = LibrarySearchView(_FakeCog(), "quote", matches)
+    view = LibrarySearchView(999, _FakeCog(), "quote", matches)
 
     embed = view.embed()
     assert len(embed.fields) == _PAGE_SIZE
@@ -297,7 +297,7 @@ def test_library_search_view_embed_shows_only_current_page_with_footer():
 
 def test_library_search_view_next_shows_second_page():
     matches = [_library_match(i) for i in range(20)]
-    view = LibrarySearchView(_FakeCog(), "quote", matches)
+    view = LibrarySearchView(999, _FakeCog(), "quote", matches)
 
     asyncio.run(view._on_next(_fake_interaction()))
 
@@ -313,7 +313,7 @@ def test_library_search_view_next_shows_second_page():
 
 def test_library_search_view_no_page_buttons_or_footer_when_batch_fits_one_page():
     matches = [_library_match(i) for i in range(5)]
-    view = LibrarySearchView(_FakeCog(), "quote", matches)
+    view = LibrarySearchView(999, _FakeCog(), "quote", matches)
 
     assert view._prev_button is None
     assert view._next_button is None
@@ -323,7 +323,7 @@ def test_library_search_view_no_page_buttons_or_footer_when_batch_fits_one_page(
 def test_library_search_view_select_on_second_page_resolves_absolute_match():
     matches = [_library_match(i) for i in range(20)]
     cog = _FakeCog()
-    view = LibrarySearchView(cog, "quote", matches)
+    view = LibrarySearchView(999, cog, "quote", matches)
 
     asyncio.run(view._on_next(_fake_interaction()))
     view._select._values = ["10"]
@@ -340,7 +340,7 @@ def test_library_results_embed_footer_omitted_for_single_page():
 
 def test_library_search_view_truncated_note_only_on_last_page():
     matches = [_library_match(i) for i in range(20)]  # 3 pages
-    view = LibrarySearchView(_FakeCog(), "quote", matches, truncated=True)
+    view = LibrarySearchView(999, _FakeCog(), "quote", matches, truncated=True)
 
     assert view.embed().footer.text == "Page 1 of 3"
 
@@ -354,7 +354,7 @@ def test_library_search_view_truncated_note_only_on_last_page():
 
 def test_library_search_view_no_truncated_note_when_not_truncated():
     matches = [_library_match(i) for i in range(20)]
-    view = LibrarySearchView(_FakeCog(), "quote", matches, truncated=False)
+    view = LibrarySearchView(999, _FakeCog(), "quote", matches, truncated=False)
 
     asyncio.run(view._on_next(_fake_interaction()))
     asyncio.run(view._on_next(_fake_interaction()))
@@ -363,7 +363,7 @@ def test_library_search_view_no_truncated_note_when_not_truncated():
 
 def test_library_search_view_next_past_last_page_is_a_noop():
     matches = [_library_match(i) for i in range(20)]
-    view = LibrarySearchView(_FakeCog(), "quote", matches)
+    view = LibrarySearchView(999, _FakeCog(), "quote", matches)
 
     asyncio.run(view._on_next(_fake_interaction()))
     asyncio.run(view._on_next(_fake_interaction()))
@@ -374,7 +374,7 @@ def test_library_search_view_next_past_last_page_is_a_noop():
 
 def test_library_search_view_previous_before_first_page_is_a_noop():
     matches = [_library_match(i) for i in range(20)]
-    view = LibrarySearchView(_FakeCog(), "quote", matches)
+    view = LibrarySearchView(999, _FakeCog(), "quote", matches)
 
     asyncio.run(view._on_previous(_fake_interaction()))
     assert view._page == 0
@@ -383,7 +383,7 @@ def test_library_search_view_previous_before_first_page_is_a_noop():
 
 def test_library_search_view_component_rows_stable_across_page_change():
     matches = [_library_match(i) for i in range(20)]
-    view = LibrarySearchView(_FakeCog(), "quote", matches, remaining_uncached=5)
+    view = LibrarySearchView(999, _FakeCog(), "quote", matches, remaining_uncached=5)
 
     def rows():
         return {
@@ -414,7 +414,7 @@ def test_library_search_view_component_rows_stable_across_page_change():
 def test_library_search_view_select_forwards_format_and_kind():
     matches = [_library_match(i) for i in range(3)]
     cog = _FakeCog()
-    view = LibrarySearchView(cog, "quote", matches, format="mp3", kind="audio")
+    view = LibrarySearchView(999, cog, "quote", matches, format="mp3", kind="audio")
     view._select._values = ["1"]
 
     asyncio.run(view._on_select(_fake_interaction()))
@@ -425,7 +425,7 @@ def test_library_search_view_select_forwards_format_and_kind():
 def test_library_search_view_search_more_forwards_format_and_kind():
     matches = [_library_match(i) for i in range(3)]
     cog = _FakeCog()
-    view = LibrarySearchView(cog, "quote", matches, format="mp3", kind="audio")
+    view = LibrarySearchView(999, cog, "quote", matches, format="mp3", kind="audio")
 
     asyncio.run(view._on_search_more(_fake_interaction()))
 
@@ -435,7 +435,7 @@ def test_library_search_view_search_more_forwards_format_and_kind():
 def test_library_search_view_defaults_to_gif_format_and_clip_kind():
     matches = [_library_match(i) for i in range(3)]
     cog = _FakeCog()
-    view = LibrarySearchView(cog, "quote", matches)
+    view = LibrarySearchView(999, cog, "quote", matches)
     view._select._values = ["0"]
 
     asyncio.run(view._on_select(_fake_interaction()))
@@ -479,13 +479,13 @@ class _FakeFetch:
 
 
 def test_random_result_view_disables_shuffle_when_pool_size_is_one():
-    view = RandomResultView(_FakeWorker(), _FakeFetch([]), _random_pick(pool_size=1), b"x", "clip.gif")
+    view = RandomResultView(999, _FakeWorker(), _FakeFetch([]), _random_pick(pool_size=1), b"x", "clip.gif")
 
     assert view.shuffle.disabled is True
 
 
 def test_random_result_view_enables_shuffle_when_pool_has_more_than_one():
-    view = RandomResultView(_FakeWorker(), _FakeFetch([]), _random_pick(pool_size=5), b"x", "clip.gif")
+    view = RandomResultView(999, _FakeWorker(), _FakeFetch([]), _random_pick(pool_size=5), b"x", "clip.gif")
 
     assert view.shuffle.disabled is False
 
@@ -493,7 +493,7 @@ def test_random_result_view_enables_shuffle_when_pool_has_more_than_one():
 def test_random_result_view_button_order_previous_shuffle_post():
     worker = _FakeWorker()
     fetch = _FakeFetch([_random_pick(entry_id=2, text="Second", pool_size=5)])
-    view = RandomResultView(worker, fetch, _random_pick(entry_id=1, text="First", pool_size=5), b"x", "clip.gif")
+    view = RandomResultView(999, worker, fetch, _random_pick(entry_id=1, text="First", pool_size=5), b"x", "clip.gif")
 
     # Before the first shuffle, Previous doesn't exist yet — Shuffle then
     # Post, with Post last.
@@ -508,7 +508,7 @@ def test_random_result_view_button_order_previous_shuffle_post():
 def test_random_result_view_shuffle_adds_previous_button_and_passes_exclusion():
     worker = _FakeWorker()
     fetch = _FakeFetch([_random_pick(entry_id=2, text="Second", pool_size=5)])
-    view = RandomResultView(worker, fetch, _random_pick(entry_id=1, text="First", pool_size=5), b"x", "clip.gif")
+    view = RandomResultView(999, worker, fetch, _random_pick(entry_id=1, text="First", pool_size=5), b"x", "clip.gif")
     assert view._previous_button not in view.children
 
     asyncio.run(view.shuffle.callback(_fake_interaction()))
@@ -522,7 +522,7 @@ def test_random_result_view_shuffle_adds_previous_button_and_passes_exclusion():
 def test_random_result_view_previous_steps_back_without_refetching():
     worker = _FakeWorker()
     fetch = _FakeFetch([_random_pick(entry_id=2, text="Second", pool_size=5)])
-    view = RandomResultView(worker, fetch, _random_pick(entry_id=1, text="First", pool_size=5), b"x", "clip.gif")
+    view = RandomResultView(999, worker, fetch, _random_pick(entry_id=1, text="First", pool_size=5), b"x", "clip.gif")
     asyncio.run(view.shuffle.callback(_fake_interaction()))
 
     asyncio.run(view._on_previous(_fake_interaction()))
@@ -538,7 +538,7 @@ def test_random_result_view_shuffle_after_previous_discards_stale_forward_histor
         _random_pick(entry_id=2, text="Second", pool_size=5),
         _random_pick(entry_id=3, text="Third", pool_size=5),
     ])
-    view = RandomResultView(worker, fetch, _random_pick(entry_id=1, text="First", pool_size=5), b"x", "clip.gif")
+    view = RandomResultView(999, worker, fetch, _random_pick(entry_id=1, text="First", pool_size=5), b"x", "clip.gif")
     asyncio.run(view.shuffle.callback(_fake_interaction()))  # -> Second
     asyncio.run(view._on_previous(_fake_interaction()))  # back to First
 
@@ -554,7 +554,7 @@ def test_random_result_view_accumulates_seen_entry_ids_across_shuffles():
         _random_pick(entry_id=2, text="Second", pool_size=5),
         _random_pick(entry_id=3, text="Third", pool_size=5),
     ])
-    view = RandomResultView(worker, fetch, _random_pick(entry_id=1, text="First", pool_size=5), b"x", "clip.gif")
+    view = RandomResultView(999, worker, fetch, _random_pick(entry_id=1, text="First", pool_size=5), b"x", "clip.gif")
 
     asyncio.run(view.shuffle.callback(_fake_interaction()))
     asyncio.run(view.shuffle.callback(_fake_interaction()))
@@ -568,7 +568,7 @@ def test_random_result_view_exhausted_pick_resets_seen_set_to_just_the_new_pick(
         _random_pick(entry_id=2, text="Second", pool_size=2, exhausted=True),
         _random_pick(entry_id=1, text="First again", pool_size=2),
     ])
-    view = RandomResultView(worker, fetch, _random_pick(entry_id=1, text="First", pool_size=2), b"x", "clip.gif")
+    view = RandomResultView(999, worker, fetch, _random_pick(entry_id=1, text="First", pool_size=2), b"x", "clip.gif")
 
     asyncio.run(view.shuffle.callback(_fake_interaction()))
     asyncio.run(view.shuffle.callback(_fake_interaction()))
@@ -616,6 +616,7 @@ def _make_clip_edit_view(worker) -> ClipEditView:
     # test below therefore does all of its asyncio.run()-driven work inside
     # a single wrapping coroutine, not one asyncio.run() per action.
     return ClipEditView(
+        999,
         worker,
         media_id="1",
         title="Title",
@@ -866,7 +867,7 @@ def test_clip_edit_view_click_during_in_flight_prefetch_awaits_it_without_refetc
 def test_random_result_view_shuffle_defaults_to_classic_style_and_no_format():
     worker = _FakeWorker()
     fetch = _FakeFetch([_random_pick(entry_id=2, pool_size=5)])
-    view = RandomResultView(worker, fetch, _random_pick(entry_id=1, pool_size=5), b"x", "clip.gif")
+    view = RandomResultView(999, worker, fetch, _random_pick(entry_id=1, pool_size=5), b"x", "clip.gif")
 
     asyncio.run(view.shuffle.callback(_fake_interaction()))
 
@@ -880,7 +881,7 @@ def test_random_result_view_shuffle_uses_the_given_format_and_style():
     worker = _FakeWorker()
     fetch = _FakeFetch([_random_pick(entry_id=2, pool_size=5)])
     view = RandomResultView(
-        worker, fetch, _random_pick(entry_id=1, pool_size=5), b"x", "clip.mp3",
+        999, worker, fetch, _random_pick(entry_id=1, pool_size=5), b"x", "clip.mp3",
         format="mp3", style="none",
     )
 
@@ -904,6 +905,7 @@ def _make_audio_view(worker, format=None) -> AudioClipResultView:
     # __init__ kicks off a background entries-prefetch task bound to
     # whichever loop is current when it's created.
     return AudioClipResultView(
+        999,
         worker,
         media_id="1",
         title="The Matrix",
@@ -1183,7 +1185,7 @@ def test_random_result_view_audio_shuffle_filename_uses_picked_text():
     worker.render = AsyncMock(return_value=_FakeRenderResult(format="mp3"))
     fetch = _FakeFetch([_random_pick(entry_id=2, text="I know kung fu", pool_size=5)])
     view = RandomResultView(
-        worker, fetch, _random_pick(entry_id=1, pool_size=5), b"x", "clip.mp3",
+        999, worker, fetch, _random_pick(entry_id=1, pool_size=5), b"x", "clip.mp3",
         format="mp3", style="none", kind="audio",
     )
 

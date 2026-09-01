@@ -14,10 +14,10 @@
     <p style="font-size: 12px; color: var(--text-tertiary); margin: 10px 0 0; text-align: center;">This can take a few seconds while we look at your libraries.</p>
   </form>
   <div style="display:flex; align-items:center; justify-content:space-between; margin-top:16px;">
-    <button type="button" class="btn-link" hx-get="/wizard/plex/reauth" hx-target="#wizard-panel" hx-swap="innerHTML">Not the right Plex account?</button>
+    <button type="button" class="btn-link" hx-post="/wizard/plex/reauth" hx-target="#wizard-panel" hx-swap="innerHTML">Not the right Plex account?</button>
     {% if state.wizard_return_to %}
     <a href="/settings/{{ state.wizard_return_to }}" class="btn-link">&larr; Cancel, back to Settings</a>
     {% endif %}
   </div>
-  <button type="button" class="btn-link" style="display:block; margin-top:10px;" hx-get="/wizard/connect/reset" hx-target="#wizard-panel" hx-swap="innerHTML">Use a different media server?</button>
+  <button type="button" class="btn-link" style="display:block; margin-top:10px;" hx-post="/wizard/connect/reset" hx-target="#wizard-panel" hx-swap="innerHTML">Use a different media server?</button>
 </div>
