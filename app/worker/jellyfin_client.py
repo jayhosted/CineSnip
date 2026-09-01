@@ -14,7 +14,13 @@ from app.worker.media_client import (
 
 
 def _normalize_path(path: str) -> str:
-    return path.replace("\\", "/").lower()
+    # rstrip("/"): a Locations entry and the Path an ancestor node reports
+    # for the same physical folder are identical on every server observed
+    # live (neither carries a trailing slash) — but nothing guarantees that
+    # indefinitely, and a mismatch here must not silently reject an
+    # otherwise legitimately configured library (see
+    # _configured_library_for()).
+    return path.replace("\\", "/").rstrip("/").lower()
 
 
 class JellyfinClient:
@@ -49,33 +55,67 @@ class JellyfinClient:
         ]
         self.movie_library_names = frozenset(f["Name"] for f in self._movie_folders)
         self.show_library_names = frozenset(f["Name"] for f in self._show_folders)
-        # Folder name -> its on-disk roots, used to attribute a single item
-        # fetched by ID (get_movie/get_episode/list_episodes) back to the
-        # configured library it lives under. Every other call path already
-        # knows its folder and passes the name in directly.
-        self._folder_locations = [
-            (f["Name"], list(f.get("Locations") or []))
-            for f in self._movie_folders + self._show_folders
-        ]
+        # Every library's on-disk root(s), keyed by that exact path, for
+        # every library on the server — deliberately NOT filtered to
+        # configured_names. Confirmed against a live Jellyfin server: a
+        # library's own ItemId (from /Library/VirtualFolders) never appears
+        # as an ancestor of any item — /Items/{id}/Ancestors walks plain
+        # filesystem Folder/Series/Season nodes, terminating at a Folder
+        # whose own Path is exactly one of a library's Locations entries.
+        # Matching against every library's Locations, not just configured
+        # ones, is what lets _configured_library_for() tell an unconfigured
+        # library nested under a configured one's path apart from a
+        # genuinely nested subfolder inside a configured library — an
+        # unconfigured library has its own Locations entry, which shows up
+        # as a *closer* ancestor match than the configured library's own,
+        # further-out one (pre-publication security audit finding).
+        self._library_name_by_location: dict[str, str] = {
+            _normalize_path(location): f["Name"]
+            for f in folders
+            for location in (f.get("Locations") or [])
+        }
 
-    def _library_name_for_path(self, source_path: str) -> str:
-        """Longest-prefix match of an item's own file path against each
-        configured folder's Jellyfin `Locations`, in the same spirit as
-        path_mapper.resolve_container_path(). Returns "" when nothing
-        matches — an item outside every configured library, which the
-        movie_library_names/show_library_names filters in api.py then drop.
+    def _configured_library_for(self, item_id: str, allowed_names: frozenset[str]) -> str | None:
+        """Authoritative "does this item genuinely belong to one of
+        allowed_names?" check, via Jellyfin's own filesystem ancestor chain
+        (/Items/{id}/Ancestors) — deliberately not a prefix match against
+        the item's own reported source_path (which can be empty/missing,
+        e.g. when MediaSources wasn't requested for this call).
+
+        Walks every ancestor, matching each one's own Path against every
+        library's Locations on the server (self._library_name_by_location,
+        built in __init__) — not just configured ones — and keeps the
+        match with the longest (most specific) Path. That's what makes an
+        unconfigured "Kids Movies" library nested at /media/movies/kids
+        lose to nothing: it has its own Locations entry, so it's the
+        closer/more specific ancestor match for anything under it, and
+        since it isn't in allowed_names the item is correctly rejected —
+        even though a *further-out* ancestor also matches the configured
+        "Movies" library at /media/movies. A genuine subfolder with no
+        library of its own at that path never produces a match there, so
+        the walk still finds the real (configured) owning library further
+        out. Returns None both when the item doesn't exist and when it
+        exists but isn't under any allowed library — deliberately
+        indistinguishable, so a caller can't tell an out-of-scope item from
+        a nonexistent one.
         """
-        if not source_path:
-            return ""
-        normalized = _normalize_path(source_path)
-        best_name = ""
+        response = self._http.get(f"/Items/{item_id}/Ancestors")
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+
+        best_name: str | None = None
         best_length = -1
-        for name, locations in self._folder_locations:
-            for location in locations:
-                prefix = _normalize_path(location).rstrip("/")
-                if normalized.startswith(prefix + "/") or normalized == prefix:
-                    if len(prefix) > best_length:
-                        best_name, best_length = name, len(prefix)
+        for ancestor in response.json():
+            path = ancestor.get("Path")
+            if not path:
+                continue
+            name = self._library_name_by_location.get(_normalize_path(path))
+            if name is not None and len(path) > best_length:
+                best_name, best_length = name, len(path)
+
+        if best_name is None or best_name not in allowed_names:
+            return None
         return best_name
 
     def library_sections(self) -> list[tuple[str, object]]:
@@ -196,7 +236,16 @@ class JellyfinClient:
         if response.status_code == 404:
             raise MovieNotFoundError(media_id)
         response.raise_for_status()
-        return self._to_result(response.json())
+        # Explicit, intentional scope check — same security role as
+        # PlexClient.get_movie()'s librarySectionTitle check: a media_id is
+        # opaque, unvalidated input from Discord/the web app, so without
+        # this a hand-typed id could resolve metadata/render for ANY
+        # library on the Jellyfin server, not just ones the admin
+        # configured CineSnip to expose.
+        library_name = self._configured_library_for(media_id, self.movie_library_names)
+        if library_name is None:
+            raise MovieNotFoundError(media_id)
+        return self._to_result(response.json(), library_name=library_name)
 
     def get_episode(self, show_media_id: str, season: int, episode: int) -> MovieResult:
         # Confirmed against a live Jellyfin server: /Shows/{id}/Episodes
@@ -213,9 +262,16 @@ class JellyfinClient:
             # exists but has no SxxExx" (the fallthrough below).
             raise ShowNotFoundError(show_media_id)
         response.raise_for_status()
+        # Same explicit scope check as get_movie(), against the *show's*
+        # id — every one of its episodes lives under the same library, same
+        # as Plex's get_episode() checking show.librarySectionTitle once
+        # rather than re-checking per episode.
+        library_name = self._configured_library_for(show_media_id, self.show_library_names)
+        if library_name is None:
+            raise EpisodeNotFoundError(show_media_id, season, episode)
         for item in response.json().get("Items", []):
             if item.get("ParentIndexNumber") == season and item.get("IndexNumber") == episode:
-                return self._to_result(item)
+                return self._to_result(item, library_name=library_name)
         raise EpisodeNotFoundError(show_media_id, season, episode)
 
     def list_episodes(self, show_media_id: str) -> list[MovieResult]:
@@ -225,9 +281,15 @@ class JellyfinClient:
         if response.status_code == 404:
             raise ShowNotFoundError(show_media_id)
         response.raise_for_status()
-        return [self._to_result(item) for item in response.json().get("Items", [])]
+        library_name = self._configured_library_for(show_media_id, self.show_library_names)
+        if library_name is None:
+            raise ShowNotFoundError(show_media_id)
+        return [
+            self._to_result(item, library_name=library_name)
+            for item in response.json().get("Items", [])
+        ]
 
-    def _to_result(self, item: dict, library_name: str | None = None) -> MovieResult:
+    def _to_result(self, item: dict, library_name: str) -> MovieResult:
         # `.get(key, default)` only fires its default when the key is
         # MISSING — Jellyfin returns these four as explicit JSON null under
         # ordinary conditions (an unassigned-episode special, an item on
@@ -270,12 +332,11 @@ class JellyfinClient:
             # The *configured library* this item lives in, never the series
             # title: library_name is what settings.path_mappings_for() and
             # api.py's movie/show library filters key off, exactly as
-            # PlexClient reports librarySectionTitle here. Callers that
-            # already know their folder pass it in; a single item fetched by
-            # ID is attributed from its own file path instead.
-            library_name=(
-                library_name
-                if library_name is not None
-                else self._library_name_for_path(source_path)
-            ),
+            # PlexClient reports librarySectionTitle here. Always passed in
+            # explicitly by the caller now — enumerate_section/_search_folders
+            # already know their folder, and get_movie/get_episode/
+            # list_episodes derive it authoritatively via
+            # _configured_library_for() (Jellyfin's own ancestor tree), not
+            # a path-prefix guess.
+            library_name=library_name,
         )

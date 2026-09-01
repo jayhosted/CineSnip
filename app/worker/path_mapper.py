@@ -7,9 +7,14 @@ from app.settings import PathMapping
 
 class NoPathMappingError(RuntimeError):
     def __init__(self, source_path: str):
+        # Deliberately doesn't echo the raw source_path into the message —
+        # a media server's reported path is internal/filesystem detail that
+        # must never reach a Discord/web-facing error message
+        # (pre-publication audit finding). Kept as an attribute so a caller
+        # can still log it server-side for troubleshooting.
         super().__init__(
-            f"No path mapping configured for '{source_path}'. "
-            f"Check path_mappings in config.yaml."
+            "No path mapping configured for this title's source file. "
+            "Check path_mappings in config.yaml."
         )
         self.source_path = source_path
 

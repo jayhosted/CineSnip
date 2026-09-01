@@ -313,7 +313,39 @@ def _resolve_container_path(movie: MovieResult, settings: Settings) -> str:
     try:
         return resolve_container_path(movie.source_path, mappings)
     except NoPathMappingError as exc:
+        # exc's own message is already sanitized (path_mapper.py) — this
+        # logs the raw source_path server-side, since a Discord/web-facing
+        # 422 must not echo it back (pre-publication audit finding).
+        logger.warning(
+            "No path mapping for '%s' (library=%s)", exc.source_path, movie.library_name
+        )
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _safe_runtime_error(exc: Exception, status_code: int = 500) -> HTTPException:
+    # A bare RuntimeError here (renderer/subtitle-extraction failure) may
+    # still carry container paths or other internal detail in its message
+    # even after subprocess_utils.py's own sanitizing (e.g. a renderer
+    # failing before ever reaching a subprocess call) — never put it in a
+    # Discord/web-facing error response (pre-publication audit finding).
+    # Logged in full server-side instead, where it's actually useful.
+    logger.error("Request failed: %s", exc)
+    return HTTPException(
+        status_code=status_code,
+        detail="Failed to process this request. See worker logs for details.",
+    )
+
+
+def _file_not_found_error(container_path: str) -> HTTPException:
+    # The mapped container path is internal/filesystem detail that must
+    # never reach a Discord/web-facing error response (pre-publication
+    # audit finding) — logged server-side instead, where it's actually
+    # useful for troubleshooting a stale/incomplete path mapping.
+    logger.warning("File not found on disk at mapped path: %s", container_path)
+    return HTTPException(
+        status_code=422,
+        detail="File not found on disk at the mapped path. Check path_mappings in config.yaml.",
+    )
 
 
 def _index_if_searchable(settings: Settings, movie: MovieResult, result: SubtitleResult) -> None:
@@ -480,10 +512,7 @@ def create_app(settings: Settings) -> FastAPI:
         container_path = _resolve_container_path(movie, settings)
 
         if not os.path.exists(container_path):
-            raise HTTPException(
-                status_code=422,
-                detail=f"File not found on disk at mapped path: {container_path}",
-            )
+            raise _file_not_found_error(container_path)
 
         return ResolveResponse(
             media_id=movie.media_id,
@@ -524,10 +553,7 @@ def create_app(settings: Settings) -> FastAPI:
 
         container_path = _resolve_container_path(ep, settings)
         if not os.path.exists(container_path):
-            raise HTTPException(
-                status_code=422,
-                detail=f"File not found on disk at mapped path: {container_path}",
-            )
+            raise _file_not_found_error(container_path)
 
         return ResolveResponse(
             media_id=ep.media_id,
@@ -544,10 +570,7 @@ def create_app(settings: Settings) -> FastAPI:
         container_path = _resolve_container_path(movie, settings)
 
         if not os.path.exists(container_path):
-            raise HTTPException(
-                status_code=422,
-                detail=f"File not found on disk at mapped path: {container_path}",
-            )
+            raise _file_not_found_error(container_path)
 
         rd = settings.render_defaults
         duration_s = movie.duration_ms / 1000
@@ -649,7 +672,7 @@ def create_app(settings: Settings) -> FastAPI:
                     ffmpeg_timeout=timeout,
                 )
             except (SubprocessTimeoutError, RuntimeError) as exc:
-                raise HTTPException(status_code=500, detail=str(exc)) from exc
+                raise _safe_runtime_error(exc) from exc
 
             _index_if_searchable(settings, movie, subtitle_result)
 
@@ -686,9 +709,12 @@ def create_app(settings: Settings) -> FastAPI:
                     audio_language=settings.render_defaults.audio_language,
                 )
         except RenderTimeoutError as exc:
+            # Safe to echo verbatim — SubprocessTimeoutError's message is a
+            # fixed, generic template (error_prefix + elapsed seconds), never
+            # subprocess stderr or a file path.
             raise HTTPException(status_code=504, detail=str(exc)) from exc
         except RuntimeError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            raise _safe_runtime_error(exc) from exc
 
         media_type = {
             "gif": "image/gif",
@@ -722,10 +748,7 @@ def create_app(settings: Settings) -> FastAPI:
         container_path = _resolve_container_path(movie, settings)
 
         if not os.path.exists(container_path):
-            raise HTTPException(
-                status_code=422,
-                detail=f"File not found on disk at mapped path: {container_path}",
-            )
+            raise _file_not_found_error(container_path)
 
         timeout = settings.subtitle_defaults.extraction_timeout_seconds
         try:
@@ -738,7 +761,7 @@ def create_app(settings: Settings) -> FastAPI:
                 ffmpeg_timeout=timeout,
             )
         except (SubprocessTimeoutError, RuntimeError) as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            raise _safe_runtime_error(exc) from exc
 
         _index_if_searchable(settings, movie, result)
 

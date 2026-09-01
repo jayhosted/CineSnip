@@ -10,7 +10,7 @@ def test_resolves_windows_style_path_on_first_drive():
             path_prefix="D:\\Movies", container_path="/media/movies-d"
         ),
         PathMapping(
-            path_prefix="E:\\Media\\Video\\Movies", container_path="/media/movies-e"
+            path_prefix="E:\\Media\\Movies", container_path="/media/movies-e"
         ),
     ]
     source_path = "D:\\Movies\\1917 (2019)\\1917.mkv"
@@ -26,10 +26,10 @@ def test_resolves_windows_style_path_on_second_drive():
             path_prefix="D:\\Movies", container_path="/media/movies-d"
         ),
         PathMapping(
-            path_prefix="E:\\Media\\Video\\Movies", container_path="/media/movies-e"
+            path_prefix="E:\\Media\\Movies", container_path="/media/movies-e"
         ),
     ]
-    source_path = "E:\\Media\\Video\\Movies\\12 Angry Men (1957)\\12 Angry Men.mkv"
+    source_path = "E:\\Media\\Movies\\12 Angry Men (1957)\\12 Angry Men.mkv"
 
     result = resolve_container_path(source_path, mappings)
 
@@ -111,3 +111,19 @@ def test_raises_when_no_mapping_matches():
 
     with pytest.raises(NoPathMappingError):
         resolve_container_path("Z:\\Somewhere\\Else\\film.mkv", mappings)
+
+
+def test_no_path_mapping_error_message_does_not_leak_raw_source_path():
+    # The raw source path a media server reports is internal/filesystem
+    # detail that must never reach a Discord/web-facing error message
+    # (pre-publication audit finding) — but it must still be available to
+    # the caller (e.g. for server-side logging) via the exception's own
+    # source_path attribute.
+    source_path = "Z:\\Somewhere\\Else\\Some Private Title (2020)\\film.mkv"
+
+    with pytest.raises(NoPathMappingError) as excinfo:
+        resolve_container_path(source_path, [])
+
+    assert source_path not in str(excinfo.value)
+    assert "Some Private Title" not in str(excinfo.value)
+    assert excinfo.value.source_path == source_path

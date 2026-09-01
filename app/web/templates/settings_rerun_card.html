@@ -6,7 +6,10 @@
     render defaults, subtitle matching, and cache/sync settings on the other
     tabs here are left untouched.
   </p>
-  <a href="/wizard/restart" class="btn-secondary" style="text-decoration:none; display:inline-flex;">
-    Re-run setup wizard &rarr;
-  </a>
+  <form method="post" action="/wizard/restart" style="display:inline-block;">
+    <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
+    <button type="submit" class="btn-secondary" style="display:inline-flex;">
+      Re-run setup wizard &rarr;
+    </button>
+  </form>
 </div>

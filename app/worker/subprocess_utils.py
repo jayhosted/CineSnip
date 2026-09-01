@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class SubprocessTimeoutError(RuntimeError):
@@ -37,9 +40,18 @@ async def run_and_capture(
         ) from None
 
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"{error_prefix} failed: {stderr.decode(errors='replace')}"
+        # stderr routinely echoes absolute container file paths and
+        # codec/filter diagnostics — never put it in the exception message
+        # a Discord reply or the /generate web UI ends up displaying
+        # (pre-publication audit finding). The full detail stays available
+        # server-side for troubleshooting.
+        logger.error(
+            "%s failed (exit %s): %s",
+            error_prefix,
+            proc.returncode,
+            stderr.decode(errors="replace"),
         )
+        raise RuntimeError(f"{error_prefix} failed. See worker logs for details.")
     if capture_stderr:
         return (stdout if capture_stdout else None), stderr
     return stdout if capture_stdout else None

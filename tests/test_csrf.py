@@ -152,6 +152,7 @@ def test_plex_connect_with_csrf_token_as_form_field_also_succeeds():
         "/wizard/finish",
         "/wizard/connect/reset",
         "/wizard/plex/reauth",
+        "/wizard/restart",
         "/sync/run",
     ],
 )
@@ -176,6 +177,60 @@ def test_plex_reauth_no_longer_a_bare_get():
     client = TestClient(_build_app(_configured_settings()))
     response = client.get("/wizard/plex/reauth")
     assert response.status_code == 405
+
+
+def test_wizard_restart_no_longer_a_bare_get():
+    # /wizard/restart resets in-memory wizard state — a state change, so a
+    # bare GET (no CSRF evidence possible) must not be able to trigger it
+    # (pre-publication audit finding: this was the one route violating the
+    # "GET is always side-effect-free" invariant the CSRF layer relies on).
+    client = TestClient(_build_app(_configured_settings()))
+    response = client.get("/wizard/restart", follow_redirects=False)
+    assert response.status_code == 405
+
+
+def test_wizard_restart_get_no_longer_resets_wizard_state():
+    # Behavioral proof, not just the status code: put some in-progress
+    # wizard state in place, then confirm a bare GET to /wizard/restart
+    # doesn't blank it.
+    client = TestClient(_build_app(_configured_settings()))
+    client.get("/wizard/discord")  # seeds the CSRF cookie
+    client.app.state.wizard.discord_token = "some-token"
+
+    client.get("/wizard/restart", follow_redirects=False)
+
+    assert client.app.state.wizard.discord_token == "some-token"
+
+
+def test_wizard_restart_post_with_valid_csrf_token_resets_and_redirects():
+    client = TestClient(_build_app(_configured_settings()))
+    client.get("/wizard/discord")
+    token = client.cookies.get(CSRF_COOKIE_NAME)
+    client.app.state.wizard.discord_token = "some-token"
+
+    response = client.post(
+        "/wizard/restart", data={"csrf_token": token}, follow_redirects=False
+    )
+
+    assert response.status_code in (302, 303, 307)
+    assert response.headers["location"] == "/wizard/discord"
+    assert client.app.state.wizard.discord_token is None
+
+
+def test_settings_rerun_card_carries_a_working_csrf_token():
+    # settings_rerun_card.html's "Re-run setup wizard" control must be a
+    # real <form method="post"> carrying a working token as a hidden
+    # field, the same as the "Switch to Plex/Jellyfin instead?" control.
+    client = TestClient(_build_app(_configured_settings()))
+    page = client.get("/settings/general")
+    token = client.cookies.get(CSRF_COOKIE_NAME)
+    assert token
+    assert f'value="{token}"' in page.text
+
+    response = client.post(
+        "/wizard/restart", data={"csrf_token": token}, follow_redirects=False
+    )
+    assert response.status_code in (302, 303, 307)
 
 
 # ---- Cross-origin Origin header is rejected even with a matching cookie

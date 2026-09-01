@@ -562,7 +562,7 @@ def create_web_app(
             )
         return RedirectResponse("/dashboard")
 
-    @app.get("/wizard/restart")
+    @app.post("/wizard/restart")
     async def wizard_restart(request: Request):
         # The only entry point back into a completed wizard (Section 14):
         # always starts a fresh WizardState rather than trying to prefill

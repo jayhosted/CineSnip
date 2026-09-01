@@ -242,6 +242,50 @@ def test_render_audio_format_ignores_a_style_request(tmp_path, monkeypatch):
     assert response.headers["X-Clip-Style"] == "none"
 
 
+def test_render_file_not_found_error_does_not_leak_container_path(tmp_path, monkeypatch):
+    # A stale/incomplete path mapping is a realistic, non-adversarial
+    # failure (e.g. metadata not yet re-scanned after a file move) — the
+    # container's internal mount path must not leak into the response
+    # (pre-publication audit finding).
+    settings = _settings(tmp_path)
+    # Deliberately never write movie.mkv to disk.
+    client = _client(settings, monkeypatch, "/media/movie.mkv")
+
+    response = client.post("/render", json={"media_id": "1", "timecode": "10"})
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert str(tmp_path) not in detail
+    assert "movie.mkv" not in detail
+
+
+def test_render_renderer_failure_does_not_leak_raw_error_detail(tmp_path, monkeypatch, caplog):
+    # Raw ffmpeg/gifsicle stderr (which routinely echoes container file
+    # paths and codec diagnostics) must not reach the Discord/web-facing
+    # error response, but must still be diagnosable server-side
+    # (pre-publication audit finding).
+    caplog.set_level("WARNING")
+    settings = _settings(tmp_path)
+    movie_path = tmp_path / "movie.mkv"
+    movie_path.write_bytes(b"fake")
+
+    sensitive_detail = f"{tmp_path}/movie.mkv: Invalid data found when processing input"
+
+    class _FailingRenderer:
+        async def render_clip(self, *args, **kwargs) -> bytes:
+            raise RuntimeError(f"ffmpeg gif encode failed: {sensitive_detail}")
+
+    client = _client(settings, monkeypatch, "/media/movie.mkv")
+    client.app.state.renderer = _FailingRenderer()
+
+    response = client.post("/render", json={"media_id": "1", "timecode": "10"})
+
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert sensitive_detail not in detail
+    assert str(tmp_path) not in detail
+
+
 def test_render_forwards_the_configured_audio_language_to_the_renderer(tmp_path, monkeypatch):
     # Bug fix: /render must pass settings.render_defaults.audio_language
     # through to the renderer rather than always trusting the source
