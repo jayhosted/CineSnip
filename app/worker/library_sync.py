@@ -5,6 +5,7 @@ import logging
 import os
 import random
 from dataclasses import dataclass
+from pathlib import Path
 
 from app.settings import Settings, SettingsError
 from app.worker import search_index
@@ -26,6 +27,7 @@ from app.worker.quote_index import (
 from app.worker.subtitles import (
     SubtitleSource,
     cache_path_for_guid,
+    find_sidecar_subtitle,
     get_subtitles,
     read_cached_subtitles,
 )
@@ -37,6 +39,30 @@ logger = logging.getLogger("cinesnip.library_sync")
 # entries — not config, since it's a safety-margin constant, not something
 # an installer should need to tune.
 _SPOT_CHECK_SAMPLE_SIZE = 10
+
+
+def _sidecar_now_exists(settings: Settings, item: MovieResult) -> bool:
+    """A NONE (no-subtitles-found) result caches without a freshness check —
+    no single file backs "no subtitles", so unlike SIDECAR/EMBEDDED results
+    it never self-invalidates (docs/build-notes/subtitles-and-search.md).
+    Cheap to recheck anyway: a sync pass already has item.source_path fresh
+    from its own enumerate_section() call, so this costs one filesystem
+    check (find_sidecar_subtitle — no ffmpeg, no Plex), not a live lookup.
+    Only catches a sidecar dropped in later, not a video replaced with a
+    remux that now has embedded subs — that would need a stored fingerprint
+    for NONE entries, which doesn't exist and isn't the documented escape
+    hatch (CLAUDE.md decision #7 is specifically "drop a sidecar .srt").
+    A resolution failure (e.g. path mapping changed) is treated as
+    inconclusive, not as "a sidecar exists" — stay cached rather than
+    force a reprocess neither this item nor its mapping actually earned.
+    """
+    try:
+        container_path = resolve_container_path(
+            item.source_path, settings.path_mappings_for(item.library_name)
+        )
+    except NoPathMappingError:
+        return False
+    return find_sidecar_subtitle(Path(container_path)) is not None
 
 
 @dataclass
@@ -87,21 +113,42 @@ async def sync_one_title(
     class of bug api.py's search_quote_extend already fixed once for its
     own no-subtitle check; this closes the matching gap here). Omitted
     entirely by scripts/build_full_cache.py, which falls back to the
-    original per-item DB check.
+    original per-item DB check (and its own `--force` if a full recheck
+    is ever wanted there).
+
+    A guid in `no_subtitle_guids` still gets one cheap recheck
+    (`_sidecar_now_exists`) before being trusted as still NONE — a NONE
+    result never self-invalidates like SIDECAR/EMBEDDED do (no fingerprint
+    backs "no subtitles found"), so a sidecar dropped in after the fact
+    would otherwise be invisible forever. Costs one filesystem check per
+    NONE title, using item.source_path already fresh from this pass's own
+    enumerate_section() — no extra Plex calls.
     """
     db_path = settings.quote_index_db_path
+    found_new_sidecar = False
 
     if not force:
         if known_guids is not None and no_subtitle_guids is not None:
-            already_indexed = item.guid in known_guids or item.guid in no_subtitle_guids
+            if item.guid in known_guids:
+                return f"CACHED (already have it): {item.title}"
+            if item.guid in no_subtitle_guids:
+                found_new_sidecar = await asyncio.to_thread(_sidecar_now_exists, settings, item)
+                if not found_new_sidecar:
+                    return f"CACHED (already have it): {item.title}"
+            # Either not previously seen at all, or it was marked NONE and
+            # a sidecar has since appeared — either way, fall through to
+            # real processing below instead of trusting the stale NONE.
         else:
             already_indexed = await asyncio.to_thread(
                 lambda: search_index.has_title(db_path, item.guid) or is_no_subtitle_title(db_path, item.guid)
             )
-        if already_indexed:
-            return f"CACHED (already have it): {item.title}"
+            if already_indexed:
+                return f"CACHED (already have it): {item.title}"
 
-        if cache_path_for_guid(settings.cache_dir, item.guid).exists():
+        # Skipped when a fresh sidecar is why we're here — the legacy JSON
+        # cache (if any lingers on disk) would still say NONE from before
+        # that sidecar existed, silently undoing the recheck above.
+        if not found_new_sidecar and cache_path_for_guid(settings.cache_dir, item.guid).exists():
             cached = await asyncio.to_thread(read_cached_subtitles, settings.cache_dir, item.guid)
             if cached is not None:
                 if cached.source is SubtitleSource.NONE:

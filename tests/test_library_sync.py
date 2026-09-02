@@ -1,6 +1,7 @@
 import asyncio
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 from app.settings import LibraryConfig, PathMapping, Settings
 from app.worker import quote_index, search_index
@@ -278,6 +279,95 @@ def test_sync_one_title_skips_already_indexed_no_subtitle_title(tmp_path, monkey
     outcome = asyncio.run(sync_one_title(settings, item))
 
     assert outcome.startswith("CACHED (already have it)")
+
+
+def test_sync_one_title_bulk_path_stays_cached_when_no_sidecar_appeared(tmp_path, monkeypatch):
+    """The known_guids/no_subtitle_guids bulk-set path (used by
+    sync_library's per-item loop) still needs to recheck a NONE title for a
+    newly-appeared sidecar — but with none present, it must stay a cheap
+    skip, not fall through to a real (re-)extraction attempt."""
+    settings = _settings(tmp_path)
+    item = _item("guid-1", "101")
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("get_subtitles should not be called when no sidecar appeared")
+    monkeypatch.setattr("app.worker.library_sync.get_subtitles", _boom)
+
+    outcome = asyncio.run(
+        sync_one_title(
+            settings, item, known_guids=frozenset(), no_subtitle_guids=frozenset({"guid-1"})
+        )
+    )
+
+    assert outcome.startswith("CACHED (already have it)")
+
+
+def test_sync_one_title_bulk_path_reprocesses_when_sidecar_appeared(tmp_path, monkeypatch):
+    """The one behavior this feature exists for: a title previously cached
+    as NONE, with a sidecar .srt that has since appeared next to its video,
+    must be picked back up on the next sync pass rather than staying
+    permanently skipped."""
+    settings = _settings(tmp_path)
+    item = _item("guid-1", "101")
+
+    media_root = settings.libraries[0].path_mappings[0].container_path
+    (Path(media_root) / "film.mkv").write_bytes(b"x")
+    (Path(media_root) / "film.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n", encoding="utf-8")
+
+    found_entries = [SubtitleEntry(index=1, start=0.0, end=1.0, text="Hi")]
+
+    async def _fake_get_subtitles(movie, container_video_path, cache_dir, db_path, ffprobe_timeout=180.0, ffmpeg_timeout=180.0):
+        search_index.upsert_title(
+            db_path, movie.guid, movie.media_id, movie.title, movie.library_name,
+            "sidecar", container_video_path, None, found_entries, None,
+        )
+        return SubtitleResult(guid=movie.guid, source=SubtitleSource.SIDECAR, entries=found_entries)
+
+    monkeypatch.setattr("app.worker.library_sync.get_subtitles", _fake_get_subtitles)
+
+    outcome = asyncio.run(
+        sync_one_title(
+            settings, item, known_guids=frozenset(), no_subtitle_guids=frozenset({"guid-1"})
+        )
+    )
+
+    assert outcome.startswith("OK")
+    assert search_index.has_title(settings.quote_index_db_path, "guid-1") is True
+
+
+def test_sync_one_title_bulk_path_ignores_stale_legacy_json_when_sidecar_appeared(tmp_path, monkeypatch):
+    """A lingering legacy JSON cache file (from before the search_index
+    migration) still says NONE from before the sidecar existed — the
+    recheck must not let that stale on-disk verdict silently override a
+    freshly-found sidecar."""
+    settings = _settings(tmp_path)
+    item = _item("guid-1", "101")
+    _write_legacy_cache_file(settings.cache_dir, SubtitleResult(guid="guid-1", source=SubtitleSource.NONE, entries=[]))
+
+    media_root = settings.libraries[0].path_mappings[0].container_path
+    (Path(media_root) / "film.mkv").write_bytes(b"x")
+    (Path(media_root) / "film.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n", encoding="utf-8")
+
+    found_entries = [SubtitleEntry(index=1, start=0.0, end=1.0, text="Hi")]
+
+    async def _fake_get_subtitles(movie, container_video_path, cache_dir, db_path, ffprobe_timeout=180.0, ffmpeg_timeout=180.0):
+        search_index.upsert_title(
+            db_path, movie.guid, movie.media_id, movie.title, movie.library_name,
+            "sidecar", container_video_path, None, found_entries, None,
+        )
+        return SubtitleResult(guid=movie.guid, source=SubtitleSource.SIDECAR, entries=found_entries)
+
+    monkeypatch.setattr("app.worker.library_sync.get_subtitles", _fake_get_subtitles)
+
+    outcome = asyncio.run(
+        sync_one_title(
+            settings, item, known_guids=frozenset(), no_subtitle_guids=frozenset({"guid-1"})
+        )
+    )
+
+    assert outcome.startswith("OK")
+    assert search_index.has_title(settings.quote_index_db_path, "guid-1") is True
+    assert is_no_subtitle_title(settings.quote_index_db_path, "guid-1") is False
 
 
 def test_sync_one_title_skips_already_indexed_search_index_title(tmp_path, monkeypatch):
