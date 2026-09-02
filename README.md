@@ -12,6 +12,20 @@ one Docker container. Searches across every library you configure.
 - A running Plex or Jellyfin server, reachable from the machine running Docker
 - The films you want to clip already in a movie library on that server
 
+## Get the code
+
+CineSnip isn't published as a prebuilt image — you build it locally from a
+clone of this repo, on the machine running Docker:
+
+```bash
+git clone https://github.com/jayhosted/CineSnip.git
+cd CineSnip
+```
+
+(No `git`? Use this page's **Code → Download ZIP** button instead, then
+extract it and `cd` into the extracted folder.) Every command from here on
+assumes you're inside that folder.
+
 ## Choosing a media server: Plex or Jellyfin
 
 CineSnip talks to **one** media server per install, chosen by `media_server`
