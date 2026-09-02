@@ -37,13 +37,6 @@ SUBTITLES_TIMEOUT_SECONDS = 480.0
 # — TV episode files are far smaller than a feature-length UHD remux).
 SEARCH_EPISODES_TIMEOUT_SECONDS = 900.0
 
-# Must exceed subtitle_defaults.extraction_timeout_seconds (300s default),
-# same reasoning as RESOLVE_QUOTE_TIMEOUT_SECONDS above — a single extend
-# batch does up to library_extend_cap cold extractions sequentially, but
-# httpx's read timeout applies per-chunk (time between NDJSON lines), not
-# to the whole request, so this only needs to cover one title's worst case.
-SEARCH_QUOTE_EXTEND_TIMEOUT_SECONDS = 480.0
-
 # /random-line/{media_id} (/snip movie's random-pick path) can trigger the
 # same cold-cache single-title extraction as /resolve-quote.
 RANDOM_LINE_TIMEOUT_SECONDS = 480.0
@@ -161,17 +154,19 @@ class RandomQuoteResult:
 
 @dataclass
 class LibrarySearchExtendEvent:
-    type: str  # "cached" | "scanning" | "progress" | "final"
+    # "cached" | "final" — /search-quote-extend is cache-only (library_sync
+    # is solely responsible for keeping quote_index.db current); it used to
+    # also emit "scanning"/"progress" for an on-demand live-extend step,
+    # removed after real measurement showed it could collide with
+    # library_sync's own concurrent pass over the same library.
+    type: str
     matches: list[LibraryQuoteMatchResult] | None = None
     confident_score: float | None = None
     min_score: float | None = None
-    index: int | None = None
-    total: int | None = None
-    title: str | None = None
+    # Always None now — kept so the bot's existing handling (which already
+    # only shows the "Search N more" button on a truthy value) needs no
+    # changes.
     remaining_uncached: int | None = None
-    # Present (True/False) alongside matches on "cached"/"final" events;
-    # absent on "scanning"/"progress" events, same as confident_score/
-    # min_score above.
     truncated: bool | None = None
 
 
@@ -302,12 +297,7 @@ class WorkerClient:
         return RandomQuoteResult(**response.json())
 
     async def search_quote_extend(self, quote: str) -> AsyncIterator[LibrarySearchExtendEvent]:
-        async with self._client.stream(
-            "GET",
-            "/search-quote-extend",
-            params={"quote": quote},
-            timeout=SEARCH_QUOTE_EXTEND_TIMEOUT_SECONDS,
-        ) as response:
+        async with self._client.stream("GET", "/search-quote-extend", params={"quote": quote}) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
                 if not line:

@@ -2194,7 +2194,6 @@ class LibrarySearchView(_InvokerOnlyView):
         cog: "GifCog",
         quote: str,
         matches: list[LibraryQuoteMatchResult],
-        remaining_uncached: int | None = None,
         description: str = "Pick a film below to generate a clip from that line.",
         truncated: bool = False,
         format: str | None = None,
@@ -2220,18 +2219,6 @@ class LibrarySearchView(_InvokerOnlyView):
         self._add_select()
         if len(matches) > _PAGE_SIZE:
             self._add_page_buttons()
-
-        # remaining_uncached is only ever a real int when Tier 2 (extend)
-        # actually ran and hit its cap — None (extend didn't run, e.g.
-        # library_sync disabled) or 0 (fully covered) both mean no button.
-        if remaining_uncached:
-            more_button = discord.ui.Button(
-                label=f"🔍 Search {remaining_uncached} more",
-                style=discord.ButtonStyle.secondary,
-                row=2,
-            )
-            more_button.callback = self._on_search_more
-            self.add_item(more_button)
 
     def _total_pages(self) -> int:
         return max(1, (len(self._matches) + _PAGE_SIZE - 1) // _PAGE_SIZE)
@@ -2310,13 +2297,6 @@ class LibrarySearchView(_InvokerOnlyView):
 
     async def _on_next(self, interaction: discord.Interaction) -> None:
         await self._change_page(interaction, 1)
-
-    async def _on_search_more(self, interaction: discord.Interaction) -> None:
-        self.stop()
-        await interaction.response.defer()
-        await self._cog._run_library_search(
-            interaction, self._quote, format=self._format, kind=self._kind
-        )
 
     async def _on_select(self, interaction: discord.Interaction) -> None:
         if self._select is None:
@@ -2669,102 +2649,27 @@ class GifCog(commands.Cog):
         format: str | None = None,
         kind: Literal["clip", "audio"] = "clip",
     ) -> None:
-        # Shared by /snip search itself, /snip audio's title-less path
-        # (issue #6 follow-up), and LibrarySearchView's "Search N more"
-        # button — all stream the same worker endpoint into the same
-        # message, just from different entry points (slash command vs.
-        # component interaction), both already deferred by their caller.
-        last_progress_edit = 0.0
-        cached_matches: list[LibraryQuoteMatchResult] = []
-        cached_truncated = False
+        # Shared by /snip search itself and /snip audio's title-less path
+        # (issue #6 follow-up) — both already deferred by their caller.
+        # search_quote_extend() is cache-only (library_sync is solely
+        # responsible for keeping quote_index.db current), so this is now
+        # a single fast round-trip rather than a live-updating stream —
+        # no interim "searching..." edit needed before the result lands.
         final_event = None
-        interaction_dead = False
-
-        async def _safe_edit(**kwargs) -> bool:
-            # A capped batch of extend work can run well past Discord's
-            # ~15-minute interaction-token lifetime — once
-            # edit_original_response() starts raising discord.HTTPException
-            # (token expired), every further edit will too, so log once and
-            # signal the caller to stop trying rather than let it crash the
-            # coroutine. The worker-side extraction already persists to the
-            # cache regardless of whether the bot is still listening, so
-            # abandoning the loop here is correct, not lossy.
-            nonlocal interaction_dead
-            try:
-                await interaction.edit_original_response(**kwargs)
-                return True
-            except discord.HTTPException as exc:
-                logger.warning(
-                    "search-quote-extend: interaction token died mid-stream, "
-                    "abandoning further updates: %s", exc,
-                )
-                interaction_dead = True
-                return False
-
         try:
             async for event in self.bot.worker.search_quote_extend(quote):
-                if event.type == "cached":
-                    cached_matches = event.matches or []
-                    cached_truncated = event.truncated or False
-                    if cached_matches:
-                        # The "still searching" status lives in `content`
-                        # (above the embed), not buried in the embed's own
-                        # description below its title — a fast extend (e.g.
-                        # a sidecar-subtitle title needing no ffmpeg) can
-                        # replace this within a second or two, and content
-                        # is what a user's eye actually lands on first.
-                        ok = await _safe_edit(
-                            content="🔍 **Still searching the rest of the library...** 🔍 Results below will update.",
-                            embed=_library_results_embed(
-                                quote, cached_matches[:_PAGE_SIZE],
-                                description="Results so far — the picker below appears once the search finishes.",
-                            ),
-                            view=None,
-                        )
-                    else:
-                        ok = await _safe_edit(
-                            content="🔍 **Searching the rest of the library...** 🔍 No cached matches yet.",
-                            embed=None,
-                            view=None,
-                        )
-                    if not ok:
-                        break
-                elif event.type == "scanning":
-                    # Enumerating the whole movie library against live Plex
-                    # is the one real gap in this stream with no other
-                    # signal — on a library of a thousand-plus titles it can
-                    # take several seconds on its own, before any title is
-                    # even looked at yet. Only touches `content` (same as
-                    # "progress"), leaving whatever embed "cached" set alone.
-                    ok = await _safe_edit(
-                        content="🔍 **Checking the library for new titles...** 🔍"
-                    )
-                    if not ok:
-                        break
-                elif event.type == "progress":
-                    now = asyncio.get_event_loop().time()
-                    if now - last_progress_edit >= 2.0:
-                        last_progress_edit = now
-                        ok = await _safe_edit(
-                            content=f"🔍 **Searching the rest of the library...** 🔍 ({event.index}/{event.total}) — {event.title}"
-                        )
-                        if not ok:
-                            break
-                elif event.type == "final":
+                if event.type == "final":
                     final_event = event
         except httpx.HTTPError as exc:
-            await _safe_edit(
+            await interaction.edit_original_response(
                 content=f"Couldn't search the library: {_error_detail(exc)}", embed=None, view=None
             )
             return
 
-        if interaction_dead:
-            return
-
-        final_matches = final_event.matches if final_event else cached_matches
+        final_matches = final_event.matches if final_event else []
         if not final_matches:
             command = "/snip audio" if kind == "audio" else "/snip movie"
-            await _safe_edit(
+            await interaction.edit_original_response(
                 content=f"No matches in what CineSnip has indexed so far. Try `{command}` on a "
                 "specific film first to add it, or rephrase your quote.",
                 embed=None,
@@ -2772,19 +2677,16 @@ class GifCog(commands.Cog):
             )
             return
 
-        remaining_uncached = final_event.remaining_uncached if final_event else None
-        final_truncated = (final_event.truncated if final_event else cached_truncated) or False
         view = LibrarySearchView(
             interaction.user.id,
             self,
             quote,
             final_matches,
-            remaining_uncached=remaining_uncached,
-            truncated=final_truncated,
+            truncated=(final_event.truncated if final_event else False) or False,
             format=format,
             kind=kind,
         )
-        await _safe_edit(
+        await interaction.edit_original_response(
             content=None,
             embed=view.embed(),
             view=view,

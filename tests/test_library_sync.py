@@ -330,12 +330,14 @@ def test_sync_library_shows_current_title_while_item_still_in_flight(tmp_path, m
 
     real_sync_one_title = library_sync_module.sync_one_title
 
-    async def _spy(settings, item, *, force=False):
+    async def _spy(settings, item, *, force=False, known_guids=None, no_subtitle_guids=None):
         if item.title == "Film Two":
             progress = quote_index.get_sync_progress(settings.quote_index_db_path)
             seen_mid_flight["current_title"] = progress.current_title
             seen_mid_flight["processed"] = progress.processed
-        return await real_sync_one_title(settings, item, force=force)
+        return await real_sync_one_title(
+            settings, item, force=force, known_guids=known_guids, no_subtitle_guids=no_subtitle_guids
+        )
 
     monkeypatch.setattr(library_sync_module, "sync_one_title", _spy)
 
@@ -360,7 +362,7 @@ def test_run_library_sync_once_resyncs_library_with_no_persisted_count_even_if_u
     assert quote_index.get_library_item_count(settings.quote_index_db_path, "Movies") is None
 
     class _PlexWithSections(_FakePlex):
-        def current_section_updated_ats(self):
+        def current_section_updated_ats(self, names=None):
             return {"Movies": 999}  # unchanged from stored value
 
         def library_sections(self):
@@ -388,7 +390,7 @@ def test_run_library_sync_once_resets_status_to_idle_on_completion(tmp_path):
     settings = _settings(tmp_path)
 
     class _PlexWithSections(_FakePlex):
-        def current_section_updated_ats(self):
+        def current_section_updated_ats(self, names=None):
             return {"Movies": 999}
 
         def library_sections(self):
@@ -405,7 +407,7 @@ def test_run_library_sync_once_resets_status_even_on_plex_error(tmp_path):
     settings = _settings(tmp_path)
 
     class _RaisingPlex:
-        def current_section_updated_ats(self):
+        def current_section_updated_ats(self, names=None):
             raise ConnectionError("plex unreachable")
 
     asyncio.run(run_library_sync_once(settings, _RaisingPlex()))

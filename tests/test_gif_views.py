@@ -255,12 +255,6 @@ def test_quote_match_view_per_match_title_follows_selection():
 
 
 class _FakeCog:
-    def __init__(self):
-        self.searched_again = None
-
-    async def _run_library_search(self, interaction, quote, format=None, kind="clip"):
-        self.searched_again = (quote, format, kind)
-
     async def _generate(
         self, interaction, film, quote, timecode, end_timecode, format,
         preferred_start=None, kind="clip",
@@ -383,7 +377,7 @@ def test_library_search_view_previous_before_first_page_is_a_noop():
 
 def test_library_search_view_component_rows_stable_across_page_change():
     matches = [_library_match(i) for i in range(20)]
-    view = LibrarySearchView(999, _FakeCog(), "quote", matches, remaining_uncached=5)
+    view = LibrarySearchView(999, _FakeCog(), "quote", matches)
 
     def rows():
         return {
@@ -395,20 +389,17 @@ def test_library_search_view_component_rows_stable_across_page_change():
     assert before["select"] == 0
     assert before["◀ Previous"] == 1
     assert before["Next ▶"] == 1
-    assert before["🔍 Search 5 more"] == 2
 
     asyncio.run(view._on_next(_fake_interaction()))
 
     after = rows()
-    # Finding 3: the "Search N more" button must keep its own row after the
-    # prev/next buttons are torn down and rebuilt on a page change.
     assert after == before
 
 
 # LibrarySearchView's format/kind (issue #6 follow-up: /snip audio's
-# title-less path reuses this same cross-title picker) — a selection or
-# "Search N more" click must carry the audio format/kind through rather
-# than silently reverting to the gif/"clip" defaults.
+# title-less path reuses this same cross-title picker) — a selection must
+# carry the audio format/kind through rather than silently reverting to the
+# gif/"clip" defaults.
 
 
 def test_library_search_view_select_forwards_format_and_kind():
@@ -420,16 +411,6 @@ def test_library_search_view_select_forwards_format_and_kind():
     asyncio.run(view._on_select(_fake_interaction()))
 
     assert cog.generated == (str(1), 1.0, "mp3", "audio")
-
-
-def test_library_search_view_search_more_forwards_format_and_kind():
-    matches = [_library_match(i) for i in range(3)]
-    cog = _FakeCog()
-    view = LibrarySearchView(999, cog, "quote", matches, format="mp3", kind="audio")
-
-    asyncio.run(view._on_search_more(_fake_interaction()))
-
-    assert cog.searched_again == ("quote", "mp3", "audio")
 
 
 def test_library_search_view_defaults_to_gif_format_and_clip_kind():

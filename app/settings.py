@@ -153,11 +153,6 @@ class QuoteMatchDefaults(BaseModel):
     # can reach into one title (and how much matching work happens per
     # title) rather than controlling diversity itself.
     library_per_title_limit: int = 3
-    # /search-quote-extend only: max not-yet-cached movie titles a single
-    # extending search will extract+cache before stopping and reporting
-    # remaining_uncached for a possible follow-up "search N more" call —
-    # keeps one request bounded in time regardless of library size.
-    library_extend_cap: int = 25
     # /snip movie and /snip tv's random-pick path (no quote/timecode given):
     # a line under this many words is excluded from the pick, so a random
     # clip doesn't land on filler like "Okay." or "Yeah." Not applied to

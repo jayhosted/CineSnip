@@ -42,12 +42,11 @@ def test_search_quote_extend_parses_all_event_types():
             ],
             "confident_score": 85.0, "min_score": 50.0,
         },
-        {"type": "progress", "index": 1, "total": 3, "title": "Uncached Film"},
         {
             "type": "final",
             "matches": [],
             "confident_score": 85.0, "min_score": 50.0,
-            "remaining_uncached": 2,
+            "remaining_uncached": None,
         },
     ]
 
@@ -60,15 +59,14 @@ def test_search_quote_extend_parses_all_event_types():
 
     received = asyncio.run(_collect_events("hello", client))
 
-    assert [e.type for e in received] == ["cached", "progress", "final"]
+    assert [e.type for e in received] == ["cached", "final"]
     assert isinstance(received[0].matches[0], LibraryQuoteMatchResult)
     assert received[0].matches[0].title == "Film"
-    assert received[1].index == 1 and received[1].total == 3 and received[1].title == "Uncached Film"
-    assert received[2].remaining_uncached == 2
-    assert received[2].matches == []
+    assert received[1].remaining_uncached is None
+    assert received[1].matches == []
 
 
-def test_search_quote_extend_final_remaining_uncached_null_when_sync_disabled():
+def test_search_quote_extend_final_remaining_uncached_always_null():
     events = [
         {"type": "cached", "matches": [], "confident_score": 85.0, "min_score": 50.0},
         {"type": "final", "matches": [], "confident_score": 85.0, "min_score": 50.0, "remaining_uncached": None},

@@ -147,9 +147,6 @@ def test_search_episodes_quote_endpoint_no_matches_is_empty_not_error(tmp_path, 
 import json
 
 from app.settings import LibraryConfig, PathMapping, QuoteMatchDefaults
-from app.worker import library_sync as library_sync_module
-from app.worker.quote_index import upsert_no_subtitle_title
-from app.worker.subtitles import SubtitleResult, SubtitleSource
 # SubtitleEntry is already imported at the top of this file (see the
 # existing `from app.worker.subtitles import SubtitleEntry` import used by
 # `_write_title`) — reuse it, don't re-import under a different name.
@@ -168,10 +165,7 @@ def _movie_item(guid, media_id, title="Film", library_name="Movies", source_path
     )
 
 
-def _settings_with_sync(tmp_path, enabled: bool, cap: int | None = None, mount_root=None) -> Settings:
-    kwargs = {}
-    if cap is not None:
-        kwargs["quote_match"] = QuoteMatchDefaults(library_extend_cap=cap)
+def _settings_with_sync(tmp_path, enabled: bool, mount_root=None) -> Settings:
     libraries = []
     if mount_root is not None:
         libraries = [
@@ -187,7 +181,6 @@ def _settings_with_sync(tmp_path, enabled: bool, cap: int | None = None, mount_r
         cache_dir=tmp_path / "cache",
         libraries=libraries,
         library_sync={"enabled": enabled},
-        **kwargs,
     )
 
 
@@ -195,14 +188,29 @@ def _ndjson_lines(resp) -> list[dict]:
     return [json.loads(line) for line in resp.text.strip().split("\n") if line]
 
 
-def test_search_quote_extend_stays_cached_only_when_sync_disabled(tmp_path, monkeypatch):
-    settings = _settings_with_sync(tmp_path, enabled=False)
+def test_search_quote_extend_is_cache_only(tmp_path, monkeypatch):
+    """/search-quote-extend never touches Plex — library_sync (the 24h
+    scheduled pass or a manual "Sync now") is solely responsible for
+    keeping quote_index.db current. A title enumerate_section() would find
+    live on Plex but that isn't cached yet must NOT appear, and Plex must
+    never be called at all — verified by making enumerate_section raise if
+    it's ever reached.
+    """
+    settings = _settings_with_sync(tmp_path, enabled=True)
     _write_title(
         settings.quote_index_db_path,
         "guid-1", 101, "Monty Python", "Movies",
         ["Nobody expects the Spanish Inquisition!"],
     )
-    fake_plex = _FakePlexClient(settings, movie_items=[_movie_item("guid-2", 102, "Uncached Film")])
+
+    class _NoPlexCallsAllowed(_FakePlexClient):
+        def enumerate_section(self, section):
+            raise AssertionError("search-quote-extend must never enumerate Plex")
+
+        def current_section_updated_ats(self, names=None):
+            raise AssertionError("search-quote-extend must never check Plex for changes")
+
+    fake_plex = _NoPlexCallsAllowed(settings, movie_items=[_movie_item("guid-2", 102, "Uncached Film")])
     client = _client(settings, monkeypatch, fake_plex)
 
     resp = client.get("/search-quote-extend", params={"quote": "nobody expects"})
@@ -213,278 +221,6 @@ def test_search_quote_extend_stays_cached_only_when_sync_disabled(tmp_path, monk
     assert events[0]["matches"][0]["title"] == "Monty Python"
     assert events[1]["remaining_uncached"] is None
     assert events[1]["matches"] == events[0]["matches"]
-
-
-def test_search_quote_extend_short_circuits_when_nothing_uncached(tmp_path, monkeypatch):
-    settings = _settings_with_sync(tmp_path, enabled=True)
-    _write_title(
-        settings.quote_index_db_path,
-        "guid-1", 101, "Monty Python", "Movies",
-        ["Nobody expects the Spanish Inquisition!"],
-    )
-    fake_plex = _FakePlexClient(settings, movie_items=[_movie_item("guid-1", 101, "Monty Python")])
-    client = _client(settings, monkeypatch, fake_plex)
-
-    resp = client.get("/search-quote-extend", params={"quote": "nobody expects"})
-
-    events = _ndjson_lines(resp)
-    assert [e["type"] for e in events] == ["cached", "scanning", "final"]
-    assert events[2]["remaining_uncached"] == 0
-
-
-def test_search_quote_extend_skips_titles_already_marked_no_subtitle(tmp_path, monkeypatch):
-    settings = _settings_with_sync(tmp_path, enabled=True)
-    upsert_no_subtitle_title(settings.quote_index_db_path, "guid-2", "102", "Silent Film", "Movies")
-    fake_plex = _FakePlexClient(settings, movie_items=[_movie_item("guid-2", 102, "Silent Film")])
-    client = _client(settings, monkeypatch, fake_plex)
-
-    resp = client.get("/search-quote-extend", params={"quote": "anything"})
-
-    events = _ndjson_lines(resp)
-    assert [e["type"] for e in events] == ["cached", "scanning", "final"]
-    assert events[2]["remaining_uncached"] == 0
-
-
-def test_search_quote_extend_extracts_uncached_titles_up_to_cap(tmp_path, monkeypatch):
-    mount_root = tmp_path / "media"
-    mount_root.mkdir()
-    (mount_root / "film.mkv").write_bytes(b"x")
-    settings = _settings_with_sync(tmp_path, enabled=True, cap=1, mount_root=mount_root)
-
-    found_entries = [
-        SubtitleEntry(index=1, start=0.0, end=2.0, text="Nobody expects the Spanish Inquisition!")
-    ]
-
-    async def _fake_get_subtitles(movie, container_video_path, cache_dir, db_path, ffprobe_timeout=180.0, ffmpeg_timeout=180.0):
-        search_index.upsert_title(
-            db_path, movie.guid, movie.media_id, movie.title, movie.library_name,
-            "sidecar", None, None, found_entries, None,
-        )
-        return SubtitleResult(guid=movie.guid, source=SubtitleSource.SIDECAR, entries=found_entries)
-
-    monkeypatch.setattr(library_sync_module, "get_subtitles", _fake_get_subtitles)
-
-    fake_plex = _FakePlexClient(
-        settings,
-        movie_items=[
-            _movie_item("guid-1", 101, "Monty Python", source_path="D:\\Movies\\film.mkv"),
-            _movie_item("guid-2", 102, "Uncached Film Two", source_path="D:\\Movies\\missing.mkv"),
-        ],
-    )
-    client = _client(settings, monkeypatch, fake_plex)
-
-    resp = client.get("/search-quote-extend", params={"quote": "nobody expects"})
-
-    events = _ndjson_lines(resp)
-    types = [e["type"] for e in events]
-    assert types == ["cached", "scanning", "progress", "final"]
-    assert events[0]["matches"] == []
-    assert events[2]["title"] == "Monty Python"
-    assert events[2]["index"] == 1
-    assert events[2]["total"] == 1
-    final = events[3]
-    assert final["remaining_uncached"] == 1
-    assert final["matches"][0]["title"] == "Monty Python"
-    assert search_index.has_title(settings.quote_index_db_path, "guid-1")
-
-
-def test_search_quote_extend_does_not_permanently_mark_a_failed_extraction(tmp_path, monkeypatch):
-    mount_root = tmp_path / "media"
-    mount_root.mkdir()
-    (mount_root / "film.mkv").write_bytes(b"x")
-    settings = _settings_with_sync(tmp_path, enabled=True, mount_root=mount_root)
-
-    async def _boom(movie, container_video_path, cache_dir, db_path, ffprobe_timeout=180.0, ffmpeg_timeout=180.0):
-        raise RuntimeError("ffmpeg exploded")
-
-    monkeypatch.setattr(library_sync_module, "get_subtitles", _boom)
-
-    fake_plex = _FakePlexClient(
-        settings, movie_items=[_movie_item("guid-1", 101, "Broken Film", source_path="D:\\Movies\\film.mkv")]
-    )
-    client = _client(settings, monkeypatch, fake_plex)
-
-    resp = client.get("/search-quote-extend", params={"quote": "anything"})
-
-    events = _ndjson_lines(resp)
-    assert [e["type"] for e in events] == ["cached", "scanning", "progress", "final"]
-    # A transient extraction failure must not become a permanent negative
-    # cache entry — it needs to be retried on a future extend call.
-    assert not search_index.has_title(settings.quote_index_db_path, "guid-1")
-    from app.worker.quote_index import is_no_subtitle_title
-    assert not is_no_subtitle_title(settings.quote_index_db_path, "guid-1")
-
-
-def test_search_quote_extend_treats_plex_enumeration_failure_as_empty_for_that_library(tmp_path, monkeypatch):
-    settings = _settings_with_sync(tmp_path, enabled=True)
-    _write_title(
-        settings.quote_index_db_path,
-        "guid-1", 101, "Monty Python", "Movies",
-        ["Nobody expects the Spanish Inquisition!"],
-    )
-
-    class _RaisingPlex(_FakePlexClient):
-        def enumerate_section(self, section):
-            raise RuntimeError("Plex unreachable")
-
-    fake_plex = _RaisingPlex(settings)
-    client = _client(settings, monkeypatch, fake_plex)
-
-    resp = client.get("/search-quote-extend", params={"quote": "nobody expects"})
-
-    events = _ndjson_lines(resp)
-    assert [e["type"] for e in events] == ["cached", "scanning", "final"]
-    assert events[2]["remaining_uncached"] == 0
-
-
-def test_search_quote_extend_skip_does_not_consume_cap_budget(tmp_path, monkeypatch):
-    """A SKIP outcome (no path mapping, file missing) is just a cheap path
-    check, not an extraction — it must not eat into `cap`, or a library
-    with many perpetually-SKIP titles (e.g. no path mapping configured for
-    one section, CLAUDE.md Section 3's documented fallback shape) would
-    make "Search N more" loop forever on the same head of the list without
-    ever reaching a title that could actually be processed.
-    """
-    mount_root = tmp_path / "media"
-    mount_root.mkdir()
-    (mount_root / "film.mkv").write_bytes(b"x")
-    settings = _settings_with_sync(tmp_path, enabled=True, cap=1, mount_root=mount_root)
-
-    found_entries = [
-        SubtitleEntry(index=1, start=0.0, end=2.0, text="Nobody expects the Spanish Inquisition!")
-    ]
-
-    async def _fake_get_subtitles(movie, container_video_path, cache_dir, db_path, ffprobe_timeout=180.0, ffmpeg_timeout=180.0):
-        search_index.upsert_title(
-            db_path, movie.guid, movie.media_id, movie.title, movie.library_name,
-            "sidecar", None, None, found_entries, None,
-        )
-        return SubtitleResult(guid=movie.guid, source=SubtitleSource.SIDECAR, entries=found_entries)
-
-    monkeypatch.setattr(library_sync_module, "get_subtitles", _fake_get_subtitles)
-
-    # First item in enumeration order has no path mapping covering its
-    # source_path (mount_root's mapping only covers "D:\Movies") — a SKIP.
-    # Second item does have a matching mapping and an on-disk file — a real,
-    # extractable title. With cap=1, the SKIP must not use up the one slot:
-    # the extractable title should still be processed in this same call.
-    fake_plex = _FakePlexClient(
-        settings,
-        movie_items=[
-            _movie_item("guid-skip", 100, "Unmapped Film", source_path="E:\\Other\\weird.mkv"),
-            _movie_item("guid-1", 101, "Monty Python", source_path="D:\\Movies\\film.mkv"),
-        ],
-    )
-    client = _client(settings, monkeypatch, fake_plex)
-
-    resp = client.get("/search-quote-extend", params={"quote": "nobody expects"})
-
-    events = _ndjson_lines(resp)
-    types = [e["type"] for e in events]
-    assert types == ["cached", "scanning", "progress", "final"]
-    # Only one progress event — for the productive title, not the SKIP'd one.
-    assert events[2]["title"] == "Monty Python"
-    assert events[2]["index"] == 1
-    assert events[2]["total"] == 1
-    final = events[3]
-    # Both items were scanned this call (one SKIP'd, one processed), so
-    # nothing was left un-looked-at.
-    assert final["remaining_uncached"] == 0
-    assert final["matches"][0]["title"] == "Monty Python"
-    assert search_index.has_title(settings.quote_index_db_path, "guid-1")
-    assert not search_index.has_title(settings.quote_index_db_path, "guid-skip")
-
-
-def test_search_quote_extend_rejects_non_positive_cap(tmp_path, monkeypatch):
-    settings = _settings_with_sync(tmp_path, enabled=True)
-    client = _client(settings, monkeypatch)
-
-    resp = client.get("/search-quote-extend", params={"quote": "anything", "cap": 0})
-
-    assert resp.status_code == 422
-
-
-def test_search_quote_extend_skips_enumeration_when_library_unchanged(tmp_path, monkeypatch):
-    """Mirrors library_sync's own section.updatedAt change-detection: if a
-    movie library's live updatedAt still matches what library_sync's last
-    full pass stored, nothing in it could be uncached beyond what's already
-    known, so the (often several-second, real-Plex-network) enumeration is
-    skipped entirely — verified here by making enumerate_section raise if
-    it's ever called.
-    """
-    from app.worker.quote_index import set_section_updated_at
-
-    settings = _settings_with_sync(tmp_path, enabled=True)
-    _write_title(
-        settings.quote_index_db_path,
-        "guid-1", 101, "Monty Python", "Movies",
-        ["Nobody expects the Spanish Inquisition!"],
-    )
-    set_section_updated_at(settings.quote_index_db_path, "Movies", 12345)
-
-    class _UnchangedPlex(_FakePlexClient):
-        def current_section_updated_ats(self):
-            return {"Movies": 12345}
-
-        def enumerate_section(self, section):
-            raise AssertionError("enumerate_section must not be called when updatedAt is unchanged")
-
-    fake_plex = _UnchangedPlex(settings)
-    client = _client(settings, monkeypatch, fake_plex)
-
-    resp = client.get("/search-quote-extend", params={"quote": "nobody expects"})
-
-    events = _ndjson_lines(resp)
-    assert [e["type"] for e in events] == ["cached", "scanning", "final"]
-    assert events[2]["remaining_uncached"] == 0
-
-
-def test_search_quote_extend_still_enumerates_when_library_changed(tmp_path, monkeypatch):
-    """The companion case to the skip test above: a live updatedAt that
-    differs from the stored value must still trigger a full enumeration —
-    confirms the skip is conditional, not accidentally unconditional. Uses
-    an item with no path mapping (a cheap SKIP, not a real extraction) so
-    this test only exercises the enumeration-was-called path, not the
-    extraction machinery other tests already cover.
-    """
-    from app.worker.quote_index import set_section_updated_at
-
-    mount_root = tmp_path / "media"
-    mount_root.mkdir()
-    settings = _settings_with_sync(tmp_path, enabled=True, mount_root=mount_root)
-    _write_title(
-        settings.quote_index_db_path,
-        "guid-1", 101, "Monty Python", "Movies",
-        ["Nobody expects the Spanish Inquisition!"],
-    )
-    set_section_updated_at(settings.quote_index_db_path, "Movies", 111)
-
-    class _ChangedPlex(_FakePlexClient):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.enumerate_called = False
-
-        def current_section_updated_ats(self):
-            return {"Movies": 222}  # differs from the stored 111
-
-        def enumerate_section(self, section):
-            self.enumerate_called = True
-            return super().enumerate_section(section)
-
-    # File doesn't exist under mount_root -> a cheap "SKIP (file not found)",
-    # not a real extraction — this test only cares that enumeration ran.
-    fake_plex = _ChangedPlex(
-        settings,
-        movie_items=[_movie_item("guid-2", 102, "Another Film", source_path="D:\\Movies\\missing.mkv")],
-    )
-    client = _client(settings, monkeypatch, fake_plex)
-
-    resp = client.get("/search-quote-extend", params={"quote": "nobody expects"})
-
-    events = _ndjson_lines(resp)
-    assert fake_plex.enumerate_called
-    assert [e["type"] for e in events] == ["cached", "scanning", "final"]
-    assert events[2]["remaining_uncached"] == 0
 
 
 def test_random_quote_endpoint_no_quote_returns_a_cached_line(tmp_path, monkeypatch):

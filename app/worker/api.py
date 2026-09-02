@@ -16,7 +16,6 @@ from app.worker import quote_index, search_index
 from app.worker.ffmpeg import ClipRenderer, RenderTimeoutError, parse_timecode
 from app.worker.gif_optimize import GifOptimizeError, optimize_gif as _real_optimize_gif
 from app.worker.library_search import LibraryQuoteMatch, pick_random_quote, search_cached_library
-from app.worker.library_sync import sync_one_title
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 from app.worker.media_client import (
     EpisodeNotFoundError,
@@ -992,132 +991,30 @@ def create_app(settings: Settings) -> FastAPI:
     # with sync disabled this behaves identically to /search-quote, just over
     # a streamed single-event body, so the bot never needs two code paths.
     @app.get("/search-quote-extend")
-    async def search_quote_extend(
-        quote: str, cap: int | None = Query(default=None, ge=1)
-    ) -> StreamingResponse:
-        extend_cap = cap if cap is not None else settings.quote_match.library_extend_cap
-
+    async def search_quote_extend(quote: str) -> StreamingResponse:
+        # Cache-only by design: library_sync (the 24h scheduled pass, or a
+        # manual "Sync now" click) is solely responsible for keeping
+        # quote_index.db current. This used to also do an on-demand live
+        # Plex re-check + extraction ("Tier 2") when library_sync.enabled
+        # was true, but real measurement showed that live check could
+        # collide with library_sync's own concurrent pass over the same
+        # library — both independently re-enumerating a ~1400-title
+        # section at once — stalling a search by ~14s. A brand-new title
+        # now only becomes searchable after the next sync rather than
+        # instantly, which is the deliberate tradeoff for never blocking a
+        # search on live Plex work. Kept as a streamed endpoint (not a
+        # plain GET) for wire-format compatibility with the bot's existing
+        # NDJSON client, even though it now only ever emits two events.
         async def event_stream():
-            cached_titles, matches, truncated = await _movie_library_matches(app, settings, quote)
+            _, matches, truncated = await _movie_library_matches(app, settings, quote)
             yield json.dumps({
                 "type": "cached",
                 **_library_search_payload(matches, settings.quote_match, truncated),
             }) + "\n"
-
-            if not settings.library_sync.enabled:
-                yield json.dumps({
-                    "type": "final",
-                    "remaining_uncached": None,
-                    **_library_search_payload(matches, settings.quote_match, truncated),
-                }) + "\n"
-                return
-
-            movie_library_names = app.state.media.movie_library_names
-            already_known = {t.guid for t in cached_titles}
-            db_path = settings.quote_index_db_path
-            # One bulk query up front instead of a per-item
-            # is_no_subtitle_title() call — see Fix 3: that call opened a
-            # fresh blocking SQLite connection per item on the shared
-            # event loop, which stalls the Discord gateway connection on a
-            # library with thousands of titles.
-            no_subtitle_guids = await asyncio.to_thread(
-                quote_index.list_no_subtitle_guids, db_path
-            )
-            # Enumerating every configured movie library is a live Plex
-            # network call per section (not file I/O, but not free either —
-            # on a library of a thousand-plus titles this can take several
-            # seconds), and it's the one gap in this stream with no visible
-            # signal: nothing else is emitted between the "cached" event and
-            # whatever comes next. One cheap upfront event closes that gap.
-            yield json.dumps({"type": "scanning"}) + "\n"
-
-            # Cheap change-detection before paying for a full enumeration —
-            # mirrors library_sync's own use of section.updatedAt
-            # (run_library_sync_once). If a movie library's live updatedAt
-            # still matches what library_sync's last full pass over it
-            # stored, nothing in that library could be uncached beyond what
-            # already_known/no_subtitle_guids already cover, so the
-            # (often several-second) live item listing is skipped entirely.
-            # A failed check (Plex hiccup) degrades to "always enumerate",
-            # same as before this optimization existed — never to "assume
-            # nothing changed".
-            try:
-                current_updated_ats = await asyncio.to_thread(
-                    app.state.media.current_section_updated_ats
-                )
-            except Exception as exc:  # noqa: BLE001 - a failed cheap check must fall back to the full enumeration, not skip it
-                logger.warning(
-                    "search-quote-extend: could not check library change state, "
-                    "falling back to full enumeration: %s", exc,
-                )
-                current_updated_ats = {}
-
-            seen: set[str] = set()
-            uncached_items: list[MovieResult] = []
-            for library_name, section in app.state.media.library_sections():
-                if library_name not in movie_library_names:
-                    continue
-                stored_updated_at = quote_index.get_section_updated_at(db_path, library_name)
-                live_updated_at = current_updated_ats.get(library_name)
-                if stored_updated_at is not None and live_updated_at == stored_updated_at:
-                    continue
-                try:
-                    items = await asyncio.to_thread(app.state.media.enumerate_section, section)
-                except Exception as exc:  # noqa: BLE001 - Plex being briefly unreachable must not fail an otherwise-successful cached search
-                    logger.warning("search-quote-extend: could not enumerate '%s': %s", library_name, exc)
-                    continue
-                for item in items:
-                    if item.guid in already_known or item.guid in no_subtitle_guids:
-                        continue
-                    # A title can appear in more than one movie library
-                    # (CLAUDE.md Section 3's documented multi-library/3D
-                    # duplicate-title scenario) — only queue it once.
-                    if item.guid in seen:
-                        continue
-                    seen.add(item.guid)
-                    uncached_items.append(item)
-
-            if not uncached_items:
-                yield json.dumps({
-                    "type": "final",
-                    "remaining_uncached": 0,
-                    **_library_search_payload(matches, settings.quote_match, truncated),
-                }) + "\n"
-                return
-
-            # SKIP outcomes (no path mapping, file missing) are cheap — just
-            # a path check, no extraction — and must not consume the cap
-            # budget, or a library with many perpetually-SKIP titles (e.g.
-            # no path mapping configured) makes "Search N more" loop
-            # forever re-attempting the same head of the list without ever
-            # making progress. Only a productive attempt (OK or ERROR — both
-            # represent real extraction work) counts toward extend_cap.
-            productive_count = 0
-            scanned_count = 0
-            for item in uncached_items:
-                scanned_count += 1
-                outcome = await sync_one_title(settings, item)
-                logger.info("search-quote-extend: %s", outcome)
-                if outcome.startswith("SKIP"):
-                    continue
-                productive_count += 1
-                yield json.dumps({
-                    "type": "progress",
-                    "index": productive_count,
-                    "total": extend_cap,
-                    "title": item.title,
-                }) + "\n"
-                if productive_count >= extend_cap:
-                    break
-
-            # Items never even reached this call (not skipped — never
-            # looked at) are what's left to report as "remaining".
-            remaining = len(uncached_items) - scanned_count
-            _, final_matches, final_truncated = await _movie_library_matches(app, settings, quote)
             yield json.dumps({
                 "type": "final",
-                "remaining_uncached": remaining,
-                **_library_search_payload(final_matches, settings.quote_match, final_truncated),
+                "remaining_uncached": None,
+                **_library_search_payload(matches, settings.quote_match, truncated),
             }) + "\n"
 
         return StreamingResponse(event_stream(), media_type="application/x-ndjson")

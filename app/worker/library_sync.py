@@ -16,6 +16,7 @@ from app.worker.quote_index import (
     get_library_item_count,
     get_section_updated_at,
     is_no_subtitle_title,
+    list_no_subtitle_guids,
     set_library_item_count,
     set_section_updated_at,
     start_sync_run,
@@ -52,7 +53,14 @@ class LibrarySyncResult:
     removal_skipped_reason: str | None = None
 
 
-async def sync_one_title(settings: Settings, item: MovieResult, *, force: bool = False) -> str:
+async def sync_one_title(
+    settings: Settings,
+    item: MovieResult,
+    *,
+    force: bool = False,
+    known_guids: frozenset[str] | None = None,
+    no_subtitle_guids: frozenset[str] | None = None,
+) -> str:
     """Extracted from scripts/build_full_cache.py's process_one() — the one
     shared implementation for both the manual script and the automatic
     sync task. Skips a title entirely once it's authoritatively indexed in
@@ -70,13 +78,26 @@ async def sync_one_title(settings: Settings, item: MovieResult, *, force: bool =
     search_index yet. That case is self-healing: one cheap local JSON read
     (no ffmpeg) classifies and backfills it into search_index, and it's
     never revisited after that.
+
+    `known_guids`/`no_subtitle_guids`, when given, let a caller looping
+    over a whole library (sync_library below) answer "already indexed?"
+    from two sets preloaded once, instead of this function opening a fresh
+    SQLite connection per item — confirmed by direct measurement to add
+    ~14s of concurrent-request contention on a ~1400-title library (same
+    class of bug api.py's search_quote_extend already fixed once for its
+    own no-subtitle check; this closes the matching gap here). Omitted
+    entirely by scripts/build_full_cache.py, which falls back to the
+    original per-item DB check.
     """
     db_path = settings.quote_index_db_path
 
     if not force:
-        already_indexed = await asyncio.to_thread(
-            lambda: search_index.has_title(db_path, item.guid) or is_no_subtitle_title(db_path, item.guid)
-        )
+        if known_guids is not None and no_subtitle_guids is not None:
+            already_indexed = item.guid in known_guids or item.guid in no_subtitle_guids
+        else:
+            already_indexed = await asyncio.to_thread(
+                lambda: search_index.has_title(db_path, item.guid) or is_no_subtitle_title(db_path, item.guid)
+            )
         if already_indexed:
             return f"CACHED (already have it): {item.title}"
 
@@ -208,6 +229,14 @@ async def sync_library(
         return result
 
     total_items = len(live_items)
+    # Two bulk queries up front instead of sync_one_title() opening a fresh
+    # SQLite connection per item to check "already indexed?" — see Fix 3's
+    # precedent in api.py's search_quote_extend, which fixed the same
+    # pattern for its own no-subtitle check. Directly measured: without
+    # this, a concurrent search against a ~1400-title library stalls ~14s
+    # while this loop runs, even though every item here is a cache hit.
+    known_guids = frozenset(t.guid for t in await asyncio.to_thread(search_index.list_titles, settings.quote_index_db_path))
+    no_subtitle_guids = frozenset(await asyncio.to_thread(list_no_subtitle_guids, settings.quote_index_db_path))
     await asyncio.to_thread(set_library_item_count, settings.quote_index_db_path, library_name, total_items)
     await asyncio.to_thread(
         append_sync_log, settings.quote_index_db_path, f"Checking library: {library_name} — {total_items} items"
@@ -224,7 +253,9 @@ async def sync_library(
         await asyncio.to_thread(
             update_sync_progress, settings.quote_index_db_path, library_name, item.title, index - 1, total_items
         )
-        outcome = await sync_one_title(settings, item)
+        outcome = await sync_one_title(
+            settings, item, known_guids=known_guids, no_subtitle_guids=no_subtitle_guids
+        )
         if outcome.startswith("CACHED"):
             result.already_cached += 1
         elif outcome.startswith("OK"):

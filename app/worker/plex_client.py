@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from plexapi.exceptions import NotFound
 from plexapi.server import PlexServer
@@ -85,11 +86,21 @@ class PlexClient:
         # app (SQLite storage, equality comparisons) deals with one plain
         # storable type (Python 3.12 no longer auto-adapts datetime for
         # sqlite3).
-        result: dict[str, int] = {}
-        for name, section in self.library_sections():
+        #
+        # Run one reload() per library concurrently (each is its own live
+        # network round-trip) rather than sequentially — library_sync is
+        # the only caller, checking every configured library on each pass.
+        sections = self.library_sections()
+
+        def _reload(entry: tuple[str, object]) -> tuple[str, int]:
+            name, section = entry
             section.reload()
-            result[name] = int(section.updatedAt.timestamp())
-        return result
+            return name, int(section.updatedAt.timestamp())
+
+        if not sections:
+            return {}
+        with ThreadPoolExecutor(max_workers=len(sections)) as pool:
+            return dict(pool.map(_reload, sections))
 
     def search_movies(self, query: str, limit: int = 25) -> list[MovieResult]:
         results: list[MovieResult] = []

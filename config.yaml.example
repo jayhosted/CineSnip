@@ -80,10 +80,6 @@ quote_match:
   confident_score: 85
   max_window_gap_seconds: 3
   context_lines: 1
-  # /snip search only: when library_sync is enabled, an extending search
-  # extracts up to this many not-yet-cached movie titles per request before
-  # stopping (a "search N more" follow-up covers the rest).
-  library_extend_cap: 25
   # /snip movie and /snip tv's random-pick path (no quote/timecode given):
   # a line under this many words is excluded from the pick, so a random
   # clip doesn't land on filler like "Okay." or "Yeah."
@@ -103,12 +99,11 @@ worker:
 # dead drive for genuine content removal. See README.md for the full
 # explanation before enabling this.
 #
-# Also gates /snip search's ability to reach not-yet-cached movie titles:
-# with this enabled, a search that doesn't fully match against the cache
-# automatically extracts subtitles for more titles on the spot (capped by
-# quote_match.library_extend_cap above, with a "Search N more" follow-up
-# for the rest); with this disabled, /snip search stays cached-titles-only,
-# as before this feature existed.
+# /snip search always searches only the subtitle cache — it never talks to
+# Plex itself, regardless of this setting. This is what keeps a search
+# fast and unaffected by however long a sync pass takes. A brand-new title
+# becomes searchable once a sync (scheduled here, or a manual "Sync now" in
+# the web dashboard) has picked it up, not instantly on the next search.
 library_sync:
   enabled: false
   interval_hours: 24
