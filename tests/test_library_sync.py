@@ -1,4 +1,6 @@
 import asyncio
+import json
+from datetime import datetime, timezone
 
 from app.settings import LibraryConfig, PathMapping, Settings
 from app.worker import quote_index, search_index
@@ -8,9 +10,30 @@ from app.worker.subtitles import (
     SubtitleEntry,
     SubtitleResult,
     SubtitleSource,
+    cache_path_for_guid,
     read_cached_subtitles,
-    write_cached_subtitles,
 )
+
+
+def _write_legacy_cache_file(cache_dir, result: SubtitleResult) -> None:
+    """Writes a JSON cache file in the pre-FTS5 on-disk format that
+    read_cached_subtitles() still reads for backward compatibility — no
+    production code writes this format anymore (search_index.py replaced
+    it), so tests exercising that legacy-read path write it directly."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "guid": result.guid,
+        "source": result.source.value,
+        "sidecar_path": result.sidecar_path,
+        "stream_index": result.stream_index,
+        "cached_at": datetime.now(timezone.utc).isoformat(),
+        "source_fingerprint": None,
+        "entries": [
+            {"index": e.index, "start": e.start, "end": e.end, "text": e.text}
+            for e in result.entries
+        ],
+    }
+    cache_path_for_guid(cache_dir, result.guid).write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _settings(tmp_path, library_name="Movies", mappings=None) -> Settings:
@@ -203,7 +226,7 @@ def test_sync_one_title_records_no_subtitle_titles(tmp_path):
     # once ffprobe/ffmpeg see a genuinely nonexistent/unmapped file... but
     # to keep this test hermetic (no real ffmpeg/ffprobe process), precache
     # a NONE result directly instead of exercising get_subtitles().
-    write_cached_subtitles(settings.cache_dir, SubtitleResult(guid="guid-1", source=SubtitleSource.NONE, entries=[]))
+    _write_legacy_cache_file(settings.cache_dir, SubtitleResult(guid="guid-1", source=SubtitleSource.NONE, entries=[]))
 
     outcome = asyncio.run(sync_one_title(settings, item))
 
@@ -216,7 +239,7 @@ def test_sync_one_title_backfills_legacy_cached_title_missing_from_index(tmp_pat
     settings = _settings(tmp_path)
     item = _item("guid-1", "101", title="Film One")
 
-    write_cached_subtitles(
+    _write_legacy_cache_file(
         settings.cache_dir,
         SubtitleResult(
             guid="guid-1", source=SubtitleSource.SIDECAR,
@@ -245,7 +268,7 @@ def test_sync_one_title_skips_already_indexed_no_subtitle_title(tmp_path, monkey
     settings = _settings(tmp_path)
     item = _item("guid-1", "101")
 
-    write_cached_subtitles(settings.cache_dir, SubtitleResult(guid="guid-1", source=SubtitleSource.NONE, entries=[]))
+    _write_legacy_cache_file(settings.cache_dir, SubtitleResult(guid="guid-1", source=SubtitleSource.NONE, entries=[]))
     quote_index.upsert_no_subtitle_title(settings.quote_index_db_path, "guid-1", "101", "Film", "Movies")
 
     def _boom(*args, **kwargs):
@@ -404,7 +427,7 @@ def test_both_guards_pass_deletes_removed_title_and_updates_state(tmp_path):
     # left over from before this migration) — removal must not touch it,
     # since deleting legacy JSON is explicitly out of scope for this
     # migration.
-    write_cached_subtitles(
+    _write_legacy_cache_file(
         settings.cache_dir,
         SubtitleResult(
             guid="guid-removed", source=SubtitleSource.SIDECAR,

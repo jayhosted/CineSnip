@@ -7,7 +7,6 @@ from app.worker.search_index import (
     _connect,
     count_entries,
     coverage_counts,
-    fetch_entries_for_titles,
     fetch_entry_windows,
     get_entries,
     get_fingerprint,
@@ -300,28 +299,6 @@ def test_search_title_ids_handles_single_character_and_digit_tokens(tmp_path):
     # output needs no extra quoting for either case)
     assert _search_title_ids(db_path, ["a"]) != []
     assert _search_title_ids(db_path, ["007"]) != []
-
-
-def test_fetch_entries_for_titles(tmp_path):
-    db_path = tmp_path / "quote_index.db"
-    _populate_small_corpus(db_path)
-    titles = {t.guid: t for t in list_titles(db_path)}
-
-    with _connect(db_path) as conn:
-        rows = conn.execute("SELECT guid, title_id FROM titles").fetchall()
-    guid_to_id = dict(rows)
-
-    result = fetch_entries_for_titles(db_path, list(guid_to_id.values()))
-
-    assert set(result.keys()) == set(guid_to_id.values())
-    id1 = guid_to_id["guid-1"]
-    assert [e.text for e in result[id1]] == ["the quick brown fox", "jumps over the lazy dog"]
-
-
-def test_fetch_entries_for_titles_empty_input(tmp_path):
-    db_path = tmp_path / "quote_index.db"
-    _populate_small_corpus(db_path)
-    assert fetch_entries_for_titles(db_path, []) == {}
 
 
 def test_iter_all_entries(tmp_path):

@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -10,16 +11,36 @@ from app.worker.subtitles import (
     SubtitleStreamInfo,
     build_ffmpeg_extract_args,
     build_ffprobe_subtitle_args,
+    cache_path_for_guid,
     choose_subtitle_stream,
-    delete_cached_subtitles,
     find_sidecar_subtitle,
     get_subtitles,
     parse_srt,
     read_cached_subtitles,
     read_sidecar_srt,
-    write_cached_subtitles,
 )
-from app.worker.subtitles import SubtitleResult, SubtitleSource, SubtitleEntry
+from app.worker.subtitles import SubtitleResult, SubtitleSource, SubtitleEntry, _fingerprint
+
+
+def _write_legacy_cache_file(cache_dir, result: SubtitleResult, source_path=None) -> None:
+    """Writes the pre-FTS5 JSON cache format that read_cached_subtitles()
+    still reads (library_sync.py's own backward-compat path) — no
+    production code writes this format anymore, so tests exercising the
+    reader write it directly instead of via a since-removed writer."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "guid": result.guid,
+        "source": result.source.value,
+        "sidecar_path": result.sidecar_path,
+        "stream_index": result.stream_index,
+        "cached_at": datetime.now(timezone.utc).isoformat(),
+        "source_fingerprint": _fingerprint(source_path),
+        "entries": [
+            {"index": e.index, "start": e.start, "end": e.end, "text": e.text}
+            for e in result.entries
+        ],
+    }
+    cache_path_for_guid(cache_dir, result.guid).write_text(json.dumps(payload), encoding="utf-8")
 
 
 # --- parse_srt -----------------------------------------------------------
@@ -138,14 +159,13 @@ def test_read_sidecar_srt_falls_back_to_latin1(tmp_path):
 
 # --- cache round-trip (legacy JSON-file helpers) ---------------------------
 #
-# cache_path_for_guid/read_cached_subtitles/write_cached_subtitles/
-# delete_cached_subtitles themselves are untouched by the search_index
-# migration (Task 3 only swaps get_subtitles()'s own persistence — see the
-# "get_subtitles() orchestration" section below) because library_sync.py,
-# quotes.py, library_search.py, and api.py's /subtitles diagnostic route
-# still call them directly for their own JSON-cache-based logic; migrating
-# those is later tasks' scope. These tests keep covering that they still
-# work exactly as before.
+# cache_path_for_guid/read_cached_subtitles are the only pieces of the old
+# JSON-cache surface still live in production: library_sync.py's
+# sync_one_title() reads a legacy cache file left over from before the
+# search_index migration to backfill it into the index. The writer side
+# (write_cached_subtitles/delete_cached_subtitles) has no production caller
+# left and was removed — these tests write the JSON format directly via
+# _write_legacy_cache_file() to keep covering the reader.
 
 
 def test_cache_round_trip(tmp_path):
@@ -155,7 +175,7 @@ def test_cache_round_trip(tmp_path):
         entries=[SubtitleEntry(index=1, start=1.0, end=2.0, text="Hi")],
         sidecar_path="/media/movies-d/Film.srt",
     )
-    write_cached_subtitles(tmp_path, result)
+    _write_legacy_cache_file(tmp_path, result)
 
     loaded = read_cached_subtitles(tmp_path, "plex://movie/abc")
     assert loaded == result
@@ -190,7 +210,7 @@ def test_cache_is_invalidated_when_the_sidecar_file_changes(tmp_path):
         entries=[SubtitleEntry(index=1, start=1.0, end=2.0, text="Hi")],
         sidecar_path=str(sidecar),
     )
-    write_cached_subtitles(tmp_path, result, sidecar)
+    _write_legacy_cache_file(tmp_path, result, sidecar)
 
     assert read_cached_subtitles(tmp_path, "plex://movie/abc", sidecar, video) == result
 
@@ -210,7 +230,7 @@ def test_cache_is_invalidated_when_the_sidecar_is_removed(tmp_path):
         entries=[SubtitleEntry(index=1, start=1.0, end=2.0, text="Hi")],
         sidecar_path=str(sidecar),
     )
-    write_cached_subtitles(tmp_path, result, sidecar)
+    _write_legacy_cache_file(tmp_path, result, sidecar)
 
     sidecar.unlink()
     assert read_cached_subtitles(tmp_path, "plex://movie/abc", None, video) is None
@@ -232,7 +252,7 @@ def test_cache_for_embedded_source_is_not_invalidated_by_an_unrelated_sidecar_ap
         entries=[SubtitleEntry(index=1, start=1.0, end=2.0, text="Hi")],
         stream_index=0,
     )
-    write_cached_subtitles(tmp_path, result, video)
+    _write_legacy_cache_file(tmp_path, result, video)
 
     new_sidecar = tmp_path / "Film.srt"
     new_sidecar.write_text("a sidecar that didn't exist when this was cached")
@@ -252,7 +272,7 @@ def test_cache_for_embedded_source_is_invalidated_when_the_video_changes(tmp_pat
         entries=[SubtitleEntry(index=1, start=1.0, end=2.0, text="Hi")],
         stream_index=0,
     )
-    write_cached_subtitles(tmp_path, result, video)
+    _write_legacy_cache_file(tmp_path, result, video)
 
     video.write_text("a re-remuxed file with different bytes")
     assert read_cached_subtitles(tmp_path, "plex://movie/abc", None, video) is None
@@ -576,21 +596,3 @@ def test_build_ffmpeg_extract_args():
     ]
     map_index = args.index("-map")
     assert args[map_index + 1] == "0:s:2"
-
-
-def test_delete_cached_subtitles_removes_existing_file(tmp_path):
-    result = SubtitleResult(
-        guid="plex://movie/abc",
-        source=SubtitleSource.SIDECAR,
-        entries=[SubtitleEntry(index=1, start=1.0, end=2.0, text="Hi")],
-    )
-    write_cached_subtitles(tmp_path, result)
-
-    deleted = delete_cached_subtitles(tmp_path, "plex://movie/abc")
-
-    assert deleted is True
-    assert read_cached_subtitles(tmp_path, "plex://movie/abc") is None
-
-
-def test_delete_cached_subtitles_returns_false_when_nothing_to_delete(tmp_path):
-    assert delete_cached_subtitles(tmp_path, "plex://movie/never-cached") is False

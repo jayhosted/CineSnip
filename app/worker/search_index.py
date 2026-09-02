@@ -430,37 +430,15 @@ def list_entry_rows_for_titles(
     return [(r[0], r[1], r[2], r[3], r[4], r[5]) for r in rows]
 
 
-def fetch_entries_for_titles(db_path: Path, title_ids: list[int]) -> dict[int, list[SubtitleEntry]]:
-    from app.worker.subtitles import SubtitleEntry
-
-    if not title_ids:
-        return {}
-    if not db_path.exists():
-        return {}
-    placeholders = ",".join("?" for _ in title_ids)
-    with _connect(db_path) as conn:
-        rows = conn.execute(
-            f"SELECT title_id, idx, start, end, display_text FROM entries "
-            f"WHERE title_id IN ({placeholders}) ORDER BY title_id, idx",
-            title_ids,
-        ).fetchall()
-    result: dict[int, list[SubtitleEntry]] = {}
-    for title_id, idx, start, end, display_text in rows:
-        result.setdefault(title_id, []).append(
-            SubtitleEntry(index=idx, start=start, end=end, text=display_text)
-        )
-    return result
-
-
 def fetch_entry_windows(
     db_path: Path, windows: list[tuple[int, int, int]]
 ) -> dict[int, list[tuple[int, SubtitleEntry]]]:
     """Fetch just the entries inside a set of (title_id, idx_lo, idx_hi)
     windows, grouped by title_id and idx-ordered within each title.
 
-    Deliberately NOT a "fetch this title's full entry list" call (unlike
-    fetch_entries_for_titles above): library_search.py's slice expansion
-    only ever needs the small adjacent-cue window around each FTS5 hit, and
+    Deliberately NOT a "fetch this title's full entry list" call:
+    library_search.py's slice expansion only ever needs the small
+    adjacent-cue window around each FTS5 hit, and
     a title's full subtitle track can be hundreds of entries — fetching all
     of them for every title with any surviving hit was measured to
     dominate real-library search time (~4s of a ~10s query) despite the

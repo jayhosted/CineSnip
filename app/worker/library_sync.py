@@ -185,7 +185,6 @@ def _spot_check_removed_titles(
             )
             return "spot_check_failed"
     return None
-    return True
 
 
 async def sync_library(

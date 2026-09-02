@@ -247,13 +247,6 @@ class WorkerClient:
         payload["matches"] = [QuoteMatchResult(**m) for m in payload["matches"]]
         return ResolveQuoteResult(**payload)
 
-    async def search_quote(self, quote: str) -> LibrarySearchResult:
-        response = await self._client.get("/search-quote", params={"quote": quote})
-        response.raise_for_status()
-        payload = response.json()
-        payload["matches"] = [LibraryQuoteMatchResult(**m) for m in payload["matches"]]
-        return LibrarySearchResult(**payload)
-
     async def random_quote(
         self,
         quote: str | None,

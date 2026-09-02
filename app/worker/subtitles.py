@@ -5,9 +5,7 @@ import hashlib
 import json
 import logging
 import re
-import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
@@ -317,41 +315,6 @@ def read_cached_subtitles(
     except (json.JSONDecodeError, KeyError, ValueError, TypeError) as exc:
         logger.warning("Ignoring corrupt subtitle cache file %s: %s", path, exc)
         return None
-
-
-def write_cached_subtitles(
-    cache_dir: Path, result: SubtitleResult, source_path: Path | None = None
-) -> None:
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    final_path = cache_path_for_guid(cache_dir, result.guid)
-
-    payload = {
-        "guid": result.guid,
-        "source": result.source.value,
-        "sidecar_path": result.sidecar_path,
-        "stream_index": result.stream_index,
-        "cached_at": datetime.now(timezone.utc).isoformat(),
-        "source_fingerprint": _fingerprint(source_path),
-        "entries": [
-            {"index": e.index, "start": e.start, "end": e.end, "text": e.text}
-            for e in result.entries
-        ],
-    }
-
-    tmp_path = final_path.with_suffix(f".json.tmp-{uuid.uuid4().hex}")
-    tmp_path.write_text(json.dumps(payload), encoding="utf-8")
-    tmp_path.replace(final_path)
-
-
-def delete_cached_subtitles(cache_dir: Path, guid: str) -> bool:
-    """Used by library_sync.py when a title's been removed from Plex.
-    Returns whether a file actually existed to delete — not an error either
-    way, just useful for logging/counting."""
-    path = cache_path_for_guid(cache_dir, guid)
-    if not path.exists():
-        return False
-    path.unlink()
-    return True
 
 
 # --- Orchestration ----------------------------------------------------

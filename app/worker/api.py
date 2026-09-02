@@ -856,18 +856,6 @@ def create_app(settings: Settings) -> FastAPI:
             ],
         )
 
-    # Library-wide search (CLAUDE.md Section 5's /snip search, Tier 1
-    # only): searches the subtitle cache via the quote_index, never the live
-    # filesystem/Plex — so it's fast regardless of library size, but its
-    # scope is exactly "titles CineSnip has already read via any flow". An
-    # empty index/no matches is a normal outcome, not an error.
-    @app.get("/search-quote", response_model=LibrarySearchResponse)
-    async def search_quote(quote: str) -> LibrarySearchResponse:
-        _, matches, truncated = await _movie_library_matches(app, settings, quote)
-        return LibrarySearchResponse(
-            **_library_search_payload(matches, settings.quote_match, truncated)
-        )
-
     @app.get("/random-quote", response_model=RandomQuoteResponse)
     async def random_quote(
         quote: str | None = None,

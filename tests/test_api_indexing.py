@@ -1,8 +1,18 @@
 from app.settings import Settings
 from app.worker import search_index
 from app.worker.api import _index_if_searchable
-from app.worker.quote_index import has_cached_title, is_no_subtitle_title
+from app.worker.quote_index import _connect, is_no_subtitle_title
 from app.worker.subtitles import SubtitleEntry, SubtitleResult, SubtitleSource
+
+
+def _has_legacy_cached_title(db_path, guid) -> bool:
+    """No production code writes app.worker.quote_index's legacy
+    cached_titles table anymore (search_index.py replaced it) — this
+    queries it directly, in place of the since-removed has_cached_title(),
+    to assert these code paths never resurrect a write to it."""
+    with _connect(db_path) as conn:
+        row = conn.execute("SELECT 1 FROM cached_titles WHERE guid = ?", (guid,)).fetchone()
+    return row is not None
 
 
 def _settings(tmp_path) -> Settings:
@@ -56,7 +66,7 @@ def test_index_if_searchable_does_not_rewrite_search_index_for_a_searchable_resu
 
     # Never wrote the legacy quote_index table either — that write was
     # removed for the searchable branch entirely, not redirected.
-    assert has_cached_title(settings.quote_index_db_path, "guid-1") is False
+    assert _has_legacy_cached_title(settings.quote_index_db_path, "guid-1") is False
 
 
 def test_index_if_searchable_records_no_subtitle_titles(tmp_path):
@@ -66,7 +76,7 @@ def test_index_if_searchable_records_no_subtitle_titles(tmp_path):
     _index_if_searchable(settings, _movie(), result)
 
     assert is_no_subtitle_title(settings.quote_index_db_path, "guid-1") is True
-    assert has_cached_title(settings.quote_index_db_path, "guid-1") is False
+    assert _has_legacy_cached_title(settings.quote_index_db_path, "guid-1") is False
     # The NONE branch still only writes the legacy no_subtitle_titles
     # bookkeeping table, not search_index — get_subtitles() is what indexes
     # a NONE outcome into search_index (with empty entries), not this call.

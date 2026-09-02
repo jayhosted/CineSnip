@@ -1,6 +1,43 @@
+import json
+from datetime import datetime, timezone
+
 from app.worker import quote_index, search_index
-from app.worker.subtitles import SubtitleEntry, SubtitleResult, SubtitleSource, write_cached_subtitles
+from app.worker.subtitles import SubtitleSource, _fingerprint, cache_path_for_guid
 from scripts.migrate_to_fts5 import migrate_one_title
+
+
+def _write_legacy_cache_file(cache_dir, guid, title, source, sidecar_path):
+    """Write a JSON cache file in the pre-FTS5 on-disk format — no
+    production code writes this format anymore (superseded by
+    search_index.py), but scripts/migrate_to_fts5.py's whole job is reading
+    files real installs wrote in this format before the migration."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "guid": guid,
+        "source": source.value,
+        "sidecar_path": str(sidecar_path) if sidecar_path else None,
+        "stream_index": None if sidecar_path else 0,
+        "cached_at": datetime.now(timezone.utc).isoformat(),
+        "source_fingerprint": _fingerprint(sidecar_path),
+        "entries": [
+            {"index": 0, "start": 1.0, "end": 2.0, "text": f"Hello from {title}"},
+            {"index": 1, "start": 3.0, "end": 4.0, "text": "Goodbye"},
+        ],
+    }
+    cache_path_for_guid(cache_dir, guid).write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _upsert_legacy_cached_title_row(db_path, guid, media_id, title, library_name, source):
+    """Writes a row into the legacy cached_titles table directly via SQL —
+    quote_index.py no longer exposes a writer for this table since
+    production stopped populating it (list_cached_titles is kept only for
+    scripts/migrate_to_fts5.py to read pre-existing rows)."""
+    with quote_index._connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO cached_titles (guid, media_id, title, library_name, cached_at, source) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (guid, media_id, title, library_name, datetime.now(timezone.utc).isoformat(), source),
+        )
 
 
 def _seed_legacy_title(db_path, cache_dir, guid, media_id, title, library_name, sidecar_path=None):
@@ -8,19 +45,8 @@ def _seed_legacy_title(db_path, cache_dir, guid, media_id, title, library_name, 
     file, mirroring what get_subtitles()/library_sync used to write before
     the search_index migration."""
     source = SubtitleSource.SIDECAR if sidecar_path else SubtitleSource.EMBEDDED
-    entries = [
-        SubtitleEntry(index=0, start=1.0, end=2.0, text=f"Hello from {title}"),
-        SubtitleEntry(index=1, start=3.0, end=4.0, text="Goodbye"),
-    ]
-    result = SubtitleResult(
-        guid=guid,
-        source=source,
-        entries=entries,
-        sidecar_path=str(sidecar_path) if sidecar_path else None,
-        stream_index=None if sidecar_path else 0,
-    )
-    write_cached_subtitles(cache_dir, result, source_path=sidecar_path)
-    quote_index.upsert_cached_title(db_path, guid, media_id, title, library_name, source.value)
+    _write_legacy_cache_file(cache_dir, guid, title, source, sidecar_path)
+    _upsert_legacy_cached_title_row(db_path, guid, media_id, title, library_name, source.value)
 
 
 def test_migrate_one_title_sidecar_gets_real_fingerprint(tmp_path):
@@ -61,7 +87,7 @@ def test_migrate_one_title_missing_json_reports_failure(tmp_path):
     db_path = tmp_path / "quote_index.db"
     cache_dir = tmp_path / "cache"
     # cached_titles row exists but its JSON cache file was never written.
-    quote_index.upsert_cached_title(db_path, "guid-3", "103", "Film Three", "Movies", "sidecar")
+    _upsert_legacy_cached_title_row(db_path, "guid-3", "103", "Film Three", "Movies", "sidecar")
     cached = quote_index.list_cached_titles(db_path)[0]
 
     outcome = migrate_one_title(db_path, cache_dir, cached)

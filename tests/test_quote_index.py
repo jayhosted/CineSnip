@@ -3,36 +3,47 @@ from app.worker.quote_index import (
     LibraryCoverage,
     SyncLogLine,
     SyncProgress,
+    _connect,
     append_sync_log,
     finish_sync_run,
     get_section_updated_at,
     get_sync_progress,
-    has_cached_title,
     is_no_subtitle_title,
-    latest_sync_log_seq,
     library_coverage,
     list_cached_titles,
-    list_cached_titles_for_library,
-    list_cached_titles_missing_source,
     list_no_subtitle_guids,
     get_library_item_count,
-    remove_cached_title,
     reset_stale_running_status,
-    set_cached_title_source,
     set_library_item_count,
     set_section_updated_at,
     start_sync_run,
     tail_sync_log,
     update_sync_progress,
-    upsert_cached_title,
     upsert_no_subtitle_title,
 )
 
 
+def _upsert_cached_title(db_path, guid, media_id, title, library_name, source):
+    """Writes a row into the legacy cached_titles table directly — no
+    production code writes it anymore (search_index.py replaced it), so
+    tests still exercising its readers (list_cached_titles,
+    library_coverage) seed it via raw SQL rather than a since-removed
+    quote_index writer."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO cached_titles (guid, media_id, title, library_name, cached_at, source) "
+            "VALUES (?, ?, ?, ?, datetime('now'), ?) "
+            "ON CONFLICT(guid) DO UPDATE SET "
+            "media_id=excluded.media_id, title=excluded.title, "
+            "library_name=excluded.library_name, source=excluded.source",
+            (guid, media_id, title, library_name, source),
+        )
+
+
 def test_upsert_and_list_round_trip(tmp_path):
     db_path = tmp_path / "quote_index.db"
-    upsert_cached_title(db_path, "guid-1", "101", "Film One", "Movies", "sidecar")
-    upsert_cached_title(db_path, "guid-2", "102", "Film Two", "3D", "embedded")
+    _upsert_cached_title(db_path, "guid-1", "101", "Film One", "Movies", "sidecar")
+    _upsert_cached_title(db_path, "guid-2", "102", "Film Two", "3D", "embedded")
 
     titles = list_cached_titles(db_path)
 
@@ -44,8 +55,8 @@ def test_upsert_and_list_round_trip(tmp_path):
 
 def test_upsert_overwrites_existing_guid(tmp_path):
     db_path = tmp_path / "quote_index.db"
-    upsert_cached_title(db_path, "guid-1", "101", "Old Title", "Movies", "sidecar")
-    upsert_cached_title(db_path, "guid-1", "101", "New Title", "Movies", "embedded")
+    _upsert_cached_title(db_path, "guid-1", "101", "Old Title", "Movies", "sidecar")
+    _upsert_cached_title(db_path, "guid-1", "101", "New Title", "Movies", "embedded")
 
     titles = list_cached_titles(db_path)
 
@@ -56,39 +67,6 @@ def test_upsert_overwrites_existing_guid(tmp_path):
 
 def test_list_cached_titles_on_missing_db_returns_empty(tmp_path):
     assert list_cached_titles(tmp_path / "does-not-exist.db") == []
-
-
-def test_list_cached_titles_for_library_filters_correctly(tmp_path):
-    db_path = tmp_path / "quote_index.db"
-    upsert_cached_title(db_path, "guid-1", "101", "Film One", "Movies", "sidecar")
-    upsert_cached_title(db_path, "guid-2", "102", "Film Two", "3D", "sidecar")
-
-    titles = list_cached_titles_for_library(db_path, "Movies")
-
-    assert [t.guid for t in titles] == ["guid-1"]
-
-
-def test_list_cached_titles_for_library_on_missing_db_returns_empty(tmp_path):
-    assert list_cached_titles_for_library(tmp_path / "does-not-exist.db", "Movies") == []
-
-
-def test_remove_cached_title_deletes_the_right_row(tmp_path):
-    db_path = tmp_path / "quote_index.db"
-    upsert_cached_title(db_path, "guid-1", "101", "Film One", "Movies", "sidecar")
-    upsert_cached_title(db_path, "guid-2", "102", "Film Two", "Movies", "sidecar")
-
-    remove_cached_title(db_path, "guid-1")
-
-    assert [t.guid for t in list_cached_titles(db_path)] == ["guid-2"]
-
-
-def test_remove_cached_title_is_a_noop_for_unknown_guid(tmp_path):
-    db_path = tmp_path / "quote_index.db"
-    upsert_cached_title(db_path, "guid-1", "101", "Film One", "Movies", "sidecar")
-
-    remove_cached_title(db_path, "guid-never-existed")
-
-    assert [t.guid for t in list_cached_titles(db_path)] == ["guid-1"]
 
 
 def test_section_updated_at_round_trip(tmp_path):
@@ -115,38 +93,6 @@ def test_section_updated_at_upsert_overwrites(tmp_path):
     set_section_updated_at(db_path, "Movies", 222)
 
     assert get_section_updated_at(db_path, "Movies") == 222
-
-
-def test_has_cached_title_true_and_false(tmp_path):
-    db_path = tmp_path / "quote_index.db"
-    upsert_cached_title(db_path, "guid-1", "101", "Film One", "Movies", "sidecar")
-
-    assert has_cached_title(db_path, "guid-1") is True
-    assert has_cached_title(db_path, "guid-missing") is False
-
-
-def test_has_cached_title_on_missing_db_returns_false(tmp_path):
-    assert has_cached_title(tmp_path / "does-not-exist.db", "guid-1") is False
-
-
-def test_list_cached_titles_missing_source_finds_null_source_rows(tmp_path):
-    db_path = tmp_path / "quote_index.db"
-    # Simulate a pre-migration row written before the source column existed.
-    upsert_cached_title(db_path, "guid-1", "101", "Film One", "Movies", "sidecar")
-    set_cached_title_source(db_path, "guid-1", "")
-
-    missing = list_cached_titles_missing_source(db_path)
-
-    assert [t.guid for t in missing] == ["guid-1"]
-
-
-def test_set_cached_title_source_updates_in_place(tmp_path):
-    db_path = tmp_path / "quote_index.db"
-    upsert_cached_title(db_path, "guid-1", "101", "Film One", "Movies", "")
-
-    set_cached_title_source(db_path, "guid-1", "embedded")
-
-    assert list_cached_titles(db_path)[0].source == "embedded"
 
 
 def test_no_subtitle_title_round_trip(tmp_path):
@@ -179,18 +125,18 @@ def test_list_no_subtitle_guids_returns_full_set(tmp_path):
     upsert_no_subtitle_title(db_path, "guid-2", "102", "Film Two", "Movies")
     # A cached (searchable) title must not show up here — this set is
     # specifically the negative-case table.
-    upsert_cached_title(db_path, "guid-3", "103", "Film Three", "Movies", "sidecar")
+    _upsert_cached_title(db_path, "guid-3", "103", "Film Three", "Movies", "sidecar")
 
     assert list_no_subtitle_guids(db_path) == {"guid-1", "guid-2"}
 
 
 def test_library_coverage_counts_by_source_and_no_subtitle(tmp_path):
     db_path = tmp_path / "quote_index.db"
-    upsert_cached_title(db_path, "guid-1", "101", "Film One", "Movies", "sidecar")
-    upsert_cached_title(db_path, "guid-2", "102", "Film Two", "Movies", "sidecar")
-    upsert_cached_title(db_path, "guid-3", "103", "Film Three", "Movies", "embedded")
+    _upsert_cached_title(db_path, "guid-1", "101", "Film One", "Movies", "sidecar")
+    _upsert_cached_title(db_path, "guid-2", "102", "Film Two", "Movies", "sidecar")
+    _upsert_cached_title(db_path, "guid-3", "103", "Film Three", "Movies", "embedded")
     upsert_no_subtitle_title(db_path, "guid-4", "104", "Film Four", "Movies")
-    upsert_cached_title(db_path, "guid-5", "105", "Other Library Film", "3D", "sidecar")
+    _upsert_cached_title(db_path, "guid-5", "105", "Other Library Film", "3D", "sidecar")
 
     coverage = library_coverage(db_path, "Movies")
 
@@ -285,18 +231,6 @@ def test_append_sync_log_trims_to_50(tmp_path):
 
 def test_tail_sync_log_on_missing_db_returns_empty(tmp_path):
     assert tail_sync_log(tmp_path / "does-not-exist.db") == []
-
-
-def test_latest_sync_log_seq_tracks_inserts(tmp_path):
-    db_path = tmp_path / "quote_index.db"
-    assert latest_sync_log_seq(db_path) == 0
-
-    append_sync_log(db_path, "one")
-    first_seq = latest_sync_log_seq(db_path)
-    assert first_seq >= 1
-
-    append_sync_log(db_path, "two")
-    assert latest_sync_log_seq(db_path) == first_seq + 1
 
 
 def test_set_and_get_library_item_count_round_trip(tmp_path):

@@ -127,56 +127,6 @@ def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def upsert_cached_title(
-    db_path: Path, guid: str, media_id: str, title: str, library_name: str, source: str
-) -> None:
-    with _connect(db_path) as conn:
-        conn.execute(
-            "INSERT INTO cached_titles (guid, media_id, title, library_name, cached_at, source) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(guid) DO UPDATE SET "
-            "media_id=excluded.media_id, "
-            "title=excluded.title, "
-            "library_name=excluded.library_name, "
-            "cached_at=excluded.cached_at, "
-            "source=excluded.source",
-            (guid, media_id, title, library_name, datetime.now(timezone.utc).isoformat(), source),
-        )
-
-
-def list_cached_titles(db_path: Path) -> list[CachedTitle]:
-    if not db_path.exists():
-        return []
-    with _connect(db_path) as conn:
-        rows = conn.execute(
-            "SELECT guid, media_id, title, library_name, source FROM cached_titles"
-        ).fetchall()
-    return [
-        CachedTitle(guid=r[0], media_id=r[1], title=r[2], library_name=r[3], source=r[4] or "")
-        for r in rows
-    ]
-
-
-def list_cached_titles_for_library(db_path: Path, library_name: str) -> list[CachedTitle]:
-    if not db_path.exists():
-        return []
-    with _connect(db_path) as conn:
-        rows = conn.execute(
-            "SELECT guid, media_id, title, library_name, source FROM cached_titles "
-            "WHERE library_name = ?",
-            (library_name,),
-        ).fetchall()
-    return [
-        CachedTitle(guid=r[0], media_id=r[1], title=r[2], library_name=r[3], source=r[4] or "")
-        for r in rows
-    ]
-
-
-def remove_cached_title(db_path: Path, guid: str) -> None:
-    with _connect(db_path) as conn:
-        conn.execute("DELETE FROM cached_titles WHERE guid = ?", (guid,))
-
-
 def get_section_updated_at(db_path: Path, library_name: str) -> int | None:
     if not db_path.exists():
         return None
@@ -200,31 +150,21 @@ def set_section_updated_at(db_path: Path, library_name: str, updated_at: int) ->
         )
 
 
-def has_cached_title(db_path: Path, guid: str) -> bool:
-    if not db_path.exists():
-        return False
-    with _connect(db_path) as conn:
-        row = conn.execute("SELECT 1 FROM cached_titles WHERE guid = ?", (guid,)).fetchone()
-    return row is not None
-
-
-def list_cached_titles_missing_source(db_path: Path) -> list[CachedTitle]:
+def list_cached_titles(db_path: Path) -> list[CachedTitle]:
+    """Reads the legacy pre-FTS5 cache table — no production code writes to
+    it anymore, but scripts/migrate_to_fts5.py (the one-time upgrade path
+    for installs that predate the FTS5 migration) still reads whatever rows
+    were written there before the migration."""
     if not db_path.exists():
         return []
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT guid, media_id, title, library_name, source FROM cached_titles "
-            "WHERE source IS NULL OR source = ''"
+            "SELECT guid, media_id, title, library_name, source FROM cached_titles"
         ).fetchall()
     return [
         CachedTitle(guid=r[0], media_id=r[1], title=r[2], library_name=r[3], source=r[4] or "")
         for r in rows
     ]
-
-
-def set_cached_title_source(db_path: Path, guid: str, source: str) -> None:
-    with _connect(db_path) as conn:
-        conn.execute("UPDATE cached_titles SET source = ? WHERE guid = ?", (source, guid))
 
 
 def upsert_no_subtitle_title(
@@ -386,14 +326,6 @@ def tail_sync_log(db_path: Path, limit: int = 50) -> list[SyncLogLine]:
             (limit,),
         ).fetchall()
     return [SyncLogLine(seq=r[0], ts=r[1], message=r[2]) for r in reversed(rows)]
-
-
-def latest_sync_log_seq(db_path: Path) -> int:
-    if not db_path.exists():
-        return 0
-    with _connect(db_path) as conn:
-        row = conn.execute("SELECT MAX(seq) FROM library_sync_log").fetchone()
-    return row[0] or 0
 
 
 def set_library_item_count(db_path: Path, library_name: str, item_count: int) -> None:

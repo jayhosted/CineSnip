@@ -1,9 +1,9 @@
-"""End-to-end FastAPI route coverage for /search-quote and
-/search-episodes-quote against a real search_index SQLite fixture.
+"""End-to-end FastAPI route coverage for /search-episodes-quote and
+/search-quote-extend against a real search_index SQLite fixture.
 
-Neither route had any test exercising the actual endpoint before this file
+These routes had no test exercising the actual endpoint before this file
 (tests/test_library_search.py only ever calls search_cached_library()
-directly) — which is exactly how api.py's two call sites kept passing
+directly) — which is exactly how api.py's call sites kept passing
 search_cached_library() the old cache_dir-first signature unnoticed through
 a full review cycle (see the Task 6 brief). These tests use the real
 FastAPI TestClient against create_app() and a real search_index.db fixture,
@@ -94,52 +94,6 @@ def _client(settings: Settings, monkeypatch, fake_plex: _FakePlexClient | None =
     monkeypatch.setattr(api_module, "create_media_client", lambda s: fake_plex or _FakePlexClient(s))
     app = api_module.create_app(settings)
     return TestClient(app)
-
-
-def test_search_quote_endpoint_finds_real_cached_match(tmp_path, monkeypatch):
-    settings = _settings(tmp_path)
-    _write_title(
-        settings.quote_index_db_path,
-        "guid-1", 101, "Monty Python", "Movies",
-        ["Nobody expects the Spanish Inquisition!"],
-    )
-
-    client = _client(settings, monkeypatch)
-    resp = client.get("/search-quote", params={"quote": "nobody expects the spanish inquisition"})
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert len(body["matches"]) == 1
-    assert body["matches"][0]["media_id"] == "101"
-    assert body["matches"][0]["title"] == "Monty Python"
-
-
-def test_search_quote_endpoint_filters_to_movie_libraries(tmp_path, monkeypatch):
-    settings = _settings(tmp_path)
-    # Same line cached under a non-movie library name — /search-quote is
-    # documented movie-only (CLAUDE.md Section 5's TV-leak fix), so this
-    # must not appear even though it matches on text.
-    _write_title(
-        settings.quote_index_db_path,
-        "guid-2", 202, "Some Show", "TV Shows",
-        ["Nobody expects the Spanish Inquisition!"],
-    )
-
-    client = _client(settings, monkeypatch)
-    resp = client.get("/search-quote", params={"quote": "nobody expects the spanish inquisition"})
-
-    assert resp.status_code == 200
-    assert resp.json()["matches"] == []
-
-
-def test_search_quote_endpoint_no_matches_is_empty_not_error(tmp_path, monkeypatch):
-    settings = _settings(tmp_path)
-    client = _client(settings, monkeypatch)
-
-    resp = client.get("/search-quote", params={"quote": "a phrase that appears nowhere"})
-
-    assert resp.status_code == 200
-    assert resp.json()["matches"] == []
 
 
 def test_search_episodes_quote_endpoint_finds_real_cached_match(tmp_path, monkeypatch):
@@ -606,64 +560,6 @@ def test_random_quote_endpoint_returns_404_when_nothing_cached(tmp_path, monkeyp
     resp = client.get("/random-quote", params={"media": "all"})
 
     assert resp.status_code == 404
-
-
-def test_search_quote_endpoint_returns_more_than_eight_when_available(tmp_path, monkeypatch):
-    settings = _settings(tmp_path)
-    for i in range(12):
-        _write_title(
-            settings.quote_index_db_path,
-            f"guid-{i}", 100 + i, f"Title {i}", "Movies",
-            ["Nobody expects the Spanish Inquisition!"],
-        )
-
-    client = _client(settings, monkeypatch)
-    resp = client.get("/search-quote", params={"quote": "nobody expects the spanish inquisition"})
-
-    assert resp.status_code == 200
-    body = resp.json()
-    # Old behavior (candidate_limit=8) would have truncated this to 8 —
-    # asserting >8 proves qm.fetch_limit (default 50), not the old cap,
-    # is what reaches search_cached_library's result_limit.
-    assert len(body["matches"]) == 12
-
-
-def test_search_quote_endpoint_reports_truncated_when_more_than_fetch_limit(tmp_path, monkeypatch):
-    settings = _settings(tmp_path)
-    settings.quote_match = QuoteMatchDefaults(fetch_limit=5)
-    for i in range(8):
-        _write_title(
-            settings.quote_index_db_path,
-            f"guid-{i}", 100 + i, f"Title {i}", "Movies",
-            ["Nobody expects the Spanish Inquisition!"],
-        )
-
-    client = _client(settings, monkeypatch)
-    resp = client.get("/search-quote", params={"quote": "nobody expects the spanish inquisition"})
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert len(body["matches"]) == 5
-    assert body["truncated"] is True
-
-
-def test_search_quote_endpoint_reports_not_truncated_when_within_fetch_limit(tmp_path, monkeypatch):
-    settings = _settings(tmp_path)
-    settings.quote_match = QuoteMatchDefaults(fetch_limit=5)
-    for i in range(3):
-        _write_title(
-            settings.quote_index_db_path,
-            f"guid-{i}", 100 + i, f"Title {i}", "Movies",
-            ["Nobody expects the Spanish Inquisition!"],
-        )
-
-    client = _client(settings, monkeypatch)
-    resp = client.get("/search-quote", params={"quote": "nobody expects the spanish inquisition"})
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert len(body["matches"]) == 3
-    assert body["truncated"] is False
 
 
 def test_search_episodes_quote_endpoint_reports_truncated_when_more_than_fetch_limit(tmp_path, monkeypatch):
