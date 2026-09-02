@@ -47,6 +47,34 @@ def test_schema_creation_is_idempotent(tmp_path):
         pass  # second call must not raise
 
 
+def test_connect_migrates_pre_issue_24_rating_key_column(tmp_path):
+    """issue #24 renamed titles.rating_key -> titles.media_id, but
+    CREATE TABLE IF NOT EXISTS is a no-op against a titles table that
+    already existed under the old name. An install upgrading in place
+    must have its column renamed on first connect, not fail every
+    media_id-based query with "no such column: media_id"."""
+    db_path = tmp_path / "quote_index.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE titles(title_id INTEGER PRIMARY KEY, guid TEXT UNIQUE NOT NULL, "
+        "rating_key INTEGER NOT NULL, title TEXT NOT NULL, library_name TEXT NOT NULL, "
+        "source TEXT, sidecar_path TEXT, stream_index INTEGER, cached_at TEXT NOT NULL, "
+        "fingerprint_mtime REAL, fingerprint_size INTEGER)"
+    )
+    conn.execute(
+        "INSERT INTO titles (guid, rating_key, title, library_name, cached_at) VALUES "
+        "('guid-1', 101, 'Film One', 'Movies', '2026-01-01T00:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+
+    titles = list_titles(db_path)
+
+    assert len(titles) == 1
+    assert titles[0].guid == "guid-1"
+    assert titles[0].media_id == 101
+
+
 def test_upsert_title_round_trip(tmp_path):
     db_path = tmp_path / "quote_index.db"
     entries = _entries("Hello, world!", "Goodbye, world.")

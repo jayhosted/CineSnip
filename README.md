@@ -282,42 +282,6 @@ is nearly free when nothing's changed (a handful of lightweight media-server cal
 not a full library scan), so a short interval costs very little even on a
 quiet day.
 
-## Upgrading an existing install
-
-**Upgrading to the version that added Jellyfin support: delete
-`cache/quote_index.db` once, before starting the container.**
-
-```bash
-docker compose down
-rm cache/quote_index.db
-docker compose up -d
-```
-
-Media items are now keyed by a media-server-agnostic `media_id TEXT`
-instead of Plex's numeric `rating_key INTEGER`, and there's no in-place
-migration for that column — the index is a rebuildable cache, so deleting
-it is the migration. Nothing you can't get back is lost: the cache refills
-as titles get touched again (or all at once via `scripts/build_full_cache.py`
-/ library auto-sync). Skipping this leaves the container failing with
-`sqlite3.OperationalError: no such column: media_id`.
-
-If you already had CineSnip running before its subtitle search moved to
-SQLite+FTS5, your existing per-title JSON cache isn't automatically
-migrated into the new index — after upgrading, run the one-off migration
-script once:
-
-```
-docker compose exec cinesnip .venv/bin/python scripts/migrate_to_fts5.py
-```
-
-(or the equivalent outside Docker if you run CineSnip natively). It's a
-pure local read of your already-cached subtitles into the new index —
-no calls to your media server or ffmpeg — and it's safe to re-run; a title already migrated
-is skipped unless you pass `--force`. Until you run it (or enable library
-auto-sync above, which backfills titles gradually as they're touched),
-`/snip search` will silently return no results, since the new index starts
-empty on upgrade.
-
 ## Security & deployment
 
 CineSnip is a self-hosted, single-owner application. Its web interface
@@ -367,7 +331,6 @@ access.
 - **Bot fails to log in (401)** — `DISCORD_TOKEN` in `.env` is wrong or was reset since you copied it.
 - **"No path mapping configured for ..." / "File not found on disk"** — that library's `path_mappings` in `config.yaml` don't match what your media server reports or what's actually bind-mounted. Re-check step 5, and confirm the corresponding volume in `docker-compose.yml` points at the right host folder.
 - **"'X' is not a configured library"** — a title resolved to a library that isn't listed under `libraries` in `config.yaml`. Add an entry for it (step 5).
-- **`sqlite3.OperationalError: no such column: media_id`** — an old `cache/quote_index.db` from before Jellyfin support. Stop the container, delete that one file, and start again; it rebuilds itself. See "Upgrading an existing install" above.
 - **ffmpeg errors** — check the container logs for the actual ffmpeg stderr output; this usually means the source file is a format ffmpeg can't read directly, or the mapped path is wrong.
 - **"Couldn't generate the GIF: ... timed out"** — the source file is unusually slow for ffmpeg to seek/decode near that timestamp (raise `render_defaults.timeout_seconds` in `config.yaml` if this happens on files that should be fine), or something is stuck — check `docker compose logs`.
 - **Permission denied writing to `/app/scratch` or `/app/cache`** — the host `scratch/`/`cache/` directory got created by Docker (as `root`) instead of by you before first run. Stop the container, `rm -rf scratch cache && mkdir scratch cache`, then start it again. (Unlike `scratch/`, it's safe to leave `cache/` in place across restarts — only delete it if you actually want to force re-extraction of all subtitles.)

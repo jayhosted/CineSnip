@@ -53,6 +53,17 @@ def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
             "display_text TEXT NOT NULL"
             ")"
         )
+        # issue #24 renamed titles.rating_key -> titles.media_id, but
+        # CREATE TABLE IF NOT EXISTS is a no-op against a titles table that
+        # already existed under the old name — an install upgrading in
+        # place keeps the old column forever and every media_id-based query
+        # fails with "no such column: media_id" (first hit: /search-quote-extend,
+        # which crashes mid-stream and surfaces to the bot as an httpx
+        # "incomplete chunked read" instead of the real error). Migrate the
+        # column in place on first connect after the upgrade.
+        existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(titles)")}
+        if "media_id" not in existing_columns and "rating_key" in existing_columns:
+            conn.execute("ALTER TABLE titles RENAME COLUMN rating_key TO media_id")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_entries_title_id ON entries(title_id, idx)"
         )
