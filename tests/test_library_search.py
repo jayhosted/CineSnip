@@ -1,7 +1,12 @@
 from app.worker import search_index
-from app.worker.library_search import _merge_ranges, pick_random_quote, search_cached_library
+from app.worker.library_search import (
+    _diversify_and_rank,
+    _merge_ranges,
+    pick_random_quote,
+    search_cached_library,
+)
 from app.worker.quote_index import CachedTitle
-from app.worker.quotes import find_quote_matches, normalize_for_match
+from app.worker.quotes import QuoteMatch, find_quote_matches, normalize_for_match
 from app.worker.subtitles import SubtitleEntry
 
 
@@ -82,6 +87,63 @@ def test_search_cached_library_sorts_by_score_descending(tmp_path):
     )
 
     assert [r.title for r in results] == ["Strong Match", "Weak Match"]
+
+
+def _quote_match(text: str, score: float) -> QuoteMatch:
+    return QuoteMatch(
+        start=0.0, end=1.0, text=text, score=score, entry_indices=(0,),
+        context_before=(), context_after=(),
+    )
+
+
+def test_diversify_and_rank_tiebreaks_equal_scores_by_quote_coverage():
+    # Both titles' best line ties at score 100 (both are whole-word literal
+    # matches). Deliberately fed in the OPPOSITE order from the expected
+    # result, so a passing test can't be explained by coincidental input
+    # order — only an explicit coverage tie-break can produce this ordering.
+    loose = CachedTitle(guid="g2", media_id="2", title="Loose", library_name="Movies")
+    tight = CachedTitle(guid="g1", media_id="1", title="Tight", library_name="Movies")
+    per_title_matches = [
+        (loose, [_quote_match(
+            "History mentions the third revelation among many other ancient records of prophecy.",
+            100.0,
+        )]),
+        (tight, [_quote_match("I am the third revelation.", 100.0)]),
+    ]
+
+    results = _diversify_and_rank(per_title_matches, result_limit=8, normalized_quote="third revelation")
+
+    assert [r.title for r in results] == ["Tight", "Loose"]
+
+
+def test_search_cached_library_quoted_query_forces_literal_only(tmp_path):
+    # Wrapping the query in double quotes should behave like every other
+    # search engine's exact-phrase operator: only a whole-word substring
+    # match survives, even though a fuzzy partial-word-overlap match would
+    # otherwise pass the caller's own (very permissive) min_score.
+    db_path = _db_path(tmp_path)
+    _write_title(db_path, "guid-literal", "1", "Literal", "Movies", ["I am the third revelation."])
+    _write_title(
+        db_path, "guid-fuzzy", "2", "Fuzzy", "Movies",
+        ["The third one was a total revelation to everyone."],
+    )
+
+    cached_titles = [
+        CachedTitle(guid="guid-literal", media_id="1", title="Literal", library_name="Movies"),
+        CachedTitle(guid="guid-fuzzy", media_id="2", title="Fuzzy", library_name="Movies"),
+    ]
+
+    results = search_cached_library(
+        db_path,
+        cached_titles,
+        '"third revelation"',
+        result_limit=8,
+        min_score=1.0,
+        max_window_gap_seconds=3.0,
+        context_lines=1,
+    )
+
+    assert [r.title for r in results] == ["Literal"]
 
 
 def test_search_cached_library_respects_result_limit(tmp_path):

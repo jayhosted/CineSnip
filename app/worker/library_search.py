@@ -27,6 +27,23 @@ _DEFAULT_WINDOW_PAD = 3
 # docstring for why this is entry-level, not title-level.
 _DEFAULT_ENTRY_SCAN_LIMIT = 4000
 
+_EXACT_PHRASE_QUOTE_CHARS = '"“”'
+
+
+def _strip_exact_phrase_quotes(quote: str) -> tuple[str, bool]:
+    """A query wrapped in "double quotes" (straight or curly) requests
+    exact-phrase search, same operator as every mainstream search engine.
+    Detected on the raw string, before normalize_for_match strips quote
+    characters as punctuation."""
+    stripped = quote.strip()
+    if (
+        len(stripped) >= 2
+        and stripped[0] in _EXACT_PHRASE_QUOTE_CHARS
+        and stripped[-1] in _EXACT_PHRASE_QUOTE_CHARS
+    ):
+        return stripped[1:-1], True
+    return quote, False
+
 
 @dataclass(frozen=True)
 class LibraryQuoteMatch:
@@ -115,6 +132,7 @@ def _matches_for_title(
 def _diversify_and_rank(
     per_title_matches: list[tuple[CachedTitle, list[QuoteMatch]]],
     result_limit: int,
+    normalized_quote: str,
 ) -> list[LibraryQuoteMatch]:
     """Diversity-first ranking shared by the fast path and the fallback path.
 
@@ -126,14 +144,23 @@ def _diversify_and_rank(
     title's best line) and sorting globally by (rank, -score), so all
     rank-0 matches sort before any rank-1 match regardless of score, and
     within a rank ties break by score descending.
+
+    Equal scores are common at the literal-match tier (many titles can
+    contain the same phrase and all get force-scored to exactly 100) — a
+    third tie-break key, coverage (how much of the matched line the quote
+    itself accounts for), prefers a line where the quote is the substance of
+    the line over one where it's a small fragment of a much longer line.
+    Only breaks ties; never overrides a genuine score difference.
     """
-    ranked: list[tuple[int, LibraryQuoteMatch]] = []
+    ranked: list[tuple[int, float, LibraryQuoteMatch]] = []
 
     for cached, matches in per_title_matches:
         for rank, match in enumerate(matches):
+            coverage = len(normalized_quote) / max(len(normalize_for_match(match.text)), 1)
             ranked.append(
                 (
                     rank,
+                    coverage,
                     LibraryQuoteMatch(
                         media_id=cached.media_id,
                         title=cached.title,
@@ -143,8 +170,8 @@ def _diversify_and_rank(
                 )
             )
 
-    ranked.sort(key=lambda item: (item[0], -item[1].match.score))
-    return [match for _, match in ranked[:result_limit]]
+    ranked.sort(key=lambda item: (item[0], -item[2].match.score, -item[1]))
+    return [match for _, _, match in ranked[:result_limit]]
 
 
 def search_cached_library(
@@ -194,7 +221,17 @@ def search_cached_library(
     search_index.iter_all_entries rather than silently returning nothing.
     Both paths funnel through _diversify_and_rank so their result ordering
     can never silently diverge.
+
+    A query wrapped in "double quotes" requests exact-phrase search (the
+    same operator every mainstream search engine uses): only a whole-word
+    literal-substring match survives, by raising the effective min_score to
+    100.0 — find_quote_matches' own literal-match tier (see quotes.py)
+    already force-scores exactly those matches to 100, the same mechanism
+    pick_random_quote's quote-restricted path already relies on.
     """
+    quote, exact_phrase = _strip_exact_phrase_quotes(quote)
+    effective_min_score = 100.0 if exact_phrase else min_score
+
     normalized_quote = normalize_for_match(quote)
     if not normalized_quote:
         return []
@@ -230,7 +267,7 @@ def search_cached_library(
                 entries,
                 quote,
                 limit=per_title_limit,
-                min_score=min_score,
+                min_score=effective_min_score,
                 max_window_gap_seconds=max_window_gap_seconds,
                 context_lines=context_lines,
             )
@@ -268,7 +305,7 @@ def search_cached_library(
                 windowed_entries,
                 merged,
                 quote,
-                min_score=min_score,
+                min_score=effective_min_score,
                 max_window_gap_seconds=max_window_gap_seconds,
                 context_lines=context_lines,
                 per_title_limit=per_title_limit,
@@ -276,7 +313,7 @@ def search_cached_library(
             if title_matches:
                 per_title_matches.append((cached, title_matches))
 
-    return _diversify_and_rank(per_title_matches, result_limit)
+    return _diversify_and_rank(per_title_matches, result_limit, normalized_quote)
 
 
 def _resolve_pool_pick(

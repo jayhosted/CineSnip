@@ -2697,8 +2697,7 @@ class GifCog(commands.Cog):
         description="Search your whole library for a quote, no film needed.",
     )
     @app_commands.describe(
-        quote="A line of dialogue to find — searches cached films first, then the rest of "
-        "the library automatically if library sync is enabled"
+        quote='A line of dialogue to find — wrap it in "double quotes" for an exact-phrase-only match'
     )
     async def snip_search(self, interaction: discord.Interaction, quote: str) -> None:
         await interaction.response.defer(ephemeral=True)
