@@ -77,6 +77,13 @@ def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
             "checked_at TEXT NOT NULL"
             ")"
         )
+        # Same issue #24 rating_key->media_id migration search_index.py's
+        # titles table needed — no_subtitle_titles predates the rename too,
+        # and CREATE TABLE IF NOT EXISTS is a no-op against an existing
+        # table under the old column name.
+        no_sub_columns = {row[1] for row in conn.execute("PRAGMA table_info(no_subtitle_titles)")}
+        if "media_id" not in no_sub_columns and "rating_key" in no_sub_columns:
+            conn.execute("ALTER TABLE no_subtitle_titles RENAME COLUMN rating_key TO media_id")
 
         # Single-row table (id is always 1) tracking the current/last
         # library_sync run, for the dashboard's live panel.
