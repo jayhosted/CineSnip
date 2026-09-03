@@ -64,6 +64,11 @@ def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
         existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(cached_titles)")}
         if "source" not in existing_cols:
             conn.execute("ALTER TABLE cached_titles ADD COLUMN source TEXT")
+        # Same issue #24 rating_key->media_id rename as titles/
+        # no_subtitle_titles — cached_titles predates it too, and
+        # scripts/migrate_to_fts5.py still reads media_id off this table.
+        if "media_id" not in existing_cols and "rating_key" in existing_cols:
+            conn.execute("ALTER TABLE cached_titles RENAME COLUMN rating_key TO media_id")
 
         # The negative case cached_titles never recorded: a title that was
         # checked and found to have neither a sidecar nor an embedded
