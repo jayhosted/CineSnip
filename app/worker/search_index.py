@@ -234,8 +234,11 @@ def list_titles(db_path: Path) -> list[CachedTitle]:
         rows = conn.execute(
             "SELECT guid, media_id, title, library_name, source FROM titles"
         ).fetchall()
+    # str() guards rows written before the rating_key->media_id TEXT migration:
+    # SQLite keeps a pre-existing value's storage class (INTEGER) even after a
+    # column rename, so old rows come back as int and fail RandomQuoteResponse.
     return [
-        CachedTitle(guid=r[0], media_id=r[1], title=r[2], library_name=r[3], source=r[4] or "")
+        CachedTitle(guid=r[0], media_id=str(r[1]), title=r[2], library_name=r[3], source=r[4] or "")
         for r in rows
     ]
 
@@ -252,7 +255,7 @@ def list_titles_for_library(db_path: Path, library_name: str) -> list[CachedTitl
             (library_name,),
         ).fetchall()
     return [
-        CachedTitle(guid=r[0], media_id=r[1], title=r[2], library_name=r[3], source=r[4] or "")
+        CachedTitle(guid=r[0], media_id=str(r[1]), title=r[2], library_name=r[3], source=r[4] or "")
         for r in rows
     ]
 

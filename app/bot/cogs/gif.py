@@ -1961,12 +1961,13 @@ class RandomResultView(_InvokerOnlyView):
         self._seen_entry_ids: set[int] = {initial_pick.entry_id}
 
         # Built manually (not @discord.ui.button) so add order — and so
-        # left-to-right layout — is fully under our control: Previous only
-        # exists from the first shuffle onward, and always belongs left of
-        # Shuffle, with Post always last regardless of what else is on the
-        # row (matches every other result view's convention).
+        # left-to-right layout — is fully under our control: Previous is
+        # shown greyed out from the start (nothing to step back to yet)
+        # rather than only appearing after the first shuffle, and always
+        # belongs left of Shuffle, with Post always last regardless of what
+        # else is on the row (matches every other result view's convention).
         self._previous_button = discord.ui.Button(
-            label="◀ Previous", style=discord.ButtonStyle.secondary, row=0
+            label="◀ Previous", style=discord.ButtonStyle.secondary, row=0, disabled=True
         )
         self._previous_button.callback = self._on_previous
 
@@ -1981,6 +1982,7 @@ class RandomResultView(_InvokerOnlyView):
         )
         self.post.callback = self._on_post
 
+        self.add_item(self._previous_button)
         self.add_item(self.shuffle)
         self.add_item(self.post)
 
@@ -2033,15 +2035,6 @@ class RandomResultView(_InvokerOnlyView):
         self._history.append(_RandomHistoryEntry(picked, content, filename))
         self._pointer += 1
 
-        if self._previous_button not in self.children:
-            # First shuffle: insert Previous to the LEFT of Shuffle/Post.
-            # add_item() only ever appends, so getting Previous into the
-            # middle-not-last position means clearing and re-adding
-            # everything in the order we actually want, once.
-            self.clear_items()
-            self.add_item(self._previous_button)
-            self.add_item(self.shuffle)
-            self.add_item(self.post)
         self._previous_button.disabled = self._pointer == 0
         self.shuffle.disabled = picked.pool_size <= 1
 
