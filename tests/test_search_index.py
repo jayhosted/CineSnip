@@ -71,7 +71,7 @@ def test_connect_migrates_pre_issue_24_rating_key_column(tmp_path):
 
     assert len(titles) == 1
     assert titles[0].guid == "guid-1"
-    assert titles[0].media_id == 101
+    assert titles[0].media_id == "101"
 
 
 def test_upsert_title_round_trip(tmp_path):

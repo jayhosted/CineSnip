@@ -476,21 +476,24 @@ def test_random_result_view_button_order_previous_shuffle_post():
     fetch = _FakeFetch([_random_pick(entry_id=2, text="Second", pool_size=5)])
     view = RandomResultView(999, worker, fetch, _random_pick(entry_id=1, text="First", pool_size=5), b"x", "clip.gif")
 
-    # Before the first shuffle, Previous doesn't exist yet — Shuffle then
+    # Previous is present but greyed out from the start — Shuffle then
     # Post, with Post last.
-    assert [item.label for item in view.children] == ["🔀 Shuffle", "Post to channel"]
+    assert [item.label for item in view.children] == ["◀ Previous", "🔀 Shuffle", "Post to channel"]
+    assert view._previous_button.disabled is True
 
     asyncio.run(view.shuffle.callback(_fake_interaction()))
 
-    # Previous belongs on the left, Post always stays last.
+    # Previous stays on the left, now enabled; Post always stays last.
     assert [item.label for item in view.children] == ["◀ Previous", "🔀 Shuffle", "Post to channel"]
+    assert view._previous_button.disabled is False
 
 
 def test_random_result_view_shuffle_adds_previous_button_and_passes_exclusion():
     worker = _FakeWorker()
     fetch = _FakeFetch([_random_pick(entry_id=2, text="Second", pool_size=5)])
     view = RandomResultView(999, worker, fetch, _random_pick(entry_id=1, text="First", pool_size=5), b"x", "clip.gif")
-    assert view._previous_button not in view.children
+    assert view._previous_button in view.children
+    assert view._previous_button.disabled is True
 
     asyncio.run(view.shuffle.callback(_fake_interaction()))
 
