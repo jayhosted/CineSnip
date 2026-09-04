@@ -40,7 +40,7 @@ def _noop_optimize_gif(calls_log=None):
     what they tested before — no accidental dependency on gifsicle being
     installed on the machine running the tests."""
 
-    async def optimize_gif(gif_bytes, max_bytes, timeout_seconds=60.0):
+    async def optimize_gif(gif_bytes, max_bytes, timeout_seconds=60.0, full_parallel=False):
         if calls_log is not None:
             calls_log.append((len(gif_bytes), max_bytes))
         return gif_bytes
@@ -125,7 +125,7 @@ def test_gif_format_tries_gifsicle_before_downscale_tiers():
     # must never be reached at all.
     renderer = _FakeRenderer(size_for=lambda fps, width: 900)
 
-    async def shrinking_optimize_gif(gif_bytes, max_bytes, timeout_seconds=60.0):
+    async def shrinking_optimize_gif(gif_bytes, max_bytes, timeout_seconds=60.0, full_parallel=False):
         return b"x" * 80
 
     result = _run(renderer, max_bytes=100, optimize_gif=shrinking_optimize_gif)
@@ -143,7 +143,7 @@ def test_gif_format_falls_through_to_downscale_tiers_when_gifsicle_is_not_enough
 
     renderer = _FakeRenderer(size_for=size_for)
 
-    async def insufficient_optimize_gif(gif_bytes, max_bytes, timeout_seconds=60.0):
+    async def insufficient_optimize_gif(gif_bytes, max_bytes, timeout_seconds=60.0, full_parallel=False):
         # gifsicle helps, but not enough to clear budget on its own.
         return b"x" * 600
 
@@ -164,7 +164,7 @@ def test_gif_optimize_error_falls_through_to_downscale_tiers():
 
     renderer = _FakeRenderer(size_for=size_for)
 
-    async def broken_optimize_gif(gif_bytes, max_bytes, timeout_seconds=60.0):
+    async def broken_optimize_gif(gif_bytes, max_bytes, timeout_seconds=60.0, full_parallel=False):
         raise GifOptimizeError("gifsicle not found")
 
     result = _run(renderer, max_bytes=500, optimize_gif=broken_optimize_gif)
@@ -193,6 +193,47 @@ def test_audio_formats_skip_the_downscale_tiers_entirely():
     result = _run(renderer, max_bytes=500, clip_format="mp3")
     assert len(result) == 1000
     assert renderer.calls == [(15, 480)]
+
+
+def test_gif_tier_tries_gifsicle_before_moving_to_the_next_smaller_tier():
+    # Tier 1 (12, 480) renders oversized (1000 bytes) but a gifsicle pass
+    # on *that* tier's own output would clear budget — the loop must
+    # return that gifsicle result rather than stepping down to tier 2
+    # (10, 400), preserving more resolution than necessary.
+    renderer = _FakeRenderer(size_for=lambda fps, width: 1000)
+    optimize_calls: list[int] = []
+
+    async def optimize_gif(gif_bytes, max_bytes, timeout_seconds=60.0, full_parallel=False):
+        optimize_calls.append(len(gif_bytes))
+        if len(optimize_calls) == 1:
+            return b"x" * 900  # pre-downscale attempt: gifsicle helps, but not enough
+        return b"x" * 80  # tier 1's own gifsicle pass: fits
+
+    result = _run(renderer, max_bytes=100, optimize_gif=optimize_gif)
+    assert len(result) == 80
+    # Pre-downscale gifsicle attempt (on the configured-settings render),
+    # then one more on tier 1's (12, 480) output — never reaches tier 2.
+    assert optimize_calls == [1000, 1000]
+    assert renderer.calls == [(15, 480), (12, 480)]
+
+
+def test_gif_tier_gifsicle_failure_still_falls_through_to_next_tier():
+    # gifsicle failing on a downscaled tier's output must degrade to the
+    # next tier, not blow up the whole render — same contract as the
+    # pre-downscale gifsicle attempt already has.
+    def size_for(fps, width):
+        if (fps, width) == (10, 400):
+            return 50
+        return 1000
+
+    renderer = _FakeRenderer(size_for=size_for)
+
+    async def broken_optimize_gif(gif_bytes, max_bytes, timeout_seconds=60.0, full_parallel=False):
+        raise GifOptimizeError("gifsicle not found")
+
+    result = _run(renderer, max_bytes=500, optimize_gif=broken_optimize_gif)
+    assert len(result) == 50
+    assert renderer.calls == [(15, 480), (12, 480), (10, 400)]
 
 
 def test_audio_language_is_forwarded_to_the_renderer():

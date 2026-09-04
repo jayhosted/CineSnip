@@ -232,6 +232,7 @@ async def _render_within_size_limit(
     optimize_gif=_real_optimize_gif,
     gifsicle_timeout_seconds: float = 60.0,
     audio_language: str = "eng",
+    full_parallel_gifsicle: bool = False,
 ) -> bytes:
     """Renders at the configured fps/width first. If the result exceeds
     max_bytes and the format is GIF, tries gifsicle recompression
@@ -262,7 +263,10 @@ async def _render_within_size_limit(
     if clip_format == "gif":
         try:
             gifsicle_result = await optimize_gif(
-                clip_bytes, max_bytes, timeout_seconds=gifsicle_timeout_seconds
+                clip_bytes,
+                max_bytes,
+                timeout_seconds=gifsicle_timeout_seconds,
+                full_parallel=full_parallel_gifsicle,
             )
         except GifOptimizeError as exc:
             logger.warning("gifsicle tier unavailable, falling back to downscaling: %s", exc)
@@ -293,6 +297,37 @@ async def _render_within_size_limit(
             smallest = attempt
         if len(attempt) <= max_bytes:
             return attempt
+
+        # A downscale tier landing just short of budget doesn't have to
+        # mean stepping down to an even smaller/choppier tier — a gifsicle
+        # pass on *this* tier's own output is far cheaper than another
+        # full ffmpeg re-encode, and can clear budget without dropping
+        # resolution any further than this tier already has. This is a
+        # fresh, never-before-optimized GIF at this resolution (each
+        # tier's `attempt` is straight from render_clip), not a second
+        # gifsicle pass stacked on already-`-O3`'d bytes — confirmed by
+        # measurement that gifsicle's lossy compression barely helps once
+        # applied on top of its own prior lossless pass, so this must
+        # never receive `attempt` after it's already been through
+        # optimize_gif once.
+        if clip_format == "gif":
+            try:
+                gifsicle_attempt = await optimize_gif(
+                    attempt,
+                    max_bytes,
+                    timeout_seconds=gifsicle_timeout_seconds,
+                    full_parallel=full_parallel_gifsicle,
+                )
+            except GifOptimizeError as exc:
+                logger.warning(
+                    "gifsicle tier unavailable for downscaled attempt, moving to next tier: %s",
+                    exc,
+                )
+            else:
+                if len(gifsicle_attempt) < len(smallest):
+                    smallest = gifsicle_attempt
+                if len(gifsicle_attempt) <= max_bytes:
+                    return gifsicle_attempt
     return smallest
 
 
@@ -481,6 +516,13 @@ def create_app(settings: Settings) -> FastAPI:
     # produced. A render beyond the limit waits for a free slot rather
     # than failing.
     app.state.render_semaphore = asyncio.Semaphore(settings.render_defaults.max_concurrent_renders)
+    # Plain int, not derived from the semaphore's own internals — tracks how
+    # many renders are inside the semaphore block *right now*, so gifsicle
+    # optimization can tell "am I the only one" apart from "others are
+    # contending" and skip _GROUP_SIZE's pacing when it is. Safe unguarded
+    # (no lock) since every mutation below happens on the single event loop
+    # thread with no `await` between the increment/decrement and the read.
+    app.state.active_renders = 0
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
@@ -690,23 +732,31 @@ def create_app(settings: Settings) -> FastAPI:
             # happened outside the semaphore, so a request waiting for a
             # render slot isn't also holding one up over unrelated I/O.
             async with app.state.render_semaphore:
-                clip_bytes = await _render_within_size_limit(
-                    app.state.renderer,
-                    container_path,
-                    start,
-                    clip_duration,
-                    settings.scratch_dir,
-                    clip_format,
-                    subtitle_entries,
-                    style_preset,
-                    settings.three_d_format_for(movie.library_name),
-                    subtitle_overrides or None,
-                    settings.render_defaults.fps,
-                    settings.render_defaults.width,
-                    settings.render_defaults.max_file_size_bytes,
-                    gifsicle_timeout_seconds=settings.render_defaults.gifsicle_timeout_seconds,
-                    audio_language=settings.render_defaults.audio_language,
-                )
+                app.state.active_renders += 1
+                try:
+                    clip_bytes = await _render_within_size_limit(
+                        app.state.renderer,
+                        container_path,
+                        start,
+                        clip_duration,
+                        settings.scratch_dir,
+                        clip_format,
+                        subtitle_entries,
+                        style_preset,
+                        settings.three_d_format_for(movie.library_name),
+                        subtitle_overrides or None,
+                        settings.render_defaults.fps,
+                        settings.render_defaults.width,
+                        settings.render_defaults.max_file_size_bytes,
+                        # Only meaningful once inside the semaphore, since
+                        # that's the whole population active_renders counts —
+                        # ==1 means this render is currently the only one.
+                        full_parallel_gifsicle=app.state.active_renders == 1,
+                        gifsicle_timeout_seconds=settings.render_defaults.gifsicle_timeout_seconds,
+                        audio_language=settings.render_defaults.audio_language,
+                    )
+                finally:
+                    app.state.active_renders -= 1
         except RenderTimeoutError as exc:
             # Safe to echo verbatim — SubprocessTimeoutError's message is a
             # fixed, generic template (error_prefix + elapsed seconds), never

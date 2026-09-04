@@ -63,10 +63,16 @@ def test_lossy_candidates_are_ascending():
 
 
 def test_optimize_gif_returns_baseline_when_lossless_pass_already_fits(monkeypatch):
+    # The first lossy group now races alongside the -O3 baseline (see
+    # _optimize_gif_unsafe) rather than waiting for it to fail first, so
+    # the fake must handle both call shapes — but the baseline must still
+    # win outright once it fits, discarding whatever the racing lossy
+    # candidates produced.
     async def fake_run_and_capture(args, timeout_seconds, error_prefix, **kwargs):
         assert kwargs["stdin_data"] == b"source-gif-bytes"
-        assert "-O3" in args and "--lossy" not in " ".join(args)
-        return b"o3-result"
+        if "--lossy" not in " ".join(args):
+            return b"o3-result"
+        return b"x" * 999  # lossy candidates racing alongside baseline; must lose to it
 
     monkeypatch.setattr(gif_optimize, "run_and_capture", fake_run_and_capture)
     result = asyncio.run(optimize_gif(b"source-gif-bytes", max_bytes=100))
@@ -226,3 +232,83 @@ def test_bounded_stops_after_first_fitting_group_no_extra_candidates_launched(mo
     lossy_calls = [n for n in call_log if n is not None]
     assert set(lossy_calls) == {2, 5}  # only the first group ever ran
     assert len(lossy_calls) == _GROUP_SIZE
+
+
+def test_baseline_races_with_first_group_not_after_it(monkeypatch):
+    # The -O3 baseline and the first lossy group must be in flight at the
+    # same time, not baseline-then-group sequentially — proven by making
+    # the baseline call block until a lossy candidate has already started.
+    lossy_started = asyncio.Event()
+    baseline_called = asyncio.Event()
+
+    async def fake_run_and_capture(args, timeout_seconds, error_prefix, **kwargs):
+        n = _lossy_n_from_args(args)
+        if n is None:
+            baseline_called.set()
+            # Would deadlock (timeout the test) if the first lossy group
+            # were only launched after this baseline call returns.
+            await asyncio.wait_for(lossy_started.wait(), timeout=2)
+            return b"x" * 1000  # too big
+        lossy_started.set()
+        if n == 5:
+            return b"x" * 90  # fits
+        return b"x" * 1000
+
+    monkeypatch.setattr(gif_optimize, "run_and_capture", fake_run_and_capture)
+    result = asyncio.run(optimize_gif(b"source-gif-bytes", max_bytes=100))
+    assert result == b"x" * 90
+    assert baseline_called.is_set()
+
+
+def test_baseline_wins_over_a_fitting_lossy_candidate_from_the_same_group(monkeypatch):
+    # Both the baseline and N=5 fit — the lossless baseline must win even
+    # though it's racing concurrently with the lossy group, not just when
+    # it runs alone.
+    async def fake_run_and_capture(args, timeout_seconds, error_prefix, **kwargs):
+        n = _lossy_n_from_args(args)
+        if n is None:
+            return b"o3-result"  # fits
+        return b"x" * 90  # also fits, but must lose to the lossless baseline
+
+    monkeypatch.setattr(gif_optimize, "run_and_capture", fake_run_and_capture)
+    result = asyncio.run(optimize_gif(b"source-gif-bytes", max_bytes=100))
+    assert result == b"o3-result"
+
+
+def test_full_parallel_launches_every_candidate_in_one_group(monkeypatch):
+    # full_parallel=True is set by api.py only when this render is the
+    # sole active one (app.state.active_renders) — the contention _GROUP_SIZE
+    # protects against doesn't exist in that case, so all candidates should
+    # launch together instead of in bounded groups.
+    call_log = []
+
+    async def fake_run_and_capture(args, timeout_seconds, error_prefix, **kwargs):
+        n = _lossy_n_from_args(args)
+        call_log.append(n)
+        if n == 30:
+            return b"x" * 90  # only the last, most-aggressive candidate fits
+        return b"x" * 500  # covers every other candidate and the -O3 baseline
+
+    monkeypatch.setattr(gif_optimize, "run_and_capture", fake_run_and_capture)
+    result = asyncio.run(optimize_gif(b"source-gif-bytes", max_bytes=100, full_parallel=True))
+    assert result == b"x" * 90
+    lossy_calls = [n for n in call_log if n is not None]
+    # All 5 candidates ran in a single group, not split across _GROUP_SIZE-sized ones.
+    assert set(lossy_calls) == set(_LOSSY_CANDIDATES)
+
+
+def test_default_full_parallel_is_false_and_preserves_grouped_behavior(monkeypatch):
+    call_log = []
+
+    async def fake_run_and_capture(args, timeout_seconds, error_prefix, **kwargs):
+        n = _lossy_n_from_args(args)
+        call_log.append(n)
+        if n == 2:
+            return b"x" * 90
+        return b"x" * 500
+
+    monkeypatch.setattr(gif_optimize, "run_and_capture", fake_run_and_capture)
+    result = asyncio.run(optimize_gif(b"source-gif-bytes", max_bytes=100))
+    assert result == b"x" * 90
+    lossy_calls = [n for n in call_log if n is not None]
+    assert set(lossy_calls) == {2, 5}  # unchanged default: only first group ran
