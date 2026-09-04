@@ -19,6 +19,21 @@ if TYPE_CHECKING:
 # threadpool threads (asyncio.to_thread), so a read must never block behind
 # or error out from a concurrent write.
 
+# Schema creation/migration (below) only needs to actually run once per db
+# file's lifetime, not on every one of hundreds of per-call connections —
+# real measurement on a 279-episode whole-show TV search found this loop
+# alone (2 CREATE TABLE, 1 CREATE INDEX, 1 CREATE VIRTUAL TABLE fts5, a
+# PRAGMA table_info introspection, and the migration check, all re-run per
+# connection) added several seconds of pure redundant DDL overhead. Safe to
+# cache per-process (not persisted anywhere) since CLAUDE.md Section 8 is
+# one container/one process per install — no other process ever touches
+# this db file concurrently. Known ceiling: if the db file is deleted and
+# recreated *while this process keeps running* (not a supported flow —
+# library_sync/"Sync now" only ever add/update/remove rows, never drop the
+# file), this cache would wrongly skip re-creating the schema on the next
+# connect; restarting the container clears it.
+_initialized_dbs: set[Path] = set()
+
 
 @contextmanager
 def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
@@ -28,48 +43,50 @@ def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS titles("
-            "title_id INTEGER PRIMARY KEY, "
-            "guid TEXT UNIQUE NOT NULL, "
-            "media_id TEXT NOT NULL, "
-            "title TEXT NOT NULL, "
-            "library_name TEXT NOT NULL, "
-            "source TEXT, "
-            "sidecar_path TEXT, "
-            "stream_index INTEGER, "
-            "cached_at TEXT NOT NULL, "
-            "fingerprint_mtime REAL, "
-            "fingerprint_size INTEGER"
-            ")"
-        )
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS entries("
-            "id INTEGER PRIMARY KEY, "
-            "title_id INTEGER NOT NULL REFERENCES titles(title_id) ON DELETE CASCADE, "
-            "idx INTEGER NOT NULL, "
-            "start REAL NOT NULL, "
-            "end REAL NOT NULL, "
-            "display_text TEXT NOT NULL"
-            ")"
-        )
-        # issue #24 renamed titles.rating_key -> titles.media_id, but
-        # CREATE TABLE IF NOT EXISTS is a no-op against a titles table that
-        # already existed under the old name — an install upgrading in
-        # place keeps the old column forever and every media_id-based query
-        # fails with "no such column: media_id" (first hit: /search-quote-extend,
-        # which crashes mid-stream and surfaces to the bot as an httpx
-        # "incomplete chunked read" instead of the real error). Migrate the
-        # column in place on first connect after the upgrade.
-        existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(titles)")}
-        if "media_id" not in existing_columns and "rating_key" in existing_columns:
-            conn.execute("ALTER TABLE titles RENAME COLUMN rating_key TO media_id")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_entries_title_id ON entries(title_id, idx)"
-        )
-        conn.execute(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(normalized_text, content='')"
-        )
+        if db_path not in _initialized_dbs:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS titles("
+                "title_id INTEGER PRIMARY KEY, "
+                "guid TEXT UNIQUE NOT NULL, "
+                "media_id TEXT NOT NULL, "
+                "title TEXT NOT NULL, "
+                "library_name TEXT NOT NULL, "
+                "source TEXT, "
+                "sidecar_path TEXT, "
+                "stream_index INTEGER, "
+                "cached_at TEXT NOT NULL, "
+                "fingerprint_mtime REAL, "
+                "fingerprint_size INTEGER"
+                ")"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS entries("
+                "id INTEGER PRIMARY KEY, "
+                "title_id INTEGER NOT NULL REFERENCES titles(title_id) ON DELETE CASCADE, "
+                "idx INTEGER NOT NULL, "
+                "start REAL NOT NULL, "
+                "end REAL NOT NULL, "
+                "display_text TEXT NOT NULL"
+                ")"
+            )
+            # issue #24 renamed titles.rating_key -> titles.media_id, but
+            # CREATE TABLE IF NOT EXISTS is a no-op against a titles table that
+            # already existed under the old name — an install upgrading in
+            # place keeps the old column forever and every media_id-based query
+            # fails with "no such column: media_id" (first hit: /search-quote-extend,
+            # which crashes mid-stream and surfaces to the bot as an httpx
+            # "incomplete chunked read" instead of the real error). Migrate the
+            # column in place on first connect after the upgrade.
+            existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(titles)")}
+            if "media_id" not in existing_columns and "rating_key" in existing_columns:
+                conn.execute("ALTER TABLE titles RENAME COLUMN rating_key TO media_id")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_entries_title_id ON entries(title_id, idx)"
+            )
+            conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(normalized_text, content='')"
+            )
+            _initialized_dbs.add(db_path)
         yield conn
         conn.commit()
     finally:

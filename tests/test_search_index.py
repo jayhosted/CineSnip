@@ -2,6 +2,7 @@ import sqlite3
 import threading
 import time
 
+from app.worker import search_index as search_index_module
 from app.worker.quote_index import CachedTitle
 from app.worker.search_index import (
     _connect,
@@ -44,6 +45,29 @@ def test_schema_creation_is_idempotent(tmp_path):
         pass
     with _connect(db_path):
         pass  # second call must not raise
+
+
+def test_schema_ddl_only_runs_once_per_db_path(tmp_path, monkeypatch):
+    # Perf regression coverage: schema creation/migration must not re-run
+    # on every connection (real measurement: several seconds of pure
+    # redundant DDL overhead across a 279-connection whole-show TV search).
+    monkeypatch.setattr(search_index_module, "_initialized_dbs", set())
+    db_path = tmp_path / "quote_index.db"
+
+    assert db_path not in search_index_module._initialized_dbs
+    with _connect(db_path):
+        pass
+    # The schema-creation branch must have actually run and recorded this
+    # db_path as initialized...
+    assert db_path in search_index_module._initialized_dbs
+
+    # ...and a real table created by that first connect must still be
+    # queryable — the guard must only skip *re-running* the DDL, not the
+    # actual schema it creates.
+    with _connect(db_path) as conn:
+        conn.execute("SELECT * FROM titles")
+        conn.execute("SELECT * FROM entries")
+        conn.execute("SELECT * FROM entries_fts")
 
 
 def test_connect_migrates_pre_issue_24_rating_key_column(tmp_path):

@@ -207,6 +207,13 @@ class RandomQuoteResponse(BaseModel):
 # count — cutting fps buys real size reduction before touching
 # resolution at all. Width only comes down once fps alone isn't enough,
 # and even then only as far as needed.
+# Caps how many episodes' cache-check-or-extraction work runs at once for a
+# whole-show search/random pick (search_episodes_quote, random_line_show) —
+# see _ensure_all_episodes_cached. Not user-configurable: it's an internal
+# safety valve against overwhelming ffmpeg on a never-touched show, not a
+# value an installer would ever need to tune per-library.
+_EPISODE_CACHE_CHECK_CONCURRENCY = 8
+
 _DOWNSCALE_TIERS: list[tuple[int, int]] = [
     (12, 480),
     (10, 400),
@@ -1013,11 +1020,7 @@ def create_app(settings: Settings) -> FastAPI:
             except ShowNotFoundError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-        # Sequential, not gathered concurrently — same reasoning as
-        # /search-episodes-quote: avoids hammering ffmpeg/Plex with a
-        # dozen-plus simultaneous extractions for a never-touched show.
-        for ep in episodes:
-            await _ensure_episode_cached(ep)
+        await _ensure_all_episodes_cached(episodes)
 
         cached_titles = [
             CachedTitle(guid=ep.guid, media_id=ep.media_id, title=ep.title, library_name=ep.library_name)
@@ -1081,7 +1084,15 @@ def create_app(settings: Settings) -> FastAPI:
             )
             return
 
-        if not os.path.exists(container_path):
+        # Off the event loop like find_sidecar_subtitle in get_subtitles()
+        # (same reasoning) — a bare os.path.exists() here blocks the whole
+        # event loop for its duration, which would silently re-serialize
+        # _ensure_all_episodes_cached's bounded concurrency despite the
+        # semaphore/gather around it: confirmed by measurement, this one
+        # line alone kept a real 279-episode show's warm search at ~17s
+        # even after find_sidecar_subtitle was fixed the same way.
+        exists = await asyncio.to_thread(os.path.exists, container_path)
+        if not exists:
             logger.warning(
                 "Skipping %s in show-wide search: file not found on disk at %s",
                 episode.title,
@@ -1105,6 +1116,30 @@ def create_app(settings: Settings) -> FastAPI:
 
         _index_if_searchable(settings, episode, result)
 
+    async def _ensure_all_episodes_cached(episodes: list[MovieResult]) -> None:
+        # Bounded concurrency, not strictly sequential and not unbounded
+        # gather — sequential was the original design specifically to
+        # avoid hammering ffmpeg/Plex with a dozen-plus simultaneous
+        # extractions for a never-touched show, but that protection is
+        # only needed for episodes that actually turn out to need
+        # extraction. For an already-cached episode, _ensure_episode_cached
+        # is just a filesystem stat plus a SQLite read — real measurement
+        # on a 279-episode show found the strictly-sequential version took
+        # ~34s purely from serializing those cheap per-episode checks one
+        # at a time, identical whether the show was cold or fully warm.
+        # _EPISODE_CACHE_CHECK_CONCURRENCY caps how many episodes are ever
+        # actually being extracted (or checked) at once, keeping the
+        # original protection intact while letting the common
+        # already-cached case run at something close to this concurrency
+        # limit's speed instead of one-at-a-time.
+        semaphore = asyncio.Semaphore(_EPISODE_CACHE_CHECK_CONCURRENCY)
+
+        async def _bounded(episode: MovieResult) -> None:
+            async with semaphore:
+                await _ensure_episode_cached(episode)
+
+        await asyncio.gather(*(_bounded(ep) for ep in episodes))
+
     # Show-wide search (CLAUDE.md Section 4): mirrors /search-quote's
     # diversity-first ranking but scoped to one show's episodes. Unlike
     # /search-quote, this DOES touch the live filesystem/Plex for episodes
@@ -1118,10 +1153,7 @@ def create_app(settings: Settings) -> FastAPI:
         except ShowNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-        # Sequential, not gathered concurrently — avoids hammering ffmpeg/Plex
-        # with a dozen-plus simultaneous extractions for a never-touched show.
-        for episode in episodes:
-            await _ensure_episode_cached(episode)
+        await _ensure_all_episodes_cached(episodes)
 
         # Built straight from the episodes list already in hand rather than
         # re-reading the SQLite quote_index — that index exists to avoid a

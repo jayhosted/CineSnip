@@ -11,13 +11,15 @@ with search_cached_library() itself never mocked, so a regression back to
 the wrong first argument (or the wrong type) fails here.
 """
 
+import asyncio
+
 from fastapi.testclient import TestClient
 
 from app.settings import Settings
 from app.worker import api as api_module
 from app.worker import search_index
 from app.worker.media_client import MovieResult
-from app.worker.subtitles import SubtitleEntry
+from app.worker.subtitles import SubtitleEntry, SubtitleResult, SubtitleSource
 
 
 class _FakePlexClient:
@@ -142,6 +144,59 @@ def test_search_episodes_quote_endpoint_no_matches_is_empty_not_error(tmp_path, 
 
     assert resp.status_code == 200
     assert resp.json()["matches"] == []
+
+
+def test_search_episodes_quote_endpoint_checks_episodes_with_bounded_concurrency(
+    tmp_path, monkeypatch
+):
+    # Real-world regression: a 279-episode show measured ~34s here purely
+    # from checking each episode's cache status one at a time, identical
+    # whether the show was cold or fully warm — the per-episode check
+    # itself is cheap (a stat + a SQLite read), serializing it wasn't. This
+    # proves the fix without needing real ffmpeg/filesystem/Plex: episodes
+    # must run with real concurrency (max_in_flight > 1), but still capped
+    # at _EPISODE_CACHE_CHECK_CONCURRENCY so a never-touched show can't
+    # hammer ffmpeg with unbounded simultaneous extractions.
+    settings = _settings(tmp_path)
+    episode_count = api_module._EPISODE_CACHE_CHECK_CONCURRENCY * 2
+    episodes = [
+        MovieResult(
+            media_id=str(700 + i), title=f"Show — S01E{i:02d} — Ep", year=None,
+            duration_ms=1000, thumb_url=None, source_path=f"D:\\TV\\show\\ep{i}.mkv",
+            guid=f"ep-guid-{i}", library_name="TV Shows",
+        )
+        for i in range(episode_count)
+    ]
+    fake_plex = _FakePlexClient(settings)
+    fake_plex._episodes_by_show["900"] = episodes
+    client = _client(settings, monkeypatch, fake_plex)
+
+    # Bypass real path-mapping/filesystem checks — this test is only about
+    # _ensure_all_episodes_cached's concurrency, not path resolution.
+    monkeypatch.setattr(api_module, "_resolve_container_path", lambda movie, settings: "fake-path")
+    monkeypatch.setattr(api_module.os.path, "exists", lambda path: True)
+
+    in_flight = 0
+    max_in_flight = 0
+    call_count = 0
+
+    async def fake_get_subtitles(movie, container_path, cache_dir, db_path, **kwargs):
+        nonlocal in_flight, max_in_flight, call_count
+        call_count += 1
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.01)  # real yield, so other episodes can actually interleave
+        in_flight -= 1
+        return SubtitleResult(guid=movie.guid, source=SubtitleSource.NONE, entries=[])
+
+    monkeypatch.setattr(api_module, "get_subtitles", fake_get_subtitles)
+
+    resp = client.get("/search-episodes-quote/900", params={"quote": "anything"})
+
+    assert resp.status_code == 200
+    assert call_count == episode_count
+    assert max_in_flight > 1  # real concurrency, not the old strictly-sequential loop
+    assert max_in_flight <= api_module._EPISODE_CACHE_CHECK_CONCURRENCY  # still bounded
 
 
 import json

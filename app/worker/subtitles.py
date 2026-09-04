@@ -390,7 +390,16 @@ async def get_subtitles(
     # every caller still passes settings.cache_dir for other purposes at
     # the same call site's surrounding code.
     video_path = Path(container_video_path)
-    sidecar = find_sidecar_subtitle(video_path)
+    # Off the event loop, not called directly — find_sidecar_subtitle does
+    # real filesystem I/O (stat, sometimes a directory listing), and a
+    # synchronous call here would block the *entire* event loop for its
+    # duration. Invisible for a single request, but api.py's whole-show
+    # loops (search_episodes_quote, random_line_show) call get_subtitles
+    # for every episode — without to_thread here, asyncio.gather()-ing
+    # those calls would still serialize on this line regardless of any
+    # concurrency bound placed around them, since there'd be no await
+    # point for other episodes' checks to run during it.
+    sidecar = await asyncio.to_thread(find_sidecar_subtitle, video_path)
 
     cached = await asyncio.to_thread(_read_cached_via_index, db_path, movie.guid, sidecar, video_path)
     if cached is not None:
