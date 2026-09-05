@@ -280,3 +280,38 @@ def test_render_coerces_int_media_id_to_str_in_json_body():
 
     assert captured["body"]["media_id"] == "123"
     assert isinstance(captured["body"]["media_id"], str)
+
+
+def test_style_options_parses_worker_response():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/style-presets"
+        return httpx.Response(
+            200,
+            json=[
+                {"name": "classic", "label": "Classic (white, black outline)"},
+                {"name": "boxed", "label": "Boxed"},
+            ],
+        )
+
+    client = _client_with_mock(handler)
+    options = asyncio.run(client.style_options())
+
+    assert options == [
+        ("classic", "Classic (white, black outline)"),
+        ("boxed", "Boxed"),
+    ]
+
+
+def test_preview_style_returns_raw_bytes():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/style-presets/preview"
+        assert request.method == "POST"
+        body = json.loads(request.content)
+        assert body == {"font": "Liberation Sans", "font_size": 26}
+        return httpx.Response(200, content=b"\x89PNG\r\n\x1a\nfakepngbytes")
+
+    client = _client_with_mock(handler)
+    png_bytes = asyncio.run(client.preview_style({"font": "Liberation Sans", "font_size": 26}))
+
+    assert png_bytes == b"\x89PNG\r\n\x1a\nfakepngbytes"
+    assert png_bytes.startswith(b"\x89PNG")

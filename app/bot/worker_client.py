@@ -45,6 +45,9 @@ RANDOM_LINE_TIMEOUT_SECONDS = 480.0
 # path) mirrors /search-episodes-quote's serial per-episode extraction.
 RANDOM_LINE_SHOW_TIMEOUT_SECONDS = 900.0
 
+# A single PNG frame, not a real clip — far cheaper than RENDER_TIMEOUT_SECONDS.
+PREVIEW_STYLE_TIMEOUT_SECONDS = 30.0
+
 
 @dataclass
 class MovieResult:
@@ -346,3 +349,15 @@ class WorkerClient:
             start=float(response.headers["X-Clip-Start"]),
             duration=float(response.headers["X-Clip-Duration"]),
         )
+
+    async def style_options(self) -> list[tuple[str, str]]:
+        response = await self._client.get("/style-presets")
+        response.raise_for_status()
+        return [(item["name"], item["label"]) for item in response.json()]
+
+    async def preview_style(self, style: dict) -> bytes:
+        response = await self._client.post(
+            "/style-presets/preview", json=style, timeout=PREVIEW_STYLE_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        return response.content
