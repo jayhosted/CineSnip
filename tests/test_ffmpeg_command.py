@@ -535,3 +535,27 @@ def test_probe_audio_streams_parses_language_and_title_tags(monkeypatch):
     assert [s.language for s in streams] == ["ger", "eng"]
     assert [s.relative_index for s in streams] == [0, 1]
     assert streams[1].title == "English 5.1 DTS"
+
+
+def test_scale_and_subtitle_filter_appends_fontsdir_when_configured():
+    from pathlib import Path
+
+    renderer = ClipRenderer(fps=15, width=480, fonts_dir=Path("/app/cache/fonts"))
+    filter_str = renderer._scale_and_subtitle_filter(480, Path("/tmp/subs.ass"))
+    assert filter_str.endswith(":fontsdir='/app/cache/fonts'")
+
+
+def test_scale_and_subtitle_filter_omits_fontsdir_when_not_configured():
+    from pathlib import Path
+
+    renderer = ClipRenderer(fps=15, width=480)
+    filter_str = renderer._scale_and_subtitle_filter(480, Path("/tmp/subs.ass"))
+    assert "fontsdir" not in filter_str
+
+
+def test_scale_and_subtitle_filter_omits_fontsdir_with_no_ass_path():
+    from pathlib import Path
+
+    renderer = ClipRenderer(fps=15, width=480, fonts_dir=Path("/app/cache/fonts"))
+    filter_str = renderer._scale_and_subtitle_filter(480, None)
+    assert filter_str == "scale=480:-2:flags=lanczos"

@@ -462,7 +462,7 @@ def choose_audio_stream(streams: list[AudioStreamInfo], preferred_language: str)
     return 0
 
 
-def _escape_filter_path(path: Path) -> str:
+def escape_filter_path(path: Path) -> str:
     # ffmpeg's filtergraph syntax treats ':' as an option separator, so a
     # bare path breaks parsing the moment it hits one — wrapping in single
     # quotes is the standard fix, but backslashes/colons inside still need
@@ -478,6 +478,7 @@ class ClipRenderer:
         width: int,
         timeout_seconds: float = 60.0,
         crop_cache_db_path: Path | None = None,
+        fonts_dir: Path | None = None,
     ):
         self._fps = fps
         self._width = width
@@ -488,6 +489,13 @@ class ClipRenderer:
         # in production (CLAUDE.md: no per-library/config gate for this,
         # unlike 3D — it doesn't change extraction semantics).
         self._crop_cache_db_path = crop_cache_db_path
+        # Extra font search directory for libass (issue #20's style
+        # editor's uploaded fonts) — passed to the `subtitles` filter's
+        # `fontsdir` option unconditionally whenever subtitles are burned
+        # in. Harmless for a preset using only system fonts: fontsdir is an
+        # *additional* search path, not a replacement for fontconfig's
+        # normal lookup.
+        self._fonts_dir = fonts_dir
 
     async def render_clip(
         self,
@@ -661,7 +669,10 @@ class ClipRenderer:
             filters.append(_HDR_TONEMAP_FILTER)
         filters.append(f"scale={width}:-2:flags=lanczos")
         if ass_path is not None:
-            filters.append(f"subtitles={_escape_filter_path(ass_path)}")
+            subs_filter = f"subtitles={escape_filter_path(ass_path)}"
+            if self._fonts_dir is not None:
+                subs_filter += f":fontsdir={escape_filter_path(self._fonts_dir)}"
+            filters.append(subs_filter)
         return ",".join(filters)
 
     async def _render_gif(

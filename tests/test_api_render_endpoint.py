@@ -311,3 +311,17 @@ def test_render_forwards_the_configured_audio_language_to_the_renderer(tmp_path,
 
     assert response.status_code == 200
     assert captured["audio_language"] == "fre"
+
+
+def test_render_rejects_unknown_style_with_422(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    movie_path = tmp_path / "movie.mkv"
+    movie_path.write_bytes(b"fake")
+    client = _client(settings, monkeypatch, "/media/movie.mkv")
+
+    response = client.post(
+        "/render",
+        json={"media_id": "1", "timecode": "0:01", "style": "not-a-real-style"},
+    )
+    assert response.status_code == 422
+    assert "not-a-real-style" in response.json()["detail"]

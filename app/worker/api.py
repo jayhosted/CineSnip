@@ -27,7 +27,6 @@ from app.worker.media_client import (
 from app.worker.quote_index import CachedTitle
 from app.worker.quotes import find_quote_matches
 from app.worker.subprocess_utils import SubprocessTimeoutError
-from app.worker.subtitle_render import STYLE_PRESETS
 from app.worker.subtitles import (
     SubtitleResult,
     SubtitleSource,
@@ -106,7 +105,12 @@ class RenderRequest(BaseModel):
     # with no usable subtitles for the clip's own window degrades to plain
     # (no burn-in) rather than erroring — echoed back via X-Clip-Style so
     # the caller can tell the difference from what it asked for.
-    style: Literal["classic", "boxed", "cinematic", "meme", "none"] | None = None
+    # Was a Literal restricted to the 5 built-in preset names — loosened to
+    # a plain str so a custom preset (Task 1's config-driven
+    # Settings.style_presets(), added by the web style editor) can be
+    # requested too. An unrecognized name is now rejected with a clean 422
+    # below rather than by pydantic's own literal-mismatch error.
+    style: str | None = None
     # Per-line text overrides/suppressions for a clip-edit session, keyed by
     # the subtitle entry's own index (SubtitleEntry.index / GET /subtitles'
     # entries[].index) — JSON object keys are always strings on the wire,
@@ -527,6 +531,7 @@ def create_app(settings: Settings) -> FastAPI:
         width=settings.render_defaults.width,
         timeout_seconds=settings.render_defaults.timeout_seconds,
         crop_cache_db_path=settings.quote_index_db_path,
+        fonts_dir=settings.cache_dir / "fonts",
     )
     # Global cap on simultaneous ffmpeg+gifsicle render work (issue #17) —
     # layered on top of, not a replacement for, the single-pass GIF
@@ -717,6 +722,18 @@ def create_app(settings: Settings) -> FastAPI:
             {int(k): v for k, v in req.subtitle_overrides.items()} if req.subtitle_overrides else {}
         )
 
+        # Validated up front, before any subtitle extraction runs — an
+        # unknown style name is a client input error and must fail fast
+        # with a clean 422, not surface as a KeyError deep inside the
+        # render path (nor get masked by an unrelated extraction failure
+        # if this check instead waited until after get_subtitles below).
+        style_presets = settings.style_presets()
+        if requested_style != "none" and requested_style not in style_presets:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown style '{requested_style}'.",
+            )
+
         subtitle_entries = None
         style_preset = None
         if requested_style != "none":
@@ -740,7 +757,7 @@ def create_app(settings: Settings) -> FastAPI:
             # still gets *a* clip, just without burn-in text.
             if subtitle_result.source is not SubtitleSource.NONE and subtitle_result.entries:
                 subtitle_entries = subtitle_result.entries
-                style_preset = STYLE_PRESETS[requested_style]
+                style_preset = style_presets[requested_style]
 
         resolved_style = requested_style if style_preset is not None else "none"
 
