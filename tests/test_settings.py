@@ -231,3 +231,101 @@ def test_media_server_round_trips_through_write_config_yaml(tmp_path):
     write_config_yaml(settings, config_path=config)
 
     assert load_settings(env_path=env, config_path=config).media_server == "jellyfin"
+
+
+from app.settings import (
+    StylePresetConfig,
+    StylePresetError,
+    delete_style_preset,
+    upsert_style_preset,
+)
+
+
+def test_settings_seeds_four_builtin_style_presets_by_default():
+    settings = Settings(discord_token="x", plex_url="http://x", plex_token="x")
+    names = {cfg.name for cfg in settings.subtitle_styles}
+    assert names == {"classic", "boxed", "cinematic", "meme"}
+    assert all(cfg.builtin for cfg in settings.subtitle_styles)
+
+
+def test_style_presets_converts_configs_to_style_preset_objects():
+    settings = Settings(discord_token="x", plex_url="http://x", plex_token="x")
+    presets = settings.style_presets()
+    assert presets["classic"].font == "Liberation Sans"
+    assert presets["classic"].font_size == 26
+
+
+def test_upsert_style_preset_adds_a_new_custom_preset():
+    settings = Settings(discord_token="x", plex_url="http://x", plex_token="x")
+    new_cfg = StylePresetConfig(
+        name="simpsons", font="Simpsonfont", font_size=28,
+        primary_color="&H0000FFFF", outline_color="&H00000000",
+        back_color="&H00000000", border_style=1, outline=2.0, shadow=0.0,
+        bold=False, uppercase=False, margin_v=24,
+    )
+    updated = upsert_style_preset(settings, original_name=None, config=new_cfg)
+    assert "simpsons" in {cfg.name for cfg in updated.subtitle_styles}
+    assert len(updated.subtitle_styles) == 5
+
+
+def test_upsert_style_preset_edits_a_builtin_without_renaming():
+    settings = Settings(discord_token="x", plex_url="http://x", plex_token="x")
+    classic = next(cfg for cfg in settings.subtitle_styles if cfg.name == "classic")
+    edited = classic.model_copy(update={"font_size": 30})
+    updated = upsert_style_preset(settings, original_name="classic", config=edited)
+    assert updated.style_presets()["classic"].font_size == 30
+    assert next(c for c in updated.subtitle_styles if c.name == "classic").builtin is True
+
+
+def test_upsert_style_preset_rejects_renaming_a_builtin():
+    settings = Settings(discord_token="x", plex_url="http://x", plex_token="x")
+    classic = next(cfg for cfg in settings.subtitle_styles if cfg.name == "classic")
+    renamed = classic.model_copy(update={"name": "classic2"})
+    with pytest.raises(StylePresetError):
+        upsert_style_preset(settings, original_name="classic", config=renamed)
+
+
+def test_upsert_style_preset_rejects_duplicate_custom_name():
+    settings = Settings(discord_token="x", plex_url="http://x", plex_token="x")
+    dupe = StylePresetConfig(
+        name="boxed", font="X", font_size=10, primary_color="&H00FFFFFF",
+        outline_color="&H00000000", back_color="&H00000000", border_style=1,
+        outline=1.0, shadow=0.0, bold=False, uppercase=False, margin_v=10,
+    )
+    with pytest.raises(StylePresetError):
+        upsert_style_preset(settings, original_name=None, config=dupe)
+
+
+def test_delete_style_preset_rejects_a_builtin():
+    settings = Settings(discord_token="x", plex_url="http://x", plex_token="x")
+    with pytest.raises(StylePresetError):
+        delete_style_preset(settings, "classic")
+
+
+def test_delete_style_preset_removes_a_custom_preset():
+    settings = Settings(discord_token="x", plex_url="http://x", plex_token="x")
+    new_cfg = StylePresetConfig(
+        name="simpsons", font="Simpsonfont", font_size=28,
+        primary_color="&H0000FFFF", outline_color="&H00000000",
+        back_color="&H00000000", border_style=1, outline=2.0, shadow=0.0,
+        bold=False, uppercase=False, margin_v=24,
+    )
+    with_custom = upsert_style_preset(settings, original_name=None, config=new_cfg)
+    removed = delete_style_preset(with_custom, "simpsons")
+    assert "simpsons" not in {cfg.name for cfg in removed.subtitle_styles}
+
+
+def test_write_config_yaml_round_trips_subtitle_styles(tmp_path):
+    from app.settings import load_settings, write_config_yaml
+
+    settings = Settings(discord_token="x", plex_url="http://x", plex_token="x")
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    env_path.write_text("DISCORD_TOKEN=x\nPLEX_URL=http://x\nPLEX_TOKEN=x\n")
+    config_path.write_text("media_server: plex\n")
+    write_config_yaml(settings, config_path)
+
+    reloaded = load_settings(env_path=env_path, config_path=config_path)
+    assert {cfg.name for cfg in reloaded.subtitle_styles} == {
+        "classic", "boxed", "cinematic", "meme",
+    }

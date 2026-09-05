@@ -24,6 +24,12 @@ class StylePreset:
     uppercase: bool
     margin_v: int
     alignment: int = 2  # bottom-center
+    # Path to an uploaded font file (issue #20's style editor). None means
+    # `font` is resolved via fontconfig's normal system-wide search only —
+    # set when a preset uses a custom uploaded font, so ClipRenderer knows
+    # to also search cache/fonts/ (via the subtitles filter's `fontsdir`)
+    # for a family fontconfig wouldn't otherwise find.
+    font_path: str | None = None
 
 
 # Font sizes/margins are calibrated against the default render_defaults.width

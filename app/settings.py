@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from app.worker.subtitle_render import StylePreset
 
 
 class PathMapping(BaseModel):
@@ -24,6 +27,116 @@ class LibraryConfig(BaseModel):
     # *library* is encoded (CLAUDE.md Section 3) as a default — per-file
     # packing is auto-detected and can override it. "none" applies no crop.
     three_d_format: Literal["none", "side_by_side", "over_under"] = "none"
+
+
+class StylePresetConfig(BaseModel):
+    """config.yaml's persisted form of a subtitle style preset (issue #20's
+    style editor). Mirrors app.worker.subtitle_render.StylePreset field for
+    field — kept as a separate pydantic model (not StylePreset itself)
+    because StylePreset is a frozen dataclass with no `builtin` concept;
+    that flag only matters for config storage/CRUD, not rendering."""
+
+    name: str
+    font: str
+    font_size: int
+    primary_color: str
+    outline_color: str
+    back_color: str
+    border_style: int
+    outline: float
+    shadow: float
+    bold: bool
+    uppercase: bool
+    margin_v: int
+    alignment: int = 2
+    font_path: str | None = None
+    # True for the 4 presets CineSnip ships with (classic/boxed/cinematic/
+    # meme) — these can have every visual field edited but never renamed or
+    # deleted, since their name is the stable key /snip's style choice and
+    # the web dropdown depend on (CLAUDE.md-equivalent invariant, spec'd in
+    # docs/superpowers/specs/2026-09-05-subtitle-style-editor-design.md).
+    builtin: bool = False
+
+    def to_style_preset(self) -> "StylePreset":
+        # Deferred import: app.worker.subtitle_render's own import chain
+        # (quotes -> subtitles -> plex_client) imports Settings, so a
+        # module-level import here would be circular.
+        from app.worker.subtitle_render import StylePreset
+
+        return StylePreset(
+            name=self.name, font=self.font, font_size=self.font_size,
+            primary_color=self.primary_color, outline_color=self.outline_color,
+            back_color=self.back_color, border_style=self.border_style,
+            outline=self.outline, shadow=self.shadow, bold=self.bold,
+            uppercase=self.uppercase, margin_v=self.margin_v,
+            alignment=self.alignment, font_path=self.font_path,
+        )
+
+    @classmethod
+    def from_style_preset(cls, sp: "StylePreset", builtin: bool) -> "StylePresetConfig":
+        return cls(
+            name=sp.name, font=sp.font, font_size=sp.font_size,
+            primary_color=sp.primary_color, outline_color=sp.outline_color,
+            back_color=sp.back_color, border_style=sp.border_style,
+            outline=sp.outline, shadow=sp.shadow, bold=sp.bold,
+            uppercase=sp.uppercase, margin_v=sp.margin_v,
+            alignment=sp.alignment, font_path=sp.font_path, builtin=builtin,
+        )
+
+
+def _default_subtitle_styles() -> list[StylePresetConfig]:
+    from app.worker.subtitle_render import STYLE_PRESETS
+
+    return [
+        StylePresetConfig.from_style_preset(sp, builtin=True)
+        for sp in STYLE_PRESETS.values()
+    ]
+
+
+class StylePresetError(RuntimeError):
+    pass
+
+
+def upsert_style_preset(
+    settings: Settings, original_name: str | None, config: StylePresetConfig
+) -> Settings:
+    """Returns a new Settings with `config` inserted (original_name=None) or
+    replacing the entry named `original_name`. Renaming a custom preset
+    (original_name != config.name) is fine; renaming or losing built-in
+    status on an existing built-in is not — see StylePresetConfig.builtin."""
+    existing_by_name = {cfg.name: cfg for cfg in settings.subtitle_styles}
+    prior = existing_by_name.get(original_name) if original_name else None
+
+    if prior is not None and prior.builtin:
+        if config.name != original_name:
+            raise StylePresetError(
+                f"'{original_name}' is a built-in preset and can't be renamed."
+            )
+        config = config.model_copy(update={"builtin": True})
+    elif config.name in existing_by_name and existing_by_name[config.name] is not prior:
+        raise StylePresetError(f"A style preset named '{config.name}' already exists.")
+
+    updated = settings.model_copy(deep=True)
+    if prior is not None:
+        updated.subtitle_styles = [
+            config if cfg.name == original_name else cfg
+            for cfg in updated.subtitle_styles
+        ]
+    else:
+        updated.subtitle_styles = [*updated.subtitle_styles, config]
+    return updated
+
+
+def delete_style_preset(settings: Settings, name: str) -> Settings:
+    existing_by_name = {cfg.name: cfg for cfg in settings.subtitle_styles}
+    cfg = existing_by_name.get(name)
+    if cfg is None:
+        raise StylePresetError(f"No such style preset: '{name}'.")
+    if cfg.builtin:
+        raise StylePresetError(f"'{name}' is a built-in preset and can't be deleted.")
+    updated = settings.model_copy(deep=True)
+    updated.subtitle_styles = [c for c in updated.subtitle_styles if c.name != name]
+    return updated
 
 
 class RenderDefaults(BaseModel):
@@ -192,6 +305,7 @@ class Settings(BaseModel):
     quote_match: QuoteMatchDefaults = Field(default_factory=QuoteMatchDefaults)
     library_sync: LibrarySyncDefaults = Field(default_factory=LibrarySyncDefaults)
     worker: WorkerConfig = Field(default_factory=WorkerConfig)
+    subtitle_styles: list[StylePresetConfig] = Field(default_factory=_default_subtitle_styles)
     scratch_dir: Path = Path("scratch")
     cache_dir: Path = Path("cache")
     dev_guild_id: int | None = None
@@ -219,6 +333,9 @@ class Settings(BaseModel):
     def three_d_format_for(self, library_name: str) -> str:
         return self._library_config_for(library_name).three_d_format
 
+    def style_presets(self) -> dict[str, StylePreset]:
+        return {cfg.name: cfg.to_style_preset() for cfg in self.subtitle_styles}
+
 
 class SettingsError(RuntimeError):
     pass
@@ -242,6 +359,7 @@ def write_config_yaml(settings: Settings, config_path: Path = Path("config.yaml"
         "quote_match": settings.quote_match.model_dump(),
         "worker": settings.worker.model_dump(),
         "library_sync": settings.library_sync.model_dump(),
+        "subtitle_styles": [cfg.model_dump() for cfg in settings.subtitle_styles],
     }
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
 
@@ -311,8 +429,9 @@ def load_settings(
                 f"DEV_GUILD_ID must be a numeric Discord server ID, got '{dev_guild_id_raw}'."
             ) from exc
 
+    has_subtitle_styles = "subtitle_styles" in raw_config
     try:
-        return Settings(
+        settings = Settings(
             discord_token=discord_token,
             plex_url=plex_url,
             plex_token=plex_token,
@@ -330,6 +449,23 @@ def load_settings(
             library_sync=LibrarySyncDefaults(**raw_config.get("library_sync", {})),
             worker=WorkerConfig(**raw_config.get("worker", {})),
             dev_guild_id=dev_guild_id,
+            **(
+                {
+                    "subtitle_styles": [
+                        StylePresetConfig(**cfg) for cfg in raw_config["subtitle_styles"]
+                    ]
+                }
+                if has_subtitle_styles
+                else {}
+            ),
         )
     except Exception as exc:
         raise SettingsError(f"Invalid config.yaml: {exc}") from exc
+
+    if not has_subtitle_styles:
+        # First load after this feature shipped: seed config.yaml with the
+        # current 4 built-ins so they show up as editable, not just an
+        # in-memory default that silently vanishes if the file is hand-edited.
+        write_config_yaml(settings, config_path)
+
+    return settings
