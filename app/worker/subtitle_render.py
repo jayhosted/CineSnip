@@ -213,3 +213,29 @@ def build_ass_document(
             f"Default,,0,0,0,,{text}"
         )
     return "\n".join(lines) + "\n"
+
+
+# Descriptive labels for the 4 shipped presets — cosmetic text with no
+# equivalent field on StylePreset itself, so kept as a small lookup rather
+# than derived. A custom preset (not in this dict) falls back to its name,
+# Title Cased.
+_BUILTIN_LABELS = {
+    "classic": "Classic (white, black outline)",
+    "boxed": "Boxed (white on black box)",
+    "cinematic": "Cinematic (yellow)",
+    "meme": "Meme (bold caps)",
+}
+
+
+def style_options(style_presets: dict[str, StylePreset]) -> list[tuple[str, str]]:
+    """(value, label) pairs for a style dropdown, built from whatever
+    presets currently exist (built-in + custom) — replaces the old
+    hardcoded _STYLE_OPTIONS lists that had to be kept in sync by hand
+    across app/bot/cogs/gif.py and app/web/generate.py. "none" is always
+    last, matching CLAUDE.md Section 2's existing order."""
+    options = [
+        (name, _BUILTIN_LABELS.get(name, name.replace("_", " ").title()))
+        for name in style_presets
+    ]
+    options.append(("none", "No Subtitles"))
+    return options

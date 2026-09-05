@@ -26,7 +26,9 @@ from app.worker.media_client import (
 )
 from app.worker.quote_index import CachedTitle
 from app.worker.quotes import find_quote_matches
+from app.worker.style_preview import render_style_preview
 from app.worker.subprocess_utils import SubprocessTimeoutError
+from app.worker.subtitle_render import StylePreset, style_options
 from app.worker.subtitles import (
     SubtitleResult,
     SubtitleSource,
@@ -179,6 +181,26 @@ class LibrarySearchResponse(BaseModel):
     min_score: float
     # Same truncation signal as ResolveQuoteResponse.truncated, see there.
     truncated: bool
+
+
+class StylePresetOut(BaseModel):
+    name: str
+    label: str
+
+
+class PreviewStyleRequest(BaseModel):
+    font: str
+    font_size: int
+    primary_color: str
+    outline_color: str
+    back_color: str
+    border_style: int
+    outline: float
+    shadow: float
+    bold: bool
+    uppercase: bool
+    margin_v: int
+    alignment: int = 2
 
 
 class RandomQuoteResponse(BaseModel):
@@ -550,6 +572,32 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/style-presets", response_model=list[StylePresetOut])
+    def get_style_presets() -> list[StylePresetOut]:
+        # style_options() appends a "none"/"No Subtitles" pseudo-entry for
+        # render-time dropdowns (gif.py/generate.py) — not a real
+        # StylePreset the editor can load/edit, so this listing excludes it.
+        options = style_options(settings.style_presets())
+        return [
+            StylePresetOut(name=name, label=label)
+            for name, label in options
+            if name != "none"
+        ]
+
+    @app.post("/style-presets/preview")
+    async def preview_style(req: PreviewStyleRequest) -> Response:
+        style = StylePreset(
+            name="__preview__", font=req.font, font_size=req.font_size,
+            primary_color=req.primary_color, outline_color=req.outline_color,
+            back_color=req.back_color, border_style=req.border_style,
+            outline=req.outline, shadow=req.shadow, bold=req.bold,
+            uppercase=req.uppercase, margin_v=req.margin_v, alignment=req.alignment,
+        )
+        png_bytes = await render_style_preview(
+            style, fonts_dir=settings.cache_dir / "fonts", scratch_dir=settings.scratch_dir,
+        )
+        return Response(content=png_bytes, media_type="image/png")
 
     @app.get("/search", response_model=SearchResponse)
     def search(query: str) -> SearchResponse:
