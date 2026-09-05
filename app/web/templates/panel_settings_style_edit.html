@@ -27,12 +27,16 @@
     </div>
 
     <label class="field-label" style="display:block; margin-bottom:6px;">UPLOAD CUSTOM FONT (.ttf/.otf)</label>
+    {% if original_name %}
     <div class="field-row" style="margin-bottom:16px;">
       <input type="file" name="font_file" accept=".ttf,.otf">
       <button class="btn btn-secondary" type="submit"
         hx-post="/settings/styles/{{ original_name }}/font" hx-target="#settings-content" hx-swap="outerHTML"
         hx-encoding="multipart/form-data">Upload font</button>
     </div>
+    {% else %}
+    <p style="margin:0 0 16px; color:var(--text-muted, #888);">Save the preset first, then you can upload a custom font.</p>
+    {% endif %}
 
     <div class="field-row" style="margin-bottom:16px;">
       <div style="flex:1;">

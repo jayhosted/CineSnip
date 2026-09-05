@@ -363,3 +363,32 @@ def test_write_config_yaml_round_trips_subtitle_styles(tmp_path):
     assert {cfg.name for cfg in reloaded.subtitle_styles} == {
         "classic", "boxed", "cinematic", "meme",
     }
+
+
+def _style_kwargs(**overrides) -> dict:
+    kwargs = dict(
+        name="simpsons", font="Simpsonfont", font_size=28,
+        primary_color="&H0000FFFF", outline_color="&H00000000",
+        back_color="&H00000000", border_style=1, outline=2.0, shadow=0.0,
+        bold=False, uppercase=False, margin_v=24,
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+@pytest.mark.parametrize("bad_name", ["", "   ", "none", "None", "__preview__", "a/b", "a\\b", "x" * 65])
+def test_style_preset_config_rejects_invalid_names(bad_name):
+    with pytest.raises(ValidationError):
+        StylePresetConfig(**_style_kwargs(name=bad_name))
+
+
+@pytest.mark.parametrize("good_name", ["simpsons", "My Cool Style", "a" * 64])
+def test_style_preset_config_accepts_valid_names(good_name):
+    cfg = StylePresetConfig(**_style_kwargs(name=good_name))
+    assert cfg.name == good_name
+
+
+@pytest.mark.parametrize("field", ["font", "primary_color", "outline_color", "back_color"])
+def test_style_preset_config_rejects_newlines_in_style_fields(field):
+    with pytest.raises(ValidationError):
+        StylePresetConfig(**_style_kwargs(**{field: "line1\nline2"}))

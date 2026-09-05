@@ -1,15 +1,26 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 if TYPE_CHECKING:
     from app.worker.subtitle_render import StylePreset
+
+logger = logging.getLogger(__name__)
+
+# Reserved names with special meaning elsewhere in the codebase: "none" means
+# "no subtitle burn-in" (app/web/generate.py's style dropdown, the worker's
+# style resolution), "__preview__" is used internally by
+# settings_styles_preview for an ephemeral unsaved style. Neither can ever be
+# a real preset's name without colliding with that meaning.
+_RESERVED_STYLE_NAMES = {"none", "__preview__"}
+_MAX_STYLE_NAME_LENGTH = 64
 
 
 class PathMapping(BaseModel):
@@ -56,6 +67,31 @@ class StylePresetConfig(BaseModel):
     # the web dropdown depend on (CLAUDE.md-equivalent invariant, spec'd in
     # docs/superpowers/specs/2026-09-05-subtitle-style-editor-design.md).
     builtin: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        stripped = value.strip()
+        if (
+            not stripped
+            or "/" in stripped
+            or "\\" in stripped
+            or stripped.lower() in _RESERVED_STYLE_NAMES
+            or len(stripped) > _MAX_STYLE_NAME_LENGTH
+        ):
+            raise ValueError(
+                "Style preset name can't be blank, contain '/' or '\\\\', be "
+                "longer than 64 characters, or be a reserved name ('none', "
+                "'__preview__')."
+            )
+        return stripped
+
+    @field_validator("font", "primary_color", "outline_color", "back_color")
+    @classmethod
+    def _validate_no_newlines(cls, value: str) -> str:
+        if "\n" in value or "\r" in value:
+            raise ValueError("Style fields can't contain newlines.")
+        return value
 
     def to_style_preset(self) -> "StylePreset":
         # Deferred import: app.worker.subtitle_render's own import chain
@@ -468,6 +504,14 @@ def load_settings(
         # First load after this feature shipped: seed config.yaml with the
         # current 4 built-ins so they show up as editable, not just an
         # in-memory default that silently vanishes if the file is hand-edited.
-        write_config_yaml(settings, config_path)
+        # A read-only config mount shouldn't crash startup over this — fall
+        # through to the in-memory seeded defaults for this run instead.
+        try:
+            write_config_yaml(settings, config_path)
+        except OSError as exc:
+            logger.warning(
+                "Couldn't seed subtitle_styles into %s (%s) — using in-memory "
+                "defaults for this run.", config_path, exc,
+            )
 
     return settings

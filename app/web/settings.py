@@ -6,7 +6,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app.bot.worker_client import WorkerClient
+from pydantic import ValidationError
+
 from app.runtime import SettingsHolder
 from app.settings import (
     LibrarySyncDefaults,
@@ -19,6 +20,7 @@ from app.settings import (
     upsert_style_preset,
     write_config_yaml,
 )
+from app.web.generate import _WorkerClientCache
 from app.worker import search_index
 from app.worker.font_upload import FontValidationError, delete_font_file, process_font_upload
 
@@ -45,6 +47,8 @@ def register_settings_routes(
     settings_holder: SettingsHolder,
     on_setup_complete: Callable[[], Awaitable[None]],
 ) -> None:
+    client_cache = _WorkerClientCache()
+
     def render_tab(request: Request, tab: str, panel: str, **ctx) -> HTMLResponse:
         settings = settings_holder.settings
         context = {
@@ -241,22 +245,28 @@ def register_settings_routes(
 
     # ---- Subtitle Styles ---------------------------------------------------
 
+    def _style_fields_from_form(form) -> dict:
+        # Shared by save (wrapped in a validated StylePresetConfig, which
+        # also needs a `name`) and preview (which needs none of these
+        # validated as a StylePresetConfig at all — the worker's
+        # preview_style call only reads these visual fields, never a name).
+        return {
+            "font": str(form["font"]).strip(),
+            "font_size": int(form["font_size"]),
+            "primary_color": str(form["primary_color"]).strip(),
+            "outline_color": str(form["outline_color"]).strip(),
+            "back_color": str(form["back_color"]).strip(),
+            "border_style": int(form["border_style"]),
+            "outline": float(form["outline"]),
+            "shadow": float(form["shadow"]),
+            "bold": form.get("bold") == "on",
+            "uppercase": form.get("uppercase") == "on",
+            "margin_v": int(form["margin_v"]),
+            "alignment": int(form["alignment"]),
+        }
+
     def _style_preset_from_form(form) -> StylePresetConfig:
-        return StylePresetConfig(
-            name=str(form["name"]).strip(),
-            font=str(form["font"]).strip(),
-            font_size=int(form["font_size"]),
-            primary_color=str(form["primary_color"]).strip(),
-            outline_color=str(form["outline_color"]).strip(),
-            back_color=str(form["back_color"]).strip(),
-            border_style=int(form["border_style"]),
-            outline=float(form["outline"]),
-            shadow=float(form["shadow"]),
-            bold=form.get("bold") == "on",
-            uppercase=form.get("uppercase") == "on",
-            margin_v=int(form["margin_v"]),
-            alignment=int(form["alignment"]),
-        )
+        return StylePresetConfig(name=str(form["name"]).strip(), **_style_fields_from_form(form))
 
     @app.get("/settings/styles", response_class=HTMLResponse)
     async def settings_styles(request: Request):
@@ -288,6 +298,17 @@ def register_settings_routes(
 
         try:
             config = _style_preset_from_form(form)
+        except ValidationError as exc:
+            # pydantic's own str(exc) is a multi-line, developer-facing
+            # dump ("1 validation error for StylePresetConfig\nname\n  Value
+            # error, ...") — surface just the human-written message(s) from
+            # our own field_validators instead.
+            messages = "; ".join(err["msg"].removeprefix("Value error, ") for err in exc.errors())
+            return render_tab(
+                request, "styles", "panel_settings_style_edit.html",
+                preset=None, original_name=original_name or "",
+                error=f"Couldn't save — {messages}",
+            )
         except (KeyError, ValueError) as exc:
             return render_tab(
                 request, "styles", "panel_settings_style_edit.html",
@@ -332,15 +353,26 @@ def register_settings_routes(
     @app.post("/settings/styles/{name}/font", response_class=HTMLResponse)
     async def settings_styles_upload_font(request: Request, name: str):
         settings = settings_holder.settings
+        prior = next((cfg for cfg in settings.subtitle_styles if cfg.name == name), None)
+        if prior is None:
+            # /settings/styles/new has no original_name yet — the template
+            # hides the upload control in that case (a not-yet-saved preset
+            # must be Saved first), so reaching here with no matching
+            # preset is itself the error to report.
+            return render_tab(
+                request, "styles", "panel_settings_style_edit.html",
+                preset=None, original_name=name,
+                error="Save the preset before uploading a custom font.",
+            )
+
         form = await request.form()
         upload = form.get("font_file")
         if upload is None or not getattr(upload, "filename", None):
             return render_tab(
                 request, "styles", "panel_settings_style_edit.html",
-                preset=None, original_name=name, error="Choose a font file first.",
+                preset=prior, original_name=name, error="Choose a font file first.",
             )
 
-        prior = next((cfg for cfg in settings.subtitle_styles if cfg.name == name), None)
         data = await upload.read()
         try:
             result = await process_font_upload(
@@ -349,14 +381,24 @@ def register_settings_routes(
         except FontValidationError as exc:
             return render_tab(
                 request, "styles", "panel_settings_style_edit.html",
-                preset=None, original_name=name, error=str(exc),
+                preset=prior, original_name=name, error=str(exc),
             )
 
         # A re-upload with a different extension (.ttf -> .otf) writes to a
         # differently-named file (Task 3's font_file_path includes the
         # extension) — clean up the old one so it doesn't linger orphaned.
-        if prior is not None and prior.font_path and prior.font_path != result.font_path:
+        if prior.font_path and prior.font_path != result.font_path:
             delete_font_file(prior.font_path)
+
+        # Persist the upload onto the preset itself — previously this route
+        # only reported the detected font family back to the (blank)
+        # unsaved form, so a subsequent Save renamed/wiped the real preset
+        # to whatever the blank form happened to show (the critical
+        # data-loss bug this fixes). font_path was correspondingly a
+        # write-only field until now.
+        updated_config = prior.model_copy(update={"font": result.family, "font_path": result.font_path})
+        updated_settings = upsert_style_preset(settings, original_name=name, config=updated_config)
+        await apply(updated_settings)
 
         warning = (
             f"This font is missing some characters — e.g. "
@@ -366,35 +408,24 @@ def register_settings_routes(
         )
         return render_tab(
             request, "styles", "panel_settings_style_edit.html",
-            preset=None, original_name=name,
-            uploaded_font_family=result.family, font_warning=warning,
+            preset=updated_config, original_name=name, font_warning=warning,
         )
 
     @app.post("/settings/styles/preview", response_class=HTMLResponse)
     async def settings_styles_preview(request: Request):
         import base64
 
-        settings = settings_holder.settings
         form = await request.form()
         try:
-            config = _style_preset_from_form({**form, "name": "__preview__"})
+            style_fields = _style_fields_from_form(form)
         except (KeyError, ValueError):
             return HTMLResponse('<div class="error-banner">Fill in the style fields to preview.</div>')
 
-        worker = WorkerClient(f"http://127.0.0.1:{settings.worker.port}")
+        worker = client_cache.get(settings_holder)
+        if worker is None:
+            return HTMLResponse('<div class="error-banner">Preview failed — is the worker running?</div>')
         try:
-            png_bytes = await worker.preview_style(
-                {
-                    "font": config.font, "font_size": config.font_size,
-                    "primary_color": config.primary_color,
-                    "outline_color": config.outline_color,
-                    "back_color": config.back_color,
-                    "border_style": config.border_style,
-                    "outline": config.outline, "shadow": config.shadow,
-                    "bold": config.bold, "uppercase": config.uppercase,
-                    "margin_v": config.margin_v, "alignment": config.alignment,
-                }
-            )
+            png_bytes = await worker.preview_style(style_fields)
         except Exception:
             return HTMLResponse('<div class="error-banner">Preview failed — is the worker running?</div>')
 
