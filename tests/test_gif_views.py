@@ -2,6 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import discord
+import httpx
 
 from app.bot.cogs.gif import (
     _PAGE_SIZE,
@@ -1164,6 +1165,61 @@ def test_render_and_respond_clip_filename_ignores_subtitle_text():
 
     _, kwargs = interaction.edit_original_response.await_args
     assert kwargs["attachments"][0].filename == "clip.gif"
+
+
+def test_render_and_respond_uses_live_style_options_from_worker():
+    # Exercises the real call site in _render_and_respond (not
+    # ClipResultView's constructor directly) — proves a custom preset
+    # fetched via worker.style_options() actually reaches the dropdown
+    # shown to the user, not just the fallback list.
+    from types import SimpleNamespace
+
+    from app.bot.cogs.gif import GifCog
+
+    custom_options = [("simpsons", "Simpsons"), ("none", "No Subtitles")]
+    worker = _FakeEditWorker()
+    worker.style_options = AsyncMock(return_value=custom_options)
+    cog = GifCog(bot=SimpleNamespace(worker=worker))
+    interaction = _fake_interaction()
+
+    async def run():
+        await cog._render_and_respond(
+            interaction, 1, "The Matrix", "10", 4.0, None, None, "classic",
+        )
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+
+    _, kwargs = interaction.edit_original_response.await_args
+    view = kwargs["view"]
+    select = next(item for item in view.children if isinstance(item, discord.ui.Select))
+    assert [opt.value for opt in select.options] == ["simpsons", "none"]
+
+
+def test_render_and_respond_falls_back_to_default_style_options_on_httperror():
+    # worker.style_options() raising must not abort the render — it must
+    # fall back to _FALLBACK_STYLE_OPTIONS in the actual dropdown shown.
+    from types import SimpleNamespace
+
+    from app.bot.cogs.gif import GifCog
+
+    worker = _FakeEditWorker()
+    worker.style_options = AsyncMock(side_effect=httpx.HTTPError("boom"))
+    cog = GifCog(bot=SimpleNamespace(worker=worker))
+    interaction = _fake_interaction()
+
+    async def run():
+        await cog._render_and_respond(
+            interaction, 1, "The Matrix", "10", 4.0, None, None, "classic",
+        )
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+
+    _, kwargs = interaction.edit_original_response.await_args
+    view = kwargs["view"]
+    select = next(item for item in view.children if isinstance(item, discord.ui.Select))
+    assert len(select.options) == 5  # classic/boxed/cinematic/meme/none
 
 
 def test_random_result_view_audio_shuffle_filename_uses_picked_text():
