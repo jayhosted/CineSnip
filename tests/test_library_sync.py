@@ -281,6 +281,91 @@ def test_sync_one_title_skips_already_indexed_no_subtitle_title(tmp_path, monkey
     assert outcome.startswith("CACHED (already have it)")
 
 
+def test_sync_one_title_known_guid_without_cache_meta_stays_trusted_forever(tmp_path, monkeypatch):
+    """Backward compat: a caller that doesn't pass cache_meta at all (e.g.
+    scripts/build_full_cache.py's own known_guids-less call, or any future
+    caller that hasn't opted in) keeps the original trust-forever behavior
+    for a known guid — no freshness recheck, no filesystem access."""
+    settings = _settings(tmp_path)
+    item = _item("guid-1", "101")
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("no filesystem/get_subtitles work should happen without cache_meta")
+    monkeypatch.setattr("app.worker.library_sync.get_subtitles", _boom)
+    monkeypatch.setattr("app.worker.library_sync.find_sidecar_subtitle", _boom)
+
+    outcome = asyncio.run(
+        sync_one_title(
+            settings, item, known_guids=frozenset({"guid-1"}), no_subtitle_guids=frozenset()
+        )
+    )
+
+    assert outcome.startswith("CACHED (already have it)")
+
+
+def test_sync_one_title_known_guid_with_cache_meta_stays_cached_when_fresh(tmp_path, monkeypatch):
+    """The whole point of the cache_meta recheck: an unchanged SIDECAR title
+    still resolves as a cheap cache hit, not a full re-extraction."""
+    settings = _settings(tmp_path)
+    item = _item("guid-1", "101")
+
+    media_root = settings.libraries[0].path_mappings[0].container_path
+    (Path(media_root) / "film.mkv").write_bytes(b"x")
+    sidecar = Path(media_root) / "film.srt"
+    sidecar.write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n", encoding="utf-8")
+    stat = sidecar.stat()
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("get_subtitles should not be called for an already-fresh title")
+    monkeypatch.setattr("app.worker.library_sync.get_subtitles", _boom)
+
+    outcome = asyncio.run(
+        sync_one_title(
+            settings, item, known_guids=frozenset({"guid-1"}), no_subtitle_guids=frozenset(),
+            cache_meta={"guid-1": ("sidecar", str(sidecar), (stat.st_mtime, stat.st_size))},
+        )
+    )
+
+    assert outcome.startswith("CACHED (already have it)")
+
+
+def test_sync_one_title_known_guid_with_cache_meta_reprocesses_when_stale(tmp_path, monkeypatch):
+    """The gap this feature closes: a SIDECAR title's subtitle file changed
+    (e.g. Bazarr re-fetching a corrected .srt) since it was cached — a
+    known_guids-only caller would trust it forever; with cache_meta, the
+    scheduled sync itself now catches this instead of waiting for some
+    other flow to touch this exact title again."""
+    settings = _settings(tmp_path)
+    item = _item("guid-1", "101")
+
+    media_root = settings.libraries[0].path_mappings[0].container_path
+    (Path(media_root) / "film.mkv").write_bytes(b"x")
+    sidecar = Path(media_root) / "film.srt"
+    sidecar.write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n", encoding="utf-8")
+
+    found_entries = [SubtitleEntry(index=1, start=0.0, end=1.0, text="Edited")]
+
+    async def _fake_get_subtitles(movie, container_video_path, cache_dir, db_path, ffprobe_timeout=180.0, ffmpeg_timeout=180.0):
+        search_index.upsert_title(
+            db_path, movie.guid, movie.media_id, movie.title, movie.library_name,
+            "sidecar", container_video_path, None, found_entries, None,
+        )
+        return SubtitleResult(guid=movie.guid, source=SubtitleSource.SIDECAR, entries=found_entries)
+
+    monkeypatch.setattr("app.worker.library_sync.get_subtitles", _fake_get_subtitles)
+
+    outcome = asyncio.run(
+        sync_one_title(
+            settings, item, known_guids=frozenset({"guid-1"}), no_subtitle_guids=frozenset(),
+            # Stale fingerprint on purpose — doesn't match the sidecar's real
+            # (mtime, size), simulating a subtitle edited since last synced.
+            cache_meta={"guid-1": ("sidecar", str(sidecar), (1.0, 1))},
+        )
+    )
+
+    assert outcome.startswith("OK")
+
+
 def test_sync_one_title_bulk_path_stays_cached_when_no_sidecar_appeared(tmp_path, monkeypatch):
     """The known_guids/no_subtitle_guids bulk-set path (used by
     sync_library's per-item loop) still needs to recheck a NONE title for a
@@ -406,35 +491,63 @@ def test_sync_library_writes_progress_per_item(tmp_path):
     assert progress.current_title is None
 
 
-def test_sync_library_shows_current_title_while_item_still_in_flight(tmp_path, monkeypatch):
-    # Regression for issue #15: current_title must reflect the item actually
-    # being processed, not the last one that finished — otherwise a slow
-    # extraction shows a stale, already-completed title while it runs.
+def test_sync_library_progress_never_shows_complete_while_a_slow_item_is_in_flight(
+    tmp_path, monkeypatch
+):
+    # Regression for issue #15, adapted for sync_library's now-concurrent
+    # per-item loop (see _SYNC_TITLE_CHECK_CONCURRENCY's docstring): the
+    # dashboard must never show the bar as fully done while a slow item (a
+    # real extraction can take minutes) is still genuinely in flight.
+    #
+    # A precise "current_title equals exactly this one item" assertion (the
+    # original, strictly-sequential form of this test) is no longer
+    # meaningful with several items racing concurrently — which of two
+    # near-instant cache hits writes current_title last is now an honest
+    # race, not a bug. What must still hold deterministically: processed
+    # never reaches total while at least one item (here, deliberately held
+    # open via an event) hasn't actually finished yet.
     settings = _settings(tmp_path)
-    plex = _FakePlex(items=[_item("guid-1", "101", title="Film One"), _item("guid-2", "102", title="Film Two")])
+    plex = _FakePlex(items=[
+        _item("guid-1", "101", title="Film One"),
+        _item("guid-2", "102", title="Film Two"),
+        _item("guid-3", "103", title="Slow Film"),
+    ])
     _precache(settings, "guid-1")
-
-    seen_mid_flight = {}
+    _precache(settings, "guid-2")
 
     import app.worker.library_sync as library_sync_module
 
     real_sync_one_title = library_sync_module.sync_one_title
+    slow_item_started = asyncio.Event()
+    release_slow_item = asyncio.Event()
 
-    async def _spy(settings, item, *, force=False, known_guids=None, no_subtitle_guids=None):
-        if item.title == "Film Two":
-            progress = quote_index.get_sync_progress(settings.quote_index_db_path)
-            seen_mid_flight["current_title"] = progress.current_title
-            seen_mid_flight["processed"] = progress.processed
+    async def _spy(
+        settings, item, *, force=False, known_guids=None, no_subtitle_guids=None, cache_meta=None
+    ):
+        if item.title == "Slow Film":
+            slow_item_started.set()
+            await release_slow_item.wait()
         return await real_sync_one_title(
-            settings, item, force=force, known_guids=known_guids, no_subtitle_guids=no_subtitle_guids
+            settings, item, force=force, known_guids=known_guids, no_subtitle_guids=no_subtitle_guids,
+            cache_meta=cache_meta,
         )
 
     monkeypatch.setattr(library_sync_module, "sync_one_title", _spy)
 
-    asyncio.run(sync_library(settings, plex, "Movies", section=None, updated_at=200))
+    async def _run():
+        sync_task = asyncio.create_task(
+            sync_library(settings, plex, "Movies", section=None, updated_at=200)
+        )
+        await slow_item_started.wait()
+        await asyncio.sleep(0.05)  # let the two fast cache hits actually finish
+        mid_flight_progress = quote_index.get_sync_progress(settings.quote_index_db_path)
+        release_slow_item.set()
+        await sync_task
+        return mid_flight_progress
 
-    assert seen_mid_flight["current_title"] == "Film Two"
-    assert seen_mid_flight["processed"] == 1
+    mid_flight_progress = asyncio.run(_run())
+
+    assert mid_flight_progress.processed < 3
 
 
 from app.worker.library_sync import run_library_sync_once

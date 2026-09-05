@@ -29,6 +29,7 @@ from app.worker.subtitles import (
     cache_path_for_guid,
     find_sidecar_subtitle,
     get_subtitles,
+    is_cache_fresh,
     read_cached_subtitles,
 )
 
@@ -39,6 +40,11 @@ logger = logging.getLogger("cinesnip.library_sync")
 # entries — not config, since it's a safety-margin constant, not something
 # an installer should need to tune.
 _SPOT_CHECK_SAMPLE_SIZE = 10
+
+# Same reasoning/value as api.py's _EPISODE_CACHE_CHECK_CONCURRENCY: bounds
+# how many titles' cache checks (or, for a never-synced library, real
+# extractions) run at once in sync_library's per-item loop below.
+_SYNC_TITLE_CHECK_CONCURRENCY = 8
 
 
 def _sidecar_now_exists(settings: Settings, item: MovieResult) -> bool:
@@ -65,6 +71,41 @@ def _sidecar_now_exists(settings: Settings, item: MovieResult) -> bool:
     return find_sidecar_subtitle(Path(container_path)) is not None
 
 
+def _cached_title_still_fresh(
+    settings: Settings,
+    item: MovieResult,
+    meta: tuple[str | None, str | None, tuple[float, int] | None],
+) -> bool:
+    """A title already in known_guids used to be trusted forever with zero
+    freshness check once indexed — unlike a live per-title touch (/snip
+    movie, /snip tv's whole-show search), which always re-verifies via
+    get_subtitles()'s own fingerprint compare, a scheduled sync pass never
+    caught a corrected sidecar (e.g. Bazarr re-fetching) until something
+    else happened to touch that exact title again. This recheck closes
+    that gap: one filesystem stat per already-known title per sync pass,
+    using the (source, fingerprint) already bulk-preloaded for the whole
+    library in one query (search_index.get_cache_metadata_bulk — see
+    sync_library) instead of get_subtitles()'s own 3 per-title SQLite
+    round-trips. Still runs find_sidecar_subtitle fresh, not the stored
+    sidecar_path, since a newly-appeared higher-priority sidecar must
+    still invalidate a stale cache (same rule is_cache_fresh documents).
+    A resolution failure is treated as "not fresh" (unlike
+    _sidecar_now_exists' inconclusive-stays-cached stance above) so it
+    falls through to the existing SKIP (no path mapping) handling below,
+    same as a never-before-seen title.
+    """
+    source_value, _cached_sidecar_path, fingerprint = meta
+    try:
+        container_path = resolve_container_path(
+            item.source_path, settings.path_mappings_for(item.library_name)
+        )
+    except NoPathMappingError:
+        return False
+    video_path = Path(container_path)
+    sidecar = find_sidecar_subtitle(video_path)
+    return is_cache_fresh(source_value, sidecar, video_path, fingerprint)
+
+
 @dataclass
 class LibrarySyncResult:
     library_name: str
@@ -86,6 +127,7 @@ async def sync_one_title(
     force: bool = False,
     known_guids: frozenset[str] | None = None,
     no_subtitle_guids: frozenset[str] | None = None,
+    cache_meta: dict[str, tuple[str | None, str | None, tuple[float, int] | None]] | None = None,
 ) -> str:
     """Extracted from scripts/build_full_cache.py's process_one() — the one
     shared implementation for both the manual script and the automatic
@@ -123,6 +165,13 @@ async def sync_one_title(
     would otherwise be invisible forever. Costs one filesystem check per
     NONE title, using item.source_path already fresh from this pass's own
     enumerate_section() — no extra Plex calls.
+
+    `cache_meta`, when given, gets a SIDECAR/EMBEDDED title in `known_guids`
+    the same treatment: one cheap freshness recheck (`_cached_title_still_fresh`)
+    instead of trusting it forever. Omitted by scripts/build_full_cache.py
+    (same as known_guids/no_subtitle_guids) and by any caller that hasn't
+    bulk-preloaded it — those keep the original trust-forever behavior for
+    a known guid.
     """
     db_path = settings.quote_index_db_path
     found_new_sidecar = False
@@ -130,14 +179,20 @@ async def sync_one_title(
     if not force:
         if known_guids is not None and no_subtitle_guids is not None:
             if item.guid in known_guids:
-                return f"CACHED (already have it): {item.title}"
-            if item.guid in no_subtitle_guids:
+                meta = cache_meta.get(item.guid) if cache_meta is not None else None
+                if meta is None or await asyncio.to_thread(
+                    _cached_title_still_fresh, settings, item, meta
+                ):
+                    return f"CACHED (already have it): {item.title}"
+                # else: cache_meta found this title stale — fall through to
+                # real processing below instead of trusting it forever.
+            elif item.guid in no_subtitle_guids:
                 found_new_sidecar = await asyncio.to_thread(_sidecar_now_exists, settings, item)
                 if not found_new_sidecar:
                     return f"CACHED (already have it): {item.title}"
-            # Either not previously seen at all, or it was marked NONE and
-            # a sidecar has since appeared — either way, fall through to
-            # real processing below instead of trusting the stale NONE.
+            # Either not previously seen at all, stale, or marked NONE with
+            # a sidecar that's since appeared — either way, fall through to
+            # real processing below instead of trusting a stale/absent cache.
         else:
             already_indexed = await asyncio.to_thread(
                 lambda: search_index.has_title(db_path, item.guid) or is_no_subtitle_title(db_path, item.guid)
@@ -284,6 +339,16 @@ async def sync_library(
     # while this loop runs, even though every item here is a cache hit.
     known_guids = frozenset(t.guid for t in await asyncio.to_thread(search_index.list_titles, settings.quote_index_db_path))
     no_subtitle_guids = frozenset(await asyncio.to_thread(list_no_subtitle_guids, settings.quote_index_db_path))
+    # Same bulk-preload idea as known_guids/no_subtitle_guids above, one
+    # query for the whole library instead of get_subtitles()'s own 3
+    # per-title SQLite round-trips — lets sync_one_title's known_guids
+    # branch below cheaply re-verify freshness instead of trusting a
+    # known title forever (docs/build-notes/subtitles-and-search.md).
+    cache_meta = await asyncio.to_thread(
+        search_index.get_cache_metadata_bulk,
+        settings.quote_index_db_path,
+        [item.guid for item in live_items],
+    )
     await asyncio.to_thread(set_library_item_count, settings.quote_index_db_path, library_name, total_items)
     await asyncio.to_thread(
         append_sync_log, settings.quote_index_db_path, f"Checking library: {library_name} — {total_items} items"
@@ -292,32 +357,61 @@ async def sync_library(
     # state immediately, rather than waiting for the first item to finish.
     await asyncio.to_thread(update_sync_progress, settings.quote_index_db_path, library_name, None, 0, total_items)
 
-    for index, item in enumerate(live_items, start=1):
-        # Written before sync_one_title runs, not after — current_title must
-        # reflect the item actually in flight (a slow embedded extraction can
-        # take minutes), not the last one that finished. processed=index-1
-        # keeps the count/percentage honest: this item isn't done yet.
-        await asyncio.to_thread(
-            update_sync_progress, settings.quote_index_db_path, library_name, item.title, index - 1, total_items
-        )
-        outcome = await sync_one_title(
-            settings, item, known_guids=known_guids, no_subtitle_guids=no_subtitle_guids
-        )
-        if outcome.startswith("CACHED"):
-            result.already_cached += 1
-        elif outcome.startswith("OK"):
-            result.added += 1
-            await asyncio.to_thread(append_sync_log, settings.quote_index_db_path, f"Extracted subtitles — {item.title}")
-        elif outcome.startswith("SKIP (no path mapping"):
-            result.skipped_no_mapping += 1
-            await asyncio.to_thread(append_sync_log, settings.quote_index_db_path, f"Skipped — {outcome}")
-        elif outcome.startswith("SKIP (file not found"):
-            result.skipped_missing_file += 1
-            await asyncio.to_thread(append_sync_log, settings.quote_index_db_path, f"Skipped — {outcome}")
-        elif outcome.startswith("ERROR"):
-            result.errors += 1
-            logger.warning("library sync: %s", outcome)
-            await asyncio.to_thread(append_sync_log, settings.quote_index_db_path, f"Error — {outcome}")
+    # Bounded concurrency, not the old strictly-sequential loop — directly
+    # measured on this project's real ~1400-movie/~10.2k-episode library:
+    # adding _cached_title_still_fresh's one filesystem stat per
+    # already-known title (see cache_meta above) to a sequential loop took
+    # a full sync pass from ~3 minutes to ~43 minutes (~220ms/title on this
+    # setup's Windows-drive/WSL2-mounted media — much higher than a native
+    # Linux stat), the exact same class of bug _EPISODE_CACHE_CHECK_CONCURRENCY
+    # fixed in api.py's whole-show search, just at ~40x the item count.
+    # _SYNC_TITLE_CHECK_CONCURRENCY caps how many titles are ever actually
+    # being checked/extracted at once (protects ffmpeg from a never-synced
+    # library the same way the api.py bound does), while letting the common
+    # already-cached case run near this concurrency limit's speed instead of
+    # one-at-a-time.
+    #
+    # current_title/processed necessarily become best-effort under
+    # concurrency: current_title is written when each title's check STARTS
+    # (so it never shows an already-completed title stuck on screen — the
+    # original issue #15 bug this guarded against), but with several titles
+    # in flight it may cycle rapidly through fast cache hits before settling
+    # on whichever title is genuinely slow (a real extraction). processed
+    # only increments once a title's check actually finishes, so the
+    # count/percentage stays honest even though completion order no longer
+    # matches live_items' order.
+    semaphore = asyncio.Semaphore(_SYNC_TITLE_CHECK_CONCURRENCY)
+    processed = 0
+
+    async def _bounded(item: MovieResult) -> None:
+        nonlocal processed
+        async with semaphore:
+            await asyncio.to_thread(
+                update_sync_progress, settings.quote_index_db_path, library_name, item.title, processed, total_items
+            )
+            outcome = await sync_one_title(
+                settings, item, known_guids=known_guids, no_subtitle_guids=no_subtitle_guids,
+                cache_meta=cache_meta,
+            )
+            processed += 1
+
+            if outcome.startswith("CACHED"):
+                result.already_cached += 1
+            elif outcome.startswith("OK"):
+                result.added += 1
+                await asyncio.to_thread(append_sync_log, settings.quote_index_db_path, f"Extracted subtitles — {item.title}")
+            elif outcome.startswith("SKIP (no path mapping"):
+                result.skipped_no_mapping += 1
+                await asyncio.to_thread(append_sync_log, settings.quote_index_db_path, f"Skipped — {outcome}")
+            elif outcome.startswith("SKIP (file not found"):
+                result.skipped_missing_file += 1
+                await asyncio.to_thread(append_sync_log, settings.quote_index_db_path, f"Skipped — {outcome}")
+            elif outcome.startswith("ERROR"):
+                result.errors += 1
+                logger.warning("library sync: %s", outcome)
+                await asyncio.to_thread(append_sync_log, settings.quote_index_db_path, f"Error — {outcome}")
+
+    await asyncio.gather(*(_bounded(item) for item in live_items))
 
     # One trailing write so the bar reaches a true 100% and current_title
     # clears, rather than staying pinned on the last item while the
