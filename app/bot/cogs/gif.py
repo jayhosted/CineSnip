@@ -2616,10 +2616,11 @@ class GifCog(commands.Cog):
         description="Generate a clip from a film at a quote or timecode.",
     )
     @app_commands.describe(
-        film="The film to search for",
-        quote="A line of dialogue to find (fuzzy — close is fine); omit both quote and "
-        "timecode for a random line",
-        timecode="Timestamp, e.g. 1:23:45 or 1h23m45s",
+        film="The film to search for — omit to search your whole movie library by quote",
+        quote="A line of dialogue to find (fuzzy — close is fine); with no `film`, searches "
+        "your whole movie library; with a `film`, omit both quote and timecode for a "
+        "random line",
+        timecode="Timestamp, e.g. 1:23:45 or 1h23m45s (requires a `film`)",
         end_timecode="Custom clip end (timecode only, not quote) — same formats as timecode",
         format="Output format (default: gif — mp4/webm are smaller but do not autoplay in Discord)",
     )
@@ -2627,12 +2628,28 @@ class GifCog(commands.Cog):
     async def snip_movie(
         self,
         interaction: discord.Interaction,
-        film: str,
+        film: str | None = None,
         quote: str | None = None,
         timecode: str | None = None,
         end_timecode: str | None = None,
         format: Literal["gif", "mp4", "webm"] | None = None,
     ) -> None:
+        if film is None:
+            if quote is None:
+                await interaction.response.send_message(
+                    "Give a `quote` to search your movie library, or pick a `film` first.",
+                    ephemeral=True,
+                )
+                return
+            if timecode or end_timecode:
+                await interaction.response.send_message(
+                    "A `timecode` needs a specific `film` — omit it to search by `quote` alone.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.defer(ephemeral=True)
+            await self._run_library_search(interaction, quote, format=format, media="movie")
+            return
         await self._generate(interaction, film, quote, timecode, end_timecode, format)
 
     async def _run_library_search(
@@ -2641,16 +2658,18 @@ class GifCog(commands.Cog):
         quote: str,
         format: str | None = None,
         kind: Literal["clip", "audio"] = "clip",
+        media: Literal["movie", "tv", "all"] = "all",
     ) -> None:
-        # Shared by /snip search itself and /snip audio's title-less path
-        # (issue #6 follow-up) — both already deferred by their caller.
-        # search_quote_extend() is cache-only (library_sync is solely
-        # responsible for keeping quote_index.db current), so this is now
-        # a single fast round-trip rather than a live-updating stream —
-        # no interim "searching..." edit needed before the result lands.
+        # Shared by /snip search, and by /snip movie's/tv's/audio's own
+        # title-less fallback (each pins `media` to its own type; /snip
+        # search lets the caller choose, default "all"). Already deferred by
+        # its caller. search_quote_extend() is cache-only (library_sync is
+        # solely responsible for keeping quote_index.db current), so this is
+        # a single fast round-trip rather than a live-updating stream — no
+        # interim "searching..." edit needed before the result lands.
         final_event = None
         try:
-            async for event in self.bot.worker.search_quote_extend(quote):
+            async for event in self.bot.worker.search_quote_extend(quote, media=media):
                 if event.type == "final":
                     final_event = event
         except httpx.HTTPError as exc:
@@ -2661,10 +2680,14 @@ class GifCog(commands.Cog):
 
         final_matches = final_event.matches if final_event else []
         if not final_matches:
-            command = "/snip audio" if kind == "audio" else "/snip movie"
+            command = {
+                "movie": "/snip movie film:...",
+                "tv": "/snip tv show:...",
+                "all": "/snip movie film:...` or `/snip tv show:...",
+            }[media]
             await interaction.edit_original_response(
-                content=f"No matches in what CineSnip has indexed so far. Try `{command}` on a "
-                "specific film first to add it, or rephrase your quote.",
+                content=f"No matches in what CineSnip has indexed so far. Try `{command}` "
+                "first to add it, or rephrase your quote.",
                 embed=None,
                 view=None,
             )
@@ -2690,11 +2713,17 @@ class GifCog(commands.Cog):
         description="Search your whole library for a quote, no film needed.",
     )
     @app_commands.describe(
-        quote='A line of dialogue to find — wrap it in "double quotes" for an exact-phrase-only match'
+        quote='A line of dialogue to find — wrap it in "double quotes" for an exact-phrase-only match',
+        media="Which libraries to search (default: all)",
     )
-    async def snip_search(self, interaction: discord.Interaction, quote: str) -> None:
+    async def snip_search(
+        self,
+        interaction: discord.Interaction,
+        quote: str,
+        media: Literal["movie", "tv", "all"] | None = None,
+    ) -> None:
         await interaction.response.defer(ephemeral=True)
-        await self._run_library_search(interaction, quote)
+        await self._run_library_search(interaction, quote, media=media or "all")
 
     async def _run_random_result(
         self,
@@ -2780,11 +2809,12 @@ class GifCog(commands.Cog):
         description="Generate a clip from a TV episode at a quote or timecode.",
     )
     @app_commands.describe(
-        show="The show to search for",
-        season="Season number (requires episode)",
-        episode="Episode number within the season (requires season)",
-        quote="A line of dialogue to find (fuzzy — close is fine); omit season/episode to "
-        "search the whole show; omit quote and timecode entirely for a random line",
+        show="The show to search for — omit to search your whole TV library by quote",
+        season="Season number (requires episode and a `show`)",
+        episode="Episode number within the season (requires season and a `show`)",
+        quote="A line of dialogue to find (fuzzy — close is fine); with no `show`, searches "
+        "your whole TV library; with a `show`, omit season/episode to search the whole "
+        "show; omit quote and timecode entirely for a random line",
         timecode="Timestamp, e.g. 1:23:45 or 1h23m45s — requires season/episode",
         end_timecode="Custom clip end (timecode only, not quote) — same formats as timecode",
         format="Output format (default: gif — mp4/webm are smaller but do not autoplay in Discord)",
@@ -2793,7 +2823,7 @@ class GifCog(commands.Cog):
     async def snip_tv(
         self,
         interaction: discord.Interaction,
-        show: str,
+        show: str | None = None,
         season: int | None = None,
         episode: int | None = None,
         quote: str | None = None,
@@ -2802,6 +2832,16 @@ class GifCog(commands.Cog):
         format: Literal["gif", "mp4", "webm"] | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
+
+        if show is None:
+            if quote is None or season is not None or episode is not None or timecode or end_timecode:
+                await interaction.edit_original_response(
+                    content="Give a `quote` to search your whole TV library, or pick a `show` "
+                    "first for season/episode/timecode."
+                )
+                return
+            await self._run_library_search(interaction, quote, format=format, media="tv")
+            return
 
         show_media_id = show
 
@@ -2952,11 +2992,12 @@ class GifCog(commands.Cog):
         description="Generate an audio-only clip (mp3/ogg) from a film or TV episode.",
     )
     @app_commands.describe(
-        media="Whether `title` is a film or a TV show (ignored if `title` is omitted)",
-        title="The film or show to search for — omit along with `media` to search your "
-        "whole movie library by quote, like `/snip search`",
+        media="Whether `title` is a film or a TV show, or which library to search when "
+        "`title` is omitted",
+        title="The film or show to search for — omit to search a whole library by quote, "
+        "like `/snip search`",
         quote="A line of dialogue to find (fuzzy — close is fine); with no `title`, searches "
-        "your whole movie library; with a `title`, omit both quote and timecode for a "
+        "the `media` library; with a `title`, omit both quote and timecode for a "
         "random line",
         timecode="Timestamp, e.g. 1:23:45 or 1h23m45s (TV: requires season/episode; needs a "
         "`title`)",
@@ -2985,25 +3026,20 @@ class GifCog(commands.Cog):
         # (video-only) on the worker side.
         if title is None:
             # Title-less quote search (follow-up to issue #6): mirrors
-            # /snip search's own movie-only library-wide search (CLAUDE.md
-            # Section 5 — the cache/index isn't type-scoped, so any
-            # cross-title search has to filter to movies at read time) and
-            # just renders the eventual pick as audio instead of gif.
+            # /snip search's library-wide search (CLAUDE.md Section 5 — the
+            # cache/index isn't type-scoped, so any cross-title search has
+            # to filter by media type at read time) and just renders the
+            # eventual pick as audio instead of gif.
             if quote is None:
                 await interaction.response.send_message(
                     "Give a `quote` to search your library, or pick a `title` first.",
                     ephemeral=True,
                 )
                 return
-            if media == "tv":
-                await interaction.response.send_message(
-                    "Library-wide quote search only covers movies (same as `/snip search`) — "
-                    "give a specific `title` to search a TV show.",
-                    ephemeral=True,
-                )
-                return
             await interaction.response.defer(ephemeral=True)
-            await self._run_library_search(interaction, quote, format=format, kind="audio")
+            await self._run_library_search(
+                interaction, quote, format=format, kind="audio", media=media
+            )
             return
 
         if media == "movie":

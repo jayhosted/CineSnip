@@ -329,6 +329,28 @@ def _live_fingerprint(path: Path | None) -> tuple[float, int] | None:
     return (fp[0], fp[1]) if fp is not None else None
 
 
+def is_cache_fresh(
+    source_value: str | None,
+    sidecar_path: Path | None,
+    video_path: Path,
+    fingerprint: tuple[float, int] | None,
+) -> bool:
+    """Freshness half of _read_cached_via_index, split out so a caller that
+    already has a title's (source, fingerprint) from a BULK query (e.g.
+    api.py's whole-show search — see search_index.get_cache_metadata_bulk)
+    can check freshness without re-querying SQLite per episode. Same
+    check_path-by-source rule as _read_cached_via_index: SIDECAR checks
+    `sidecar_path` (the CURRENTLY discovered one — a newly-appeared,
+    higher-priority sidecar must still invalidate a stale cache, so callers
+    must not skip find_sidecar_subtitle()), EMBEDDED checks the video
+    itself, NONE has no source file and is always fresh."""
+    source = SubtitleSource(source_value) if source_value else SubtitleSource.NONE
+    if source is SubtitleSource.NONE:
+        return True
+    check_path = sidecar_path if source is SubtitleSource.SIDECAR else video_path
+    return fingerprint == _live_fingerprint(check_path)
+
+
 def _read_cached_via_index(
     db_path: Path,
     guid: str,
@@ -350,17 +372,9 @@ def _read_cached_via_index(
     source_value, cached_sidecar_path, stream_index = meta
     source = SubtitleSource(source_value) if source_value else SubtitleSource.NONE
 
-    if source is SubtitleSource.SIDECAR:
-        check_path = sidecar_path
-    elif source is SubtitleSource.EMBEDDED:
-        check_path = video_path
-    else:
-        check_path = None
-
-    if source is not SubtitleSource.NONE:
-        stored_fingerprint = search_index.get_fingerprint(db_path, guid)
-        if stored_fingerprint != _live_fingerprint(check_path):
-            return None
+    stored_fingerprint = search_index.get_fingerprint(db_path, guid)
+    if not is_cache_fresh(source_value, sidecar_path, video_path, stored_fingerprint):
+        return None
 
     entries = search_index.get_entries(db_path, guid)
     if entries is None:

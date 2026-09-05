@@ -9,6 +9,7 @@ from app.worker.search_index import (
     count_entries,
     coverage_counts,
     fetch_entry_windows,
+    get_cache_metadata_bulk,
     get_entries,
     get_fingerprint,
     get_title_ids_by_guid,
@@ -216,6 +217,51 @@ def test_get_fingerprint_none_when_not_set(tmp_path):
         fingerprint=None,
     )
     assert get_fingerprint(db_path, "guid-1") is None
+
+
+def test_get_cache_metadata_bulk_round_trip(tmp_path):
+    db_path = tmp_path / "quote_index.db"
+    upsert_title(
+        db_path,
+        guid="guid-1",
+        media_id="101",
+        title="Film One",
+        library_name="Movies",
+        source="sidecar",
+        sidecar_path="/media/film.en.srt",
+        stream_index=None,
+        entries=[],
+        fingerprint=(111.5, 2048),
+    )
+    upsert_title(
+        db_path,
+        guid="guid-2",
+        media_id="102",
+        title="Film Two",
+        library_name="Movies",
+        source="none",
+        sidecar_path=None,
+        stream_index=None,
+        entries=[],
+        fingerprint=None,
+    )
+
+    result = get_cache_metadata_bulk(db_path, ["guid-1", "guid-2", "unknown-guid"])
+
+    assert result == {
+        "guid-1": ("sidecar", "/media/film.en.srt", (111.5, 2048)),
+        "guid-2": ("none", None, None),
+    }
+
+
+def test_get_cache_metadata_bulk_empty_guids_and_missing_db(tmp_path):
+    assert get_cache_metadata_bulk(tmp_path / "quote_index.db", []) == {}
+    db_path = tmp_path / "quote_index.db"
+    upsert_title(
+        db_path, guid="guid-1", media_id="101", title="Film", library_name="Movies",
+        source="sidecar", sidecar_path=None, stream_index=None, entries=[], fingerprint=None,
+    )
+    assert get_cache_metadata_bulk(tmp_path / "nonexistent.db", ["guid-1"]) == {}
 
 
 def _populate_small_corpus(db_path):

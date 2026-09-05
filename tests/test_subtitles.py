@@ -1,6 +1,7 @@
 import asyncio
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +16,7 @@ from app.worker.subtitles import (
     choose_subtitle_stream,
     find_sidecar_subtitle,
     get_subtitles,
+    is_cache_fresh,
     parse_srt,
     read_cached_subtitles,
     read_sidecar_srt,
@@ -276,6 +278,44 @@ def test_cache_for_embedded_source_is_invalidated_when_the_video_changes(tmp_pat
 
     video.write_text("a re-remuxed file with different bytes")
     assert read_cached_subtitles(tmp_path, "plex://movie/abc", None, video) is None
+
+
+def test_is_cache_fresh_none_source_always_fresh():
+    # No source file backs a NONE (no-subtitles-found) result, so there's
+    # nothing to invalidate against — always fresh, regardless of paths.
+    assert is_cache_fresh("none", None, Path("/nope.mkv"), None) is True
+
+
+def test_is_cache_fresh_sidecar_checks_the_sidecar_not_the_video(tmp_path):
+    sidecar = tmp_path / "Film.srt"
+    sidecar.write_text("1\n00:00:01,000 --> 00:00:02,000\nHi\n")
+    video = tmp_path / "Film.mkv"
+    video.write_text("video bytes")
+    stat = sidecar.stat()
+
+    assert is_cache_fresh("sidecar", sidecar, video, (stat.st_mtime, stat.st_size)) is True
+
+    sidecar.write_text("1\n00:00:01,000 --> 00:00:02,000\nEdited\n")
+    assert is_cache_fresh("sidecar", sidecar, video, (stat.st_mtime, stat.st_size)) is False
+
+
+def test_is_cache_fresh_embedded_checks_the_video_not_a_sidecar(tmp_path):
+    video = tmp_path / "Film.mkv"
+    video.write_text("video bytes")
+    sidecar = tmp_path / "Film.srt"
+    sidecar.write_text("unrelated sidecar that appeared later")
+    stat = video.stat()
+
+    assert is_cache_fresh("embedded", sidecar, video, (stat.st_mtime, stat.st_size)) is True
+
+    video.write_text("a re-remuxed file with different bytes")
+    assert is_cache_fresh("embedded", sidecar, video, (stat.st_mtime, stat.st_size)) is False
+
+
+def test_is_cache_fresh_sidecar_missing_is_stale(tmp_path):
+    video = tmp_path / "Film.mkv"
+    video.write_text("video bytes")
+    assert is_cache_fresh("sidecar", None, video, (111.5, 2048)) is False
 
 
 def test_cache_paths_for_special_character_guids_are_filesystem_safe(tmp_path):

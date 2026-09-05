@@ -296,8 +296,12 @@ class WorkerClient:
         response.raise_for_status()
         return RandomQuoteResult(**response.json())
 
-    async def search_quote_extend(self, quote: str) -> AsyncIterator[LibrarySearchExtendEvent]:
-        async with self._client.stream("GET", "/search-quote-extend", params={"quote": quote}) as response:
+    async def search_quote_extend(
+        self, quote: str, media: str = "all"
+    ) -> AsyncIterator[LibrarySearchExtendEvent]:
+        async with self._client.stream(
+            "GET", "/search-quote-extend", params={"quote": quote, "media": media}
+        ) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
                 if not line:

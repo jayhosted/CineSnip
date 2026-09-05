@@ -33,6 +33,7 @@ from app.worker.subtitles import (
     SubtitleSource,
     find_sidecar_subtitle,
     get_subtitles,
+    is_cache_fresh,
 )
 
 logger = logging.getLogger(__name__)
@@ -425,17 +426,27 @@ def _to_out(movie: MovieResult) -> MovieResultOut:
     )
 
 
-async def _movie_library_matches(
-    app: FastAPI, settings: Settings, quote: str
+async def _library_matches(
+    app: FastAPI, settings: Settings, quote: str, media: Literal["movie", "tv", "all"] = "all"
 ) -> tuple[list[CachedTitle], list, bool]:
-    # Shared by /search-quote and /search-quote-extend: both search exactly
-    # "every cached movie-library title" — the TV episodes sharing this same
-    # search_index (CLAUDE.md Section 4) are filtered out here, once.
+    # Backs /search-quote-extend (/snip search, and /snip movie's/tv's own
+    # title-less fallback) — cache-only library-wide search scoped by media
+    # type, same movie_library_names/show_library_names split random_quote
+    # already uses (CLAUDE.md Section 4: the shared search_index isn't
+    # type-scoped, so any cross-title search has to filter at read time).
     movie_library_names = app.state.media.movie_library_names
+    show_library_names = app.state.media.show_library_names
+    if media == "movie":
+        allowed_libraries = movie_library_names
+    elif media == "tv":
+        allowed_libraries = show_library_names
+    else:
+        allowed_libraries = movie_library_names | show_library_names
+
     cached_titles = [
         t
         for t in search_index.list_titles(settings.quote_index_db_path)
-        if t.library_name in movie_library_names
+        if t.library_name in allowed_libraries
     ]
     qm = settings.quote_match
     # Runs sqlite FTS5 queries + rapidfuzz scoring, which can take several
@@ -1044,7 +1055,9 @@ def create_app(settings: Settings) -> FastAPI:
     # with sync disabled this behaves identically to /search-quote, just over
     # a streamed single-event body, so the bot never needs two code paths.
     @app.get("/search-quote-extend")
-    async def search_quote_extend(quote: str) -> StreamingResponse:
+    async def search_quote_extend(
+        quote: str, media: Literal["movie", "tv", "all"] = "all"
+    ) -> StreamingResponse:
         # Cache-only by design: library_sync (the 24h scheduled pass, or a
         # manual "Sync now" click) is solely responsible for keeping
         # quote_index.db current. This used to also do an on-demand live
@@ -1059,7 +1072,7 @@ def create_app(settings: Settings) -> FastAPI:
         # plain GET) for wire-format compatibility with the bot's existing
         # NDJSON client, even though it now only ever emits two events.
         async def event_stream():
-            _, matches, truncated = await _movie_library_matches(app, settings, quote)
+            _, matches, truncated = await _library_matches(app, settings, quote, media)
             yield json.dumps({
                 "type": "cached",
                 **_library_search_payload(matches, settings.quote_match, truncated),
@@ -1072,7 +1085,10 @@ def create_app(settings: Settings) -> FastAPI:
 
         return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
-    async def _ensure_episode_cached(episode: MovieResult) -> None:
+    async def _ensure_episode_cached(
+        episode: MovieResult,
+        known_meta: tuple[str | None, str | None, tuple[float, int] | None] | None = None,
+    ) -> None:
         # Best-effort: one broken/unmapped episode file must not fail the
         # whole show-wide search, so failures here are logged and skipped
         # rather than raised.
@@ -1100,6 +1116,25 @@ def create_app(settings: Settings) -> FastAPI:
             )
             return
 
+        if known_meta is not None:
+            # Fast path: _ensure_all_episodes_cached already bulk-fetched
+            # this episode's cached (source, sidecar_path, fingerprint) in
+            # ONE query for the whole show, instead of the 3 short-lived
+            # SQLite connections get_subtitles() would otherwise open per
+            # episode (get_source_info + get_fingerprint + get_entries —
+            # the last of which is pure waste here anyway, since a fresh
+            # episode's entries aren't used for anything: search_cached_library
+            # reads straight from search_index itself, never from this
+            # function's return value). Still runs find_sidecar_subtitle
+            # fresh, not the stored sidecar_path — a newly-appeared,
+            # higher-priority sidecar must still invalidate a stale cache
+            # (docs/build-notes/subtitles-and-search.md), so discovery can't
+            # be skipped, only the redundant DB round-trips can.
+            source_value, _cached_sidecar_path, fingerprint = known_meta
+            sidecar = await asyncio.to_thread(find_sidecar_subtitle, Path(container_path))
+            if is_cache_fresh(source_value, sidecar, Path(container_path), fingerprint):
+                return
+
         timeout = settings.subtitle_defaults.extraction_timeout_seconds
         try:
             result = await get_subtitles(
@@ -1117,26 +1152,39 @@ def create_app(settings: Settings) -> FastAPI:
         _index_if_searchable(settings, episode, result)
 
     async def _ensure_all_episodes_cached(episodes: list[MovieResult]) -> None:
+        # Bulk-preload every episode's cached (source, sidecar_path,
+        # fingerprint) in ONE query up front — same anti-pattern fix
+        # library_sync's known_guids/no_subtitle_guids preload already
+        # applied for its own per-item loop (docs/build-notes/
+        # subtitles-and-search.md) — so the common already-cached-and-fresh
+        # case below can skip straight past get_subtitles()'s own 3
+        # per-episode SQLite round-trips entirely.
+        bulk_meta = await asyncio.to_thread(
+            search_index.get_cache_metadata_bulk,
+            settings.quote_index_db_path,
+            [ep.guid for ep in episodes],
+        )
+
         # Bounded concurrency, not strictly sequential and not unbounded
         # gather — sequential was the original design specifically to
         # avoid hammering ffmpeg/Plex with a dozen-plus simultaneous
         # extractions for a never-touched show, but that protection is
         # only needed for episodes that actually turn out to need
         # extraction. For an already-cached episode, _ensure_episode_cached
-        # is just a filesystem stat plus a SQLite read — real measurement
-        # on a 279-episode show found the strictly-sequential version took
-        # ~34s purely from serializing those cheap per-episode checks one
-        # at a time, identical whether the show was cold or fully warm.
-        # _EPISODE_CACHE_CHECK_CONCURRENCY caps how many episodes are ever
-        # actually being extracted (or checked) at once, keeping the
-        # original protection intact while letting the common
-        # already-cached case run at something close to this concurrency
-        # limit's speed instead of one-at-a-time.
+        # is just a filesystem stat plus (with bulk_meta) a second stat for
+        # freshness — real measurement on a 279-episode show found the
+        # strictly-sequential version took ~34s purely from serializing
+        # those cheap per-episode checks one at a time, identical whether
+        # the show was cold or fully warm. _EPISODE_CACHE_CHECK_CONCURRENCY
+        # caps how many episodes are ever actually being extracted (or
+        # checked) at once, keeping the original protection intact while
+        # letting the common already-cached case run at something close to
+        # this concurrency limit's speed instead of one-at-a-time.
         semaphore = asyncio.Semaphore(_EPISODE_CACHE_CHECK_CONCURRENCY)
 
         async def _bounded(episode: MovieResult) -> None:
             async with semaphore:
-                await _ensure_episode_cached(episode)
+                await _ensure_episode_cached(episode, bulk_meta.get(episode.guid))
 
         await asyncio.gather(*(_bounded(ep) for ep in episodes))
 

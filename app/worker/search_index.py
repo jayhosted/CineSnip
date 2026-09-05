@@ -229,6 +229,33 @@ def get_source_info(db_path: Path, guid: str) -> tuple[str | None, str | None, i
     return (row[0], row[1], row[2])
 
 
+def get_cache_metadata_bulk(
+    db_path: Path, guids: list[str]
+) -> dict[str, tuple[str | None, str | None, tuple[float, int] | None]]:
+    """Bulk equivalent of get_source_info()+get_fingerprint() for many guids
+    in one query — same anti-pattern fix library_sync's known_guids/
+    no_subtitle_guids preload already applied for its own per-item loop
+    (docs/build-notes/subtitles-and-search.md), now for whole-show search's
+    per-episode freshness pre-check (api.py's _ensure_all_episodes_cached).
+    Returns guid -> (source, sidecar_path, fingerprint) for every guid that
+    HAS a title row; a guid with no row is simply absent from the result —
+    callers must fall back to the full get_subtitles() path for those."""
+    if not guids or not db_path.exists():
+        return {}
+    with _connect(db_path) as conn:
+        placeholders = ",".join("?" for _ in guids)
+        rows = conn.execute(
+            "SELECT guid, source, sidecar_path, fingerprint_mtime, fingerprint_size "
+            f"FROM titles WHERE guid IN ({placeholders})",
+            guids,
+        ).fetchall()
+    result: dict[str, tuple[str | None, str | None, tuple[float, int] | None]] = {}
+    for guid, source, sidecar_path, fp_mtime, fp_size in rows:
+        fingerprint = (fp_mtime, fp_size) if fp_mtime is not None and fp_size is not None else None
+        result[guid] = (source, sidecar_path, fingerprint)
+    return result
+
+
 def get_fingerprint(db_path: Path, guid: str) -> tuple[float, int] | None:
     if not db_path.exists():
         return None

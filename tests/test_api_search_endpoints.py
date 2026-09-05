@@ -146,6 +146,84 @@ def test_search_episodes_quote_endpoint_no_matches_is_empty_not_error(tmp_path, 
     assert resp.json()["matches"] == []
 
 
+def test_search_episodes_quote_endpoint_skips_get_subtitles_for_fresh_cached_episode(
+    tmp_path, monkeypatch
+):
+    """_ensure_all_episodes_cached bulk-preloads (source, sidecar_path,
+    fingerprint) for the whole show in one query, then _ensure_episode_cached
+    must skip get_subtitles() entirely for an episode that pre-check finds
+    already fresh — that's the whole point of the preload (get_subtitles()
+    would otherwise open 3 more short-lived SQLite connections per episode,
+    and its own get_entries() call is pure waste here since search reads
+    straight from search_index, never from this function's return value).
+    A NONE-sourced episode (no subtitles found previously) is always fresh
+    with no file to check, making it the simplest case to prove this with.
+    """
+    settings = _settings(tmp_path)
+    episode = MovieResult(
+        media_id="501", title="The Office — S01E01 — Pilot", year=None,
+        duration_ms=1000, thumb_url=None, source_path="D:\\TV\\office.mkv",
+        guid="ep-guid-1", library_name="TV Shows",
+    )
+    search_index.upsert_title(
+        settings.quote_index_db_path,
+        guid="ep-guid-1", media_id=501, title=episode.title, library_name="TV Shows",
+        source="none", sidecar_path=None, stream_index=None, entries=[], fingerprint=None,
+    )
+
+    fake_plex = _FakePlexClient(settings)
+    fake_plex._episodes_by_show["900"] = [episode]
+    client = _client(settings, monkeypatch, fake_plex)
+
+    monkeypatch.setattr(api_module, "_resolve_container_path", lambda movie, settings: "fake-path")
+    monkeypatch.setattr(api_module.os.path, "exists", lambda path: True)
+    monkeypatch.setattr(api_module, "find_sidecar_subtitle", lambda path: None)
+
+    def fail_get_subtitles(*args, **kwargs):
+        raise AssertionError("get_subtitles must not be called for an already-fresh episode")
+
+    monkeypatch.setattr(api_module, "get_subtitles", fail_get_subtitles)
+
+    resp = client.get("/search-episodes-quote/900", params={"quote": "anything"})
+
+    assert resp.status_code == 200
+
+
+def test_search_episodes_quote_endpoint_still_calls_get_subtitles_for_uncached_episode(
+    tmp_path, monkeypatch
+):
+    """The bulk pre-check must only skip get_subtitles() for episodes the
+    bulk query actually found a fresh row for — an episode with no title
+    row at all (never touched by any flow) is absent from
+    get_cache_metadata_bulk's result, so it must still fall through to the
+    full get_subtitles() extraction path exactly as before."""
+    settings = _settings(tmp_path)
+    episode = MovieResult(
+        media_id="501", title="The Office — S01E01 — Pilot", year=None,
+        duration_ms=1000, thumb_url=None, source_path="D:\\TV\\office.mkv",
+        guid="ep-guid-1", library_name="TV Shows",
+    )
+    fake_plex = _FakePlexClient(settings)
+    fake_plex._episodes_by_show["900"] = [episode]
+    client = _client(settings, monkeypatch, fake_plex)
+
+    monkeypatch.setattr(api_module, "_resolve_container_path", lambda movie, settings: "fake-path")
+    monkeypatch.setattr(api_module.os.path, "exists", lambda path: True)
+
+    calls = []
+
+    async def fake_get_subtitles(movie, container_path, cache_dir, db_path, **kwargs):
+        calls.append(movie.guid)
+        return SubtitleResult(guid=movie.guid, source=SubtitleSource.NONE, entries=[])
+
+    monkeypatch.setattr(api_module, "get_subtitles", fake_get_subtitles)
+
+    resp = client.get("/search-episodes-quote/900", params={"quote": "anything"})
+
+    assert resp.status_code == 200
+    assert calls == ["ep-guid-1"]
+
+
 def test_search_episodes_quote_endpoint_checks_episodes_with_bounded_concurrency(
     tmp_path, monkeypatch
 ):
@@ -276,6 +354,55 @@ def test_search_quote_extend_is_cache_only(tmp_path, monkeypatch):
     assert events[0]["matches"][0]["title"] == "Monty Python"
     assert events[1]["remaining_uncached"] is None
     assert events[1]["matches"] == events[0]["matches"]
+
+
+def test_search_quote_extend_media_defaults_to_all(tmp_path, monkeypatch):
+    settings = _settings_with_sync(tmp_path, enabled=True)
+    _write_title(
+        settings.quote_index_db_path,
+        "guid-1", 101, "Some Show", "TV Shows",
+        ["Nobody expects the Spanish Inquisition!"],
+    )
+    client = _client(settings, monkeypatch)
+
+    resp = client.get("/search-quote-extend", params={"quote": "nobody expects"})
+
+    events = _ndjson_lines(resp)
+    assert events[-1]["matches"][0]["title"] == "Some Show"
+
+
+def test_search_quote_extend_media_movie_excludes_tv(tmp_path, monkeypatch):
+    settings = _settings_with_sync(tmp_path, enabled=True)
+    _write_title(
+        settings.quote_index_db_path,
+        "guid-1", 101, "Some Show", "TV Shows",
+        ["Nobody expects the Spanish Inquisition!"],
+    )
+    client = _client(settings, monkeypatch)
+
+    resp = client.get(
+        "/search-quote-extend", params={"quote": "nobody expects", "media": "movie"}
+    )
+
+    events = _ndjson_lines(resp)
+    assert events[-1]["matches"] == []
+
+
+def test_search_quote_extend_media_tv_excludes_movies(tmp_path, monkeypatch):
+    settings = _settings_with_sync(tmp_path, enabled=True)
+    _write_title(
+        settings.quote_index_db_path,
+        "guid-1", 101, "Monty Python", "Movies",
+        ["Nobody expects the Spanish Inquisition!"],
+    )
+    client = _client(settings, monkeypatch)
+
+    resp = client.get(
+        "/search-quote-extend", params={"quote": "nobody expects", "media": "tv"}
+    )
+
+    events = _ndjson_lines(resp)
+    assert events[-1]["matches"] == []
 
 
 def test_random_quote_endpoint_no_quote_returns_a_cached_line(tmp_path, monkeypatch):
