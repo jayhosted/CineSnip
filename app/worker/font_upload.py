@@ -39,8 +39,16 @@ def _check_magic_bytes(data: bytes) -> None:
 
 
 async def _fc_scan_format(path: Path, fmt: str) -> str:
+    # fc-scan repeats --format's output once per matched font pattern in the
+    # file, with NO separator between repeats — a variable/multi-instance
+    # font (several named weight/width instances in one file) has multiple
+    # patterns, so a bare "%{family}" comes back as several family names
+    # concatenated with nothing between them (e.g. "UbuntuUbuntuUbuntu").
+    # A trailing newline in the format string turns that into one
+    # newline-separated line per pattern, so the caller can just take the
+    # first line.
     proc = await asyncio.create_subprocess_exec(
-        "fc-scan", "--format", fmt, str(path),
+        "fc-scan", "--format", f"{fmt}\n", str(path),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     try:
@@ -79,14 +87,21 @@ async def _scan_font(path: Path) -> tuple[str, str]:
     itself uses — to (a) confirm it's structurally valid (catches a corrupt
     body that merely has the right magic bytes) and (b) read its charset
     for the missing-punctuation warning. Returns (family, missing_punctuation)."""
-    family = await _fc_scan_format(path, "%{family}")
-    if not family:
+    family_output = await _fc_scan_format(path, "%{family}")
+    if not family_output:
         raise FontValidationError(
             "This file couldn't be read as a font — it may be corrupt or "
             "not actually a font file."
         )
+    # Take only the first pattern's line (see _fc_scan_format) before
+    # splitting on ',' — that comma-split handles a single pattern's own
+    # language-localized name variants, a separate and still-valid case.
+    family = family_output.splitlines()[0]
+    # Charset is likely identical across a variable font's instances, so
+    # taking the first pattern's line here is a reasonable, correct choice
+    # for the punctuation-coverage check below.
     charset_output = await _fc_scan_format(path, "%{charset}")
-    covered = _decode_fc_charset(charset_output)
+    covered = _decode_fc_charset(charset_output.splitlines()[0] if charset_output else "")
     missing = "".join(
         ch for ch in _COMMON_DIALOGUE_PUNCTUATION if ord(ch) not in covered
     )

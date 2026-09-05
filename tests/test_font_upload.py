@@ -60,6 +60,44 @@ async def test_process_font_upload_rejects_oversized_file(tmp_path, real_ttf_byt
         await process_font_upload(oversized, "custom.ttf", "simpsons", tmp_path / "fonts")
 
 
+@pytest.fixture
+def variable_font_bytes():
+    # A real multi-instance/variable font, needed to exercise the fc-scan
+    # "one repeated output per matched pattern, no separator" bug — a
+    # single-instance font like real_ttf_bytes never reproduces it.
+    candidate_globs = [
+        "/usr/share/fonts/**/Ubuntu[[]wdth,wght[]].ttf",
+        "/usr/share/fonts/**/*[[]wght[]].ttf",
+        "/usr/share/fonts/**/*[[]wdth,wght[]].ttf",
+    ]
+    for pattern in candidate_globs:
+        matches = glob.glob(pattern, recursive=True)
+        if matches:
+            return open(matches[0], "rb").read()
+    pytest.skip("No variable/multi-instance system font found to use as a fixture")
+
+
+@pytest.mark.anyio
+async def test_process_font_upload_parses_clean_family_from_variable_font(tmp_path, variable_font_bytes):
+    # Regression: fc-scan repeats "%{family}" once per matched pattern with
+    # no separator, so a variable font (several weight/width instances)
+    # used to come back as e.g. "UbuntuUbuntuUbuntu...". _fc_scan_format now
+    # asks for a trailing newline per pattern and _scan_font takes only the
+    # first line, so the family name must come back clean.
+    result = await process_font_upload(
+        variable_font_bytes, "custom.ttf", "simpsons", tmp_path / "fonts"
+    )
+    assert result.family
+    # A garbled multi-instance concatenation is the family name repeated
+    # back-to-back several times with no separator (e.g. "UbuntuUbuntu...").
+    # A clean single family name is short and is not itself made of two (or
+    # more) repeats of a shorter substring.
+    assert len(result.family) <= 40
+    half = len(result.family) // 2
+    if half:
+        assert result.family[:half] * 2 != result.family[: half * 2]
+
+
 @pytest.mark.anyio
 async def test_process_font_upload_flags_missing_punctuation_without_rejecting(tmp_path, real_ttf_bytes):
     # A standard system font covers common dialogue punctuation, so this

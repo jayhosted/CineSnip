@@ -138,3 +138,24 @@ def test_styles_preview_proxies_the_worker_and_embeds_base64(client, monkeypatch
     )
     assert response.status_code == 200
     assert "data:image/png;base64," in response.text
+
+
+def test_styles_edit_form_does_not_race_save_and_preview_on_one_element(client):
+    # Regression: hx-post and hx-get used to both live on the <form>, so
+    # clicking Save fired a POST and a GET concurrently, racing to swap
+    # #settings-content. The form must carry only its save POST; the live
+    # preview trigger belongs on #style-preview instead.
+    response = client.get("/settings/styles/classic/edit")
+    assert response.status_code == 200
+    import re
+
+    form_match = re.search(r"<form\b[^>]*>", response.text)
+    assert form_match, "expected a <form> element in the style edit template"
+    form_tag = form_match.group(0)
+    assert "hx-post" in form_tag
+    assert "hx-get" not in form_tag
+    assert "hx-target-error" not in response.text
+
+    preview_match = re.search(r'<div id="style-preview"[^>]*>', response.text)
+    assert preview_match, "expected #style-preview element"
+    assert "delay:500ms" in preview_match.group(0)

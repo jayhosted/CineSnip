@@ -6,9 +6,7 @@
   {% if font_warning %}<div class="error-banner" style="margin-top:18px;">{{ font_warning }}</div>{% endif %}
 
   <form class="card" style="margin-top:18px; max-width:560px;"
-    hx-post="/settings/styles/save" hx-target="#settings-content" hx-swap="outerHTML"
-    hx-trigger="submit"
-    hx-get="/settings/styles/preview" hx-include="closest form" hx-target-error="#style-preview">
+    hx-post="/settings/styles/save" hx-target="#settings-content" hx-swap="outerHTML">
     <input type="hidden" name="original_name" value="{{ original_name }}">
 
     <label class="field-label" for="name">NAME</label>
@@ -85,7 +83,10 @@
       </div>
     </div>
 
-    <div id="style-preview" style="margin-bottom:20px;"></div>
+    <div id="style-preview" style="margin-bottom:20px;"
+      hx-post="/settings/styles/preview"
+      hx-trigger="change from:closest form delay:500ms, input from:closest form delay:500ms"
+      hx-target="#style-preview" hx-swap="innerHTML" hx-include="closest form"></div>
 
     <button class="btn btn-primary" type="submit">Save</button>
     <a href="/settings/styles" class="btn btn-secondary">Cancel</a>
