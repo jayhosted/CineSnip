@@ -7,6 +7,7 @@ from app.bot.cogs.gif import (
     _PAGE_SIZE,
     AudioClipResultView,
     ClipEditView,
+    ClipResultView,
     QuoteMatchView,
     RandomResultView,
 )
@@ -589,6 +590,7 @@ class _FakeEditWorker:
         self.render = AsyncMock(return_value=_FakeRenderResult2())
         self.subtitles = AsyncMock(return_value=entries or [])
         self.subtitle_status = AsyncMock(return_value=_FakeSubtitleStatus(likely_slow=likely_slow))
+        self.style_options = AsyncMock(return_value=None)
 
 
 def _make_clip_edit_view(worker) -> ClipEditView:
@@ -1176,3 +1178,25 @@ def test_random_result_view_audio_shuffle_filename_uses_picked_text():
     asyncio.run(view.shuffle.callback(_fake_interaction()))
 
     assert view._current.filename == "i-know-kung-fu.mp3"
+
+
+def test_clip_result_view_uses_custom_style_options_when_given():
+    custom_options = [("classic", "Classic"), ("simpsons", "Simpsons")]
+    view = ClipResultView(
+        invoker_id=1, worker=None, media_id="1", title="t", timecode="0:01",
+        duration=None, end_timecode=None, format=None, style="classic",
+        content=b"", filename="clip.gif", clip_start=0.0, clip_duration=4.0,
+        style_options=custom_options,
+    )
+    select = next(item for item in view.children if isinstance(item, discord.ui.Select))
+    assert [opt.value for opt in select.options] == ["classic", "simpsons"]
+
+
+def test_clip_result_view_falls_back_to_default_style_options():
+    view = ClipResultView(
+        invoker_id=1, worker=None, media_id="1", title="t", timecode="0:01",
+        duration=None, end_timecode=None, format=None, style="classic",
+        content=b"", filename="clip.gif", clip_start=0.0, clip_duration=4.0,
+    )
+    select = next(item for item in view.children if isinstance(item, discord.ui.Select))
+    assert len(select.options) == 5  # classic/boxed/cinematic/meme/none

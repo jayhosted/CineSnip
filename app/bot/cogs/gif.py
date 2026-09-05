@@ -301,7 +301,10 @@ class QuoteMatchView(_InvokerOnlyView):
 # (value, label) — value is what the worker's /render `style` field
 # expects; "none" is a real, explicit choice ("No Subtitles"), not the
 # absence of one. Order matches CLAUDE.md Section 2's listed preset order.
-_STYLE_OPTIONS: list[tuple[str, str]] = [
+# Used only as a fallback if the worker's /style-presets call fails — the
+# live source of truth is GET /style-presets (issue #20), since a custom
+# preset added via the web editor wouldn't appear in a hardcoded list.
+_FALLBACK_STYLE_OPTIONS: list[tuple[str, str]] = [
     ("classic", "Classic (white, black outline)"),
     ("boxed", "Boxed (white on black box)"),
     ("cinematic", "Cinematic (yellow)"),
@@ -988,6 +991,7 @@ class ClipResultView(_InvokerOnlyView):
         filename: str,
         clip_start: float,
         clip_duration: float,
+        style_options: list[tuple[str, str]] | None = None,
     ) -> None:
         super().__init__(invoker_id, timeout=300)
         self._worker = worker
@@ -1006,12 +1010,13 @@ class ClipResultView(_InvokerOnlyView):
         # "posted by" metadata line's exact span.
         self._clip_start = clip_start
         self._clip_duration = clip_duration
+        self._style_options = style_options or _FALLBACK_STYLE_OPTIONS
         self._add_select()
 
     def _add_select(self) -> None:
         options = [
             discord.SelectOption(label=label, value=value, default=(value == self.style))
-            for value, label in _STYLE_OPTIONS
+            for value, label in self._style_options
         ]
         # Explicit row: item order alone puts this below the decorated
         # "Post to channel" button (added first, during super().__init__())
@@ -2587,6 +2592,10 @@ class GifCog(commands.Cog):
                 subtitle_text=subtitle_text,
             )
         else:
+            try:
+                style_options = await self.bot.worker.style_options()
+            except httpx.HTTPError:
+                style_options = None  # ClipResultView falls back to the built-in 5
             result_view = ClipEditView(
                 interaction.user.id,
                 self.bot.worker,
@@ -2601,6 +2610,7 @@ class GifCog(commands.Cog):
                 filename,
                 render_result.start,
                 render_result.duration,
+                style_options=style_options,
             )
         notes = [_no_subtitles_note(default_style, render_result.style)]
         if kind == "audio":
