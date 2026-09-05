@@ -1,3 +1,4 @@
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.templating import Jinja2Templates
@@ -58,3 +59,54 @@ def test_render_endpoint_passes_string_media_id_through_to_worker(client, monkey
 
     assert response.status_code == 200
     assert captured["media_id"] == "abc-123"
+
+
+def test_generate_select_uses_worker_style_options(client, monkeypatch):
+    # The style-pill grid only renders once a title is selected
+    # (panel_generate_left.html's {% if selected %} form) — /generate/select
+    # is the real route that reaches that render path, so exercise it
+    # directly rather than the bare /generate page (which never shows the
+    # style options with nothing selected yet).
+    async def fake_style_options(self):
+        return [("classic", "Classic"), ("simpsons", "Simpsons")]
+
+    monkeypatch.setattr(WorkerClient, "style_options", fake_style_options)
+
+    response = client.get(
+        "/generate/select?media_id=abc-123&kind=film&title=Film&year=&library_name=Movies"
+    )
+
+    assert response.status_code == 200
+    assert "Simpsons" in response.text
+
+
+def test_generate_reset_calls_worker_style_options_without_error(client, monkeypatch):
+    # panel_generate_left.html only shows the style grid once a title is
+    # selected, so /generate/reset (which clears selection) can't assert on
+    # rendered options — this just guards that the call site doesn't raise.
+    async def fake_style_options(self):
+        return [("classic", "Classic"), ("simpsons", "Simpsons")]
+
+    monkeypatch.setattr(WorkerClient, "style_options", fake_style_options)
+
+    response = client.get("/generate/reset?kind=film")
+
+    assert response.status_code == 200
+
+
+def test_generate_select_falls_back_when_worker_style_options_fails(client, monkeypatch):
+    async def fake_style_options(self):
+        raise httpx.HTTPError("boom")
+
+    monkeypatch.setattr(WorkerClient, "style_options", fake_style_options)
+
+    response = client.get(
+        "/generate/select?media_id=abc-123&kind=film&title=Film&year=&library_name=Movies"
+    )
+
+    assert response.status_code == 200
+    # panel_generate_left.html only renders each option's label up to its
+    # first " (" (style-pill text), so assert on the raw radio value
+    # instead of the full fallback label string.
+    assert 'value="boxed"' in response.text
+    assert "Simpsons" not in response.text

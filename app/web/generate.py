@@ -13,18 +13,16 @@ from app.bot.worker_client import RenderResult, WorkerClient
 from app.runtime import SettingsHolder
 from app.web.clip_store import ClipStore
 
-# Mirrors app/bot/cogs/gif.py's _STYLE_OPTIONS exactly (same worker `style`
-# values, same catalog, same order per CLAUDE.md Section 2) — the web app is
-# a second thin client of the same worker API (decision #3), not a
-# reimplementation, so this list must never drift from the bot's.
-_STYLE_OPTIONS: list[tuple[str, str]] = [
+# Fallback only — GET /style-presets (issue #20) is the live source of
+# truth so a custom preset shows up here without restarting the web app.
+_FALLBACK_STYLE_OPTIONS: list[tuple[str, str]] = [
     ("classic", "Classic (white, black outline)"),
     ("boxed", "Boxed (white on black box)"),
     ("cinematic", "Cinematic (yellow)"),
     ("meme", "Meme (bold caps)"),
     ("none", "No Subtitles"),
 ]
-_STYLE_LABELS = {value: label.split(" (")[0] for value, label in _STYLE_OPTIONS}
+_STYLE_LABELS = {value: label.split(" (")[0] for value, label in _FALLBACK_STYLE_OPTIONS}
 
 _MEDIA_TYPES = {"gif": "image/gif", "mp4": "video/mp4", "webm": "video/webm"}
 
@@ -135,6 +133,15 @@ def register_generate_routes(
         template = templates.env.get_template(panel)
         return HTMLResponse(template.render(ctx))
 
+    async def _style_options() -> list[tuple[str, str]]:
+        worker = client_cache.get(settings_holder)
+        if worker is None:
+            return _FALLBACK_STYLE_OPTIONS
+        try:
+            return await worker.style_options()
+        except httpx.HTTPError:
+            return _FALLBACK_STYLE_OPTIONS
+
     async def do_render(
         worker: WorkerClient,
         media_id: str,
@@ -201,7 +208,7 @@ def register_generate_routes(
                 "content_template": "panel_generate.html",
                 "page_title": "Generate",
                 "current_page": "generate",
-                "style_options": _STYLE_OPTIONS,
+                "style_options": await _style_options(),
             },
         )
 
@@ -217,7 +224,7 @@ def register_generate_routes(
         return fragment(
             "panel_generate_left.html",
             kind=kind, query=query, results=results[:25], selected=None,
-            style_options=_STYLE_OPTIONS,
+            style_options=await _style_options(),
         )
 
     @app.get("/generate/select", response_class=HTMLResponse)
@@ -238,7 +245,7 @@ def register_generate_routes(
         return fragment(
             "panel_generate_left.html",
             kind=kind, query=None, results=None, selected=selected,
-            style_options=_STYLE_OPTIONS,
+            style_options=await _style_options(),
         )
 
     @app.get("/generate/reset", response_class=HTMLResponse)
@@ -246,7 +253,7 @@ def register_generate_routes(
         return fragment(
             "panel_generate_left.html",
             kind=kind, query="", results=None, selected=None,
-            style_options=_STYLE_OPTIONS,
+            style_options=await _style_options(),
         )
 
     @app.post("/generate/render", response_class=HTMLResponse)
