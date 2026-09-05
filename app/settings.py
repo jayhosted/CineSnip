@@ -106,6 +106,8 @@ def upsert_style_preset(
     status on an existing built-in is not — see StylePresetConfig.builtin."""
     existing_by_name = {cfg.name: cfg for cfg in settings.subtitle_styles}
     prior = existing_by_name.get(original_name) if original_name else None
+    if original_name and prior is None:
+        raise StylePresetError(f"No such style preset: '{original_name}'.")
 
     if prior is not None and prior.builtin:
         if config.name != original_name:

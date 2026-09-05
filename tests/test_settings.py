@@ -9,7 +9,11 @@ from app.settings import (
     RenderDefaults,
     Settings,
     SettingsError,
+    StylePresetConfig,
+    StylePresetError,
+    delete_style_preset,
     load_settings,
+    upsert_style_preset,
     write_config_yaml,
 )
 
@@ -233,14 +237,6 @@ def test_media_server_round_trips_through_write_config_yaml(tmp_path):
     assert load_settings(env_path=env, config_path=config).media_server == "jellyfin"
 
 
-from app.settings import (
-    StylePresetConfig,
-    StylePresetError,
-    delete_style_preset,
-    upsert_style_preset,
-)
-
-
 def test_settings_seeds_four_builtin_style_presets_by_default():
     settings = Settings(discord_token="x", plex_url="http://x", plex_token="x")
     names = {cfg.name for cfg in settings.subtitle_styles}
@@ -275,6 +271,46 @@ def test_upsert_style_preset_edits_a_builtin_without_renaming():
     updated = upsert_style_preset(settings, original_name="classic", config=edited)
     assert updated.style_presets()["classic"].font_size == 30
     assert next(c for c in updated.subtitle_styles if c.name == "classic").builtin is True
+
+
+def test_upsert_style_preset_forces_builtin_true_even_if_input_says_false():
+    settings = Settings(discord_token="x", plex_url="http://x", plex_token="x")
+    classic = next(cfg for cfg in settings.subtitle_styles if cfg.name == "classic")
+    snuck_in = classic.model_copy(update={"font_size": 30, "builtin": False})
+    updated = upsert_style_preset(settings, original_name="classic", config=snuck_in)
+    assert next(c for c in updated.subtitle_styles if c.name == "classic").builtin is True
+
+
+def test_upsert_style_preset_renames_a_custom_preset():
+    settings = Settings(discord_token="x", plex_url="http://x", plex_token="x")
+    new_cfg = StylePresetConfig(
+        name="simpsons", font="Simpsonfont", font_size=28,
+        primary_color="&H0000FFFF", outline_color="&H00000000",
+        back_color="&H00000000", border_style=1, outline=2.0, shadow=0.0,
+        bold=False, uppercase=False, margin_v=24,
+    )
+    with_custom = upsert_style_preset(settings, original_name=None, config=new_cfg)
+    renamed_cfg = new_cfg.model_copy(update={"name": "flanders"})
+    updated = upsert_style_preset(
+        with_custom, original_name="simpsons", config=renamed_cfg
+    )
+    names = {cfg.name for cfg in updated.subtitle_styles}
+    assert "simpsons" not in names
+    assert "flanders" in names
+    flanders = next(c for c in updated.subtitle_styles if c.name == "flanders")
+    assert flanders.font == "Simpsonfont"
+    assert flanders.font_size == 28
+
+
+def test_upsert_style_preset_rejects_unknown_original_name():
+    settings = Settings(discord_token="x", plex_url="http://x", plex_token="x")
+    cfg = StylePresetConfig(
+        name="ghost", font="X", font_size=10, primary_color="&H00FFFFFF",
+        outline_color="&H00000000", back_color="&H00000000", border_style=1,
+        outline=1.0, shadow=0.0, bold=False, uppercase=False, margin_v=10,
+    )
+    with pytest.raises(StylePresetError):
+        upsert_style_preset(settings, original_name="does-not-exist", config=cfg)
 
 
 def test_upsert_style_preset_rejects_renaming_a_builtin():
@@ -316,8 +352,6 @@ def test_delete_style_preset_removes_a_custom_preset():
 
 
 def test_write_config_yaml_round_trips_subtitle_styles(tmp_path):
-    from app.settings import load_settings, write_config_yaml
-
     settings = Settings(discord_token="x", plex_url="http://x", plex_token="x")
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"
