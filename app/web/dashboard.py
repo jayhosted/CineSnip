@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime
 
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
@@ -53,6 +54,24 @@ def _coverage_stats(settings_holder: SettingsHolder) -> CoverageStats:
     )
 
 
+def _format_duration_seconds(seconds: float) -> str:
+    total = int(seconds)
+    minutes, secs = divmod(total, 60)
+    return f"{minutes}m{secs:02d}s" if minutes else f"{secs}s"
+
+
+def _last_run_duration(progress: quote_index.SyncProgress) -> str | None:
+    # started_at is set once at the start of a run and left untouched by
+    # finish_sync_run, so once idle it still holds *that* run's start time —
+    # paired with last_synced_at (its completion time), that's a duration
+    # with no new column needed.
+    if not progress.started_at or not progress.last_synced_at:
+        return None
+    started = datetime.fromisoformat(progress.started_at)
+    finished = datetime.fromisoformat(progress.last_synced_at)
+    return _format_duration_seconds((finished - started).total_seconds())
+
+
 def _sync_panel_state(settings_holder: SettingsHolder) -> tuple:
     settings = settings_holder.settings
     progress = quote_index.get_sync_progress(settings.quote_index_db_path)
@@ -68,6 +87,7 @@ def _render_sync_panel(
         {
             "request": request,
             "progress": progress,
+            "last_run_duration": _last_run_duration(progress) if progress.status == "idle" else None,
             "log_lines": log_lines,
             "sync_enabled": settings.library_sync.enabled,
         }
@@ -88,6 +108,7 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates, settings
             "request": request,
             "stats": stats,
             "progress": progress,
+            "last_run_duration": _last_run_duration(progress) if progress.status == "idle" else None,
             "log_lines": log_lines,
             "sync_enabled": settings.library_sync.enabled,
             "content_template": "panel_dashboard.html",
@@ -131,7 +152,22 @@ def register_dashboard_routes(app: FastAPI, templates: Jinja2Templates, settings
                 settings = settings_holder.settings
                 progress, log_lines = await run_in_threadpool(_sync_panel_state, settings_holder)
                 log_seq = log_lines[-1].seq if log_lines else 0
-                payload = (progress.status, progress.current_title, progress.processed, progress.total, log_seq)
+                # last_synced_at is included so a completed run always
+                # produces a fresh payload even when nothing else here
+                # changed — a "no changes" run (the common case once a
+                # library's stored updatedAt is caught up) finishes without
+                # ever touching current_title/processed/total/log_seq, so
+                # without this a stuck 'running' snapshot (raced from the
+                # POST /sync/run response — see sync_run() above) would
+                # never get corrected back to idle.
+                payload = (
+                    progress.status,
+                    progress.current_title,
+                    progress.processed,
+                    progress.total,
+                    log_seq,
+                    progress.last_synced_at,
+                )
                 if payload != last_payload:
                     last_payload = payload
                     html = _render_sync_panel(templates, request, settings_holder, progress, log_lines).replace(

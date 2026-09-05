@@ -109,6 +109,15 @@ def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
             "INSERT OR IGNORE INTO library_sync_progress "
             "(id, status, processed, total, last_run_new_count) VALUES (1, 'idle', 0, 0, 0)"
         )
+        # Added after library_sync_progress already existed on real installs
+        # (same guarded-ALTER pattern as cached_titles.source above) — lets
+        # the dashboard's "last run" line show what actually happened
+        # (removed/errors), not just how many titles were added.
+        progress_cols = {row[1] for row in conn.execute("PRAGMA table_info(library_sync_progress)")}
+        if "last_run_removed_count" not in progress_cols:
+            conn.execute("ALTER TABLE library_sync_progress ADD COLUMN last_run_removed_count INTEGER NOT NULL DEFAULT 0")
+        if "last_run_error_count" not in progress_cols:
+            conn.execute("ALTER TABLE library_sync_progress ADD COLUMN last_run_error_count INTEGER NOT NULL DEFAULT 0")
 
         # Capped scrolling log for the dashboard's sync panel — trimmed to
         # the last 50 rows on every insert (see append_sync_log below), so
@@ -252,13 +261,16 @@ class SyncProgress:
     started_at: str | None
     last_synced_at: str | None
     last_run_new_count: int
+    last_run_removed_count: int
+    last_run_error_count: int
 
 
 def get_sync_progress(db_path: Path) -> SyncProgress:
     with _connect(db_path) as conn:
         row = conn.execute(
             "SELECT status, current_library, current_title, processed, total, "
-            "started_at, last_synced_at, last_run_new_count "
+            "started_at, last_synced_at, last_run_new_count, "
+            "last_run_removed_count, last_run_error_count "
             "FROM library_sync_progress WHERE id = 1"
         ).fetchone()
     return SyncProgress(*row)
@@ -290,12 +302,13 @@ def update_sync_progress(
         )
 
 
-def finish_sync_run(db_path: Path, new_count: int) -> None:
+def finish_sync_run(db_path: Path, new_count: int, removed_count: int = 0, error_count: int = 0) -> None:
     with _connect(db_path) as conn:
         conn.execute(
             "UPDATE library_sync_progress SET status='idle', current_library=NULL, "
-            "current_title=NULL, last_synced_at=?, last_run_new_count=? WHERE id=1",
-            (datetime.now(timezone.utc).isoformat(), new_count),
+            "current_title=NULL, last_synced_at=?, last_run_new_count=?, "
+            "last_run_removed_count=?, last_run_error_count=? WHERE id=1",
+            (datetime.now(timezone.utc).isoformat(), new_count, removed_count, error_count),
         )
 
 

@@ -1,5 +1,5 @@
 from app.settings import LibraryConfig, Settings
-from app.web.dashboard import CoverageStats, _coverage_stats
+from app.web.dashboard import CoverageStats, _coverage_stats, _last_run_duration
 from app.runtime import SettingsHolder
 from app.worker import quote_index, search_index
 
@@ -21,6 +21,28 @@ def _upsert(db_path, guid, media_id, title, library_name, source):
         library_name=library_name, source=source, sidecar_path=None,
         stream_index=None, entries=[], fingerprint=None,
     )
+
+
+def test_last_run_duration_formats_from_started_and_synced_timestamps(tmp_path):
+    settings = _settings(tmp_path, ["Movies"])
+    db_path = settings.quote_index_db_path
+    quote_index.start_sync_run(db_path)
+    quote_index.finish_sync_run(db_path, new_count=1)
+
+    progress = quote_index.get_sync_progress(db_path)
+
+    # started_at/last_synced_at are both "now" in this test, so the
+    # formatted duration should read as a near-zero number of seconds
+    # rather than None or an exception.
+    assert _last_run_duration(progress) is not None
+    assert _last_run_duration(progress).endswith("s")
+
+
+def test_last_run_duration_none_when_never_run(tmp_path):
+    settings = _settings(tmp_path, ["Movies"])
+    progress = quote_index.get_sync_progress(settings.quote_index_db_path)
+
+    assert _last_run_duration(progress) is None
 
 
 def test_coverage_stats_aggregates_across_libraries(tmp_path):

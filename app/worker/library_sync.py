@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import random
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -186,6 +187,15 @@ async def sync_one_title(
                     return f"CACHED (already have it): {item.title}"
                 # else: cache_meta found this title stale — fall through to
                 # real processing below instead of trusting it forever.
+                # Logged because a mismatch here is otherwise invisible until
+                # someone notices an unexpected re-extraction in the sync log
+                # and has no stored value left to compare against (the stale
+                # row gets overwritten by the very re-extraction this causes).
+                logger.info(
+                    "library sync: cache recheck found '%s' stale (stored fingerprint=%s) — re-extracting",
+                    item.title,
+                    meta[2],
+                )
             elif item.guid in no_subtitle_guids:
                 found_new_sidecar = await asyncio.to_thread(_sidecar_now_exists, settings, item)
                 if not found_new_sidecar:
@@ -331,6 +341,43 @@ async def sync_library(
         return result
 
     total_items = len(live_items)
+
+    # Two (or more) live items sharing one guid within the SAME library is
+    # never legitimate (unlike the same guid appearing across libraries —
+    # e.g. a separate 4K library, Section 3 — which is expected and handled
+    # elsewhere). Real-world cause, confirmed against this project's own
+    # library: a metadata-source (TVDB) episode renumbering that a *arr tool
+    # re-grabbed under the new number without removing the stale file under
+    # the old one — see docs/build-notes/subtitles-and-search.md. Whichever
+    # duplicate this loop processes last silently wins the shared cache row,
+    # so this is flagged up front rather than only showing up later as
+    # unexplained "cache recheck found ... stale" churn on every sync.
+    guid_counts = Counter(item.guid for item in live_items)
+    duplicate_guids = {guid: count for guid, count in guid_counts.items() if count > 1}
+    if duplicate_guids:
+        for guid in duplicate_guids:
+            titles = [item.title for item in live_items if item.guid == guid]
+            logger.warning(
+                "library sync: '%s' has %d items sharing one guid (%s) — %s — "
+                "likely a duplicate file left behind by a metadata renumbering; "
+                "the subtitle cache will keep flip-flopping between them until "
+                "one is removed",
+                library_name,
+                len(titles),
+                guid,
+                ", ".join(titles),
+            )
+            # Also surfaced in the dashboard's own activity log (not just the
+            # process logger) — this is exactly the kind of thing that
+            # otherwise only shows up as unexplained repeat re-extractions,
+            # noticed by chance rather than flagged where the user is
+            # already looking after clicking "Sync now".
+            await asyncio.to_thread(
+                append_sync_log,
+                settings.quote_index_db_path,
+                f"Warning — duplicate guid in {library_name}: {', '.join(titles)}",
+            )
+
     # Two bulk queries up front instead of sync_one_title() opening a fresh
     # SQLite connection per item to check "already indexed?" — see Fix 3's
     # precedent in api.py's search_quote_extend, which fixed the same
@@ -502,10 +549,27 @@ async def run_library_sync_once(settings: Settings, media: MediaClient) -> list[
 
         if not results:
             logger.info("library sync: no changes (%d libraries checked)", len(current))
+            # A per-library "changed" run already lands an activity-log line
+            # via append_sync_log inside sync_one_title's callers — a
+            # no-changes run wrote nothing there at all, so the dashboard's
+            # scrolling log looked identical before and after a click with
+            # no visible confirmation anything ran (the subtitle's updated
+            # timestamp alone is too subtle to notice).
+            await asyncio.to_thread(
+                append_sync_log,
+                db_path,
+                f"No changes — {len(current)} librar{'y' if len(current) == 1 else 'ies'} checked",
+            )
 
         return results
     finally:
-        await asyncio.to_thread(finish_sync_run, db_path, new_count=sum(r.added for r in results))
+        await asyncio.to_thread(
+            finish_sync_run,
+            db_path,
+            new_count=sum(r.added for r in results),
+            removed_count=sum(r.removed for r in results),
+            error_count=sum(r.errors for r in results),
+        )
 
 
 async def library_sync_task(settings: Settings, media: MediaClient) -> None:

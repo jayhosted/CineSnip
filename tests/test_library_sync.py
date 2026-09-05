@@ -173,6 +173,37 @@ def test_sync_library_persists_item_count(tmp_path):
     assert quote_index.get_library_item_count(settings.quote_index_db_path, "Movies") == 2
 
 
+def test_sync_library_logs_warning_when_live_items_share_a_guid(tmp_path):
+    # Real-world cause: a metadata-source (TVDB) episode renumbering that
+    # Sonarr/Radarr re-grabbed under a new season/episode number without
+    # removing the stale file under the old one — both point at the same
+    # underlying content so Plex assigns them the same guid, but they're
+    # two distinct live items competing for one cache row.
+    settings = _settings(tmp_path)
+    plex = _FakePlex(items=[
+        _item("guid-dup", "1", title="Old Numbering"),
+        _item("guid-dup", "2", title="New Numbering"),
+    ])
+
+    asyncio.run(sync_library(settings, plex, "Movies", section=None, updated_at=200))
+
+    log_lines = quote_index.tail_sync_log(settings.quote_index_db_path)
+    assert any(
+        "duplicate guid" in line.message and "Old Numbering" in line.message and "New Numbering" in line.message
+        for line in log_lines
+    )
+
+
+def test_sync_library_logs_nothing_extra_when_guids_are_unique(tmp_path):
+    settings = _settings(tmp_path)
+    plex = _FakePlex(items=[_item("guid-1", "1"), _item("guid-2", "2")])
+
+    asyncio.run(sync_library(settings, plex, "Movies", section=None, updated_at=200))
+
+    log_lines = quote_index.tail_sync_log(settings.quote_index_db_path)
+    assert not any("duplicate guid" in line.message for line in log_lines)
+
+
 def test_mount_check_failure_blocks_removal_but_not_addition(tmp_path):
     bad_root = tmp_path / "gone"  # never created -> mount check fails
     mappings = [PathMapping(path_prefix="D:\\Movies", container_path=str(bad_root))]
@@ -577,6 +608,31 @@ def test_run_library_sync_once_resyncs_library_with_no_persisted_count_even_if_u
 
     assert len(results) == 1
     assert quote_index.get_library_item_count(settings.quote_index_db_path, "Movies") == 2
+
+
+def test_run_library_sync_once_logs_when_nothing_changed(tmp_path):
+    # A short-circuited run (updated_at already matches, count already
+    # populated) previously left the dashboard's activity log untouched —
+    # the only sign anything ran was a subtle timestamp change in the
+    # subtitle line, easy to miss. It must now log something visible too.
+    settings = _settings(tmp_path)
+    quote_index.set_section_updated_at(settings.quote_index_db_path, "Movies", 999)
+    quote_index.set_library_item_count(settings.quote_index_db_path, "Movies", 2)
+
+    class _PlexWithSections(_FakePlex):
+        def current_section_updated_ats(self, names=None):
+            return {"Movies": 999}
+
+        def library_sections(self):
+            return [("Movies", object())]
+
+    plex = _PlexWithSections(items=[])
+
+    results = asyncio.run(run_library_sync_once(settings, plex))
+
+    assert results == []
+    log_lines = quote_index.tail_sync_log(settings.quote_index_db_path)
+    assert any("No changes" in line.message for line in log_lines)
 
 
 def test_run_library_sync_once_skips_when_already_running(tmp_path):

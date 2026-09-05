@@ -180,12 +180,14 @@ def test_update_and_finish_sync_run(tmp_path):
     assert mid.processed == 3
     assert mid.total == 10
 
-    finish_sync_run(db_path, new_count=7)
+    finish_sync_run(db_path, new_count=7, removed_count=2, error_count=1)
 
     done = get_sync_progress(db_path)
     assert done.status == "idle"
     assert done.current_library is None
     assert done.last_run_new_count == 7
+    assert done.last_run_removed_count == 2
+    assert done.last_run_error_count == 1
     assert done.last_synced_at is not None
 
     # A subsequent run can start again now that status is back to idle.

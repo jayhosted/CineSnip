@@ -4,7 +4,10 @@
       <div class="sync-title">Library sync</div>
       <div class="sync-subtitle">
         {% if progress.last_synced_at %}
-          Last run {{ progress.last_synced_at }} &middot; found {{ progress.last_run_new_count }} new titles
+          Last run {{ progress.last_synced_at }}{% if last_run_duration %} &middot; took {{ last_run_duration }}{% endif %}
+          &middot; {{ progress.last_run_new_count }} new
+          {%- if progress.last_run_removed_count %}, {{ progress.last_run_removed_count }} removed{% endif -%}
+          {%- if progress.last_run_error_count %}, {{ progress.last_run_error_count }} error{{ 's' if progress.last_run_error_count != 1 else '' }}{% endif -%}
         {% else %}
           Sync has never run
         {% endif %}
