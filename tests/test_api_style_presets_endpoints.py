@@ -26,8 +26,13 @@ def client(settings, monkeypatch):
 def test_get_style_presets_lists_builtins(client):
     response = client.get("/style-presets")
     assert response.status_code == 200
-    names = {item["name"] for item in response.json()}
-    assert names == {"classic", "boxed", "cinematic", "meme"}
+    items = response.json()
+    names = {item["name"] for item in items}
+    # "none"/"No Subtitles" is a real, selectable style choice for the bot's
+    # and web app's dropdowns (CLAUDE.md Section 2), not an absence of one.
+    assert names == {"classic", "boxed", "cinematic", "meme", "none"}
+    labels = {item["name"]: item["label"] for item in items}
+    assert labels["none"] == "No Subtitles"
 
 
 def test_preview_style_returns_a_png(client):

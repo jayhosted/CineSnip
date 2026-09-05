@@ -575,15 +575,12 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/style-presets", response_model=list[StylePresetOut])
     def get_style_presets() -> list[StylePresetOut]:
-        # style_options() appends a "none"/"No Subtitles" pseudo-entry for
-        # render-time dropdowns (gif.py/generate.py) — not a real
-        # StylePreset the editor can load/edit, so this listing excludes it.
+        # This is the single source of truth the bot's and web app's style
+        # dropdowns are meant to load from — "none"/"No Subtitles" is a real,
+        # selectable style choice there (CLAUDE.md Section 2), not an absence
+        # of one, so it stays included rather than filtered out.
         options = style_options(settings.style_presets())
-        return [
-            StylePresetOut(name=name, label=label)
-            for name, label in options
-            if name != "none"
-        ]
+        return [StylePresetOut(name=name, label=label) for name, label in options]
 
     @app.post("/style-presets/preview")
     async def preview_style(req: PreviewStyleRequest) -> Response:
