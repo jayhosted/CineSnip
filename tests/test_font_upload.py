@@ -5,6 +5,7 @@ import pytest
 from app.worker.font_upload import (
     FontValidationError,
     delete_font_file,
+    font_file_path,
     process_font_upload,
 )
 
@@ -97,3 +98,48 @@ def test_delete_font_file_removes_an_existing_file(tmp_path):
 
 def test_delete_font_file_is_a_noop_for_none():
     delete_font_file(None)  # must not raise
+
+
+def test_font_file_path_keeps_normal_preset_name_unchanged(tmp_path):
+    assert font_file_path(tmp_path, "simpsons", ".ttf") == tmp_path / "simpsons.ttf"
+
+
+@pytest.mark.parametrize(
+    "preset_name, expected_name",
+    [
+        ("../../etc/passwd", "passwd.ttf"),
+        ("foo/bar", "bar.ttf"),
+        ("../simpsons", "simpsons.ttf"),
+    ],
+)
+def test_font_file_path_confines_traversal_attempts_to_fonts_dir(tmp_path, preset_name, expected_name):
+    # Any '../' or embedded separator is stripped down to its final
+    # component, so the result can never land outside fonts_dir.
+    result = font_file_path(tmp_path, preset_name, ".ttf")
+    assert result == tmp_path / expected_name
+    assert result.parent == tmp_path
+
+
+@pytest.mark.parametrize("bad_preset_name", ["", ".", ".."])
+def test_font_file_path_rejects_names_that_collapse_to_nothing(tmp_path, bad_preset_name):
+    with pytest.raises(FontValidationError):
+        font_file_path(tmp_path, bad_preset_name, ".ttf")
+
+
+@pytest.mark.anyio
+async def test_process_font_upload_confines_traversal_preset_name_to_fonts_dir(tmp_path, real_ttf_bytes):
+    fonts_dir = tmp_path / "fonts"
+    result = await process_font_upload(real_ttf_bytes, "custom.ttf", "../../etc/passwd", fonts_dir)
+    # Sanitized down to the final path component — written inside fonts_dir,
+    # never outside it.
+    assert result.font_path == str(fonts_dir / "passwd.ttf")
+    assert not (tmp_path / "etc").exists()
+
+
+@pytest.mark.anyio
+async def test_process_font_upload_rejects_preset_name_that_collapses_to_dotdot(tmp_path, real_ttf_bytes):
+    fonts_dir = tmp_path / "fonts"
+    with pytest.raises(FontValidationError):
+        await process_font_upload(real_ttf_bytes, "custom.ttf", "..", fonts_dir)
+    # Fails fast before any temp file is written.
+    assert not fonts_dir.exists() or list(fonts_dir.glob(".upload-*")) == []

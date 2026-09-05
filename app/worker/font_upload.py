@@ -94,12 +94,30 @@ async def _scan_font(path: Path) -> tuple[str, str]:
 
 
 def font_file_path(fonts_dir: Path, preset_name: str, extension: str) -> Path:
-    return fonts_dir / f"{preset_name}{extension}"
+    """Builds the final on-disk path for a preset's font file.
+
+    `preset_name` comes from a web route (a later task) and must never be
+    trusted as a bare path segment — a value containing '../' or an embedded
+    separator could otherwise escape `fonts_dir` on write. Sanitize to just
+    the final path component and reject anything that collapses to empty/
+    '.'/'..' rather than silently rewriting it to something unexpected.
+    """
+    safe_name = Path(preset_name).name
+    if safe_name in ("", ".", ".."):
+        raise FontValidationError(f"Invalid preset name: {preset_name!r}")
+    return fonts_dir / f"{safe_name}{extension}"
 
 
 async def process_font_upload(
     data: bytes, filename: str, preset_name: str, fonts_dir: Path
 ) -> FontUploadResult:
+    """Validates and stores an uploaded font file for `preset_name`.
+
+    `preset_name` is sanitized (see `font_file_path`) before it ever reaches
+    the filesystem, so a caller passing an unexpected value (e.g. containing
+    '../' or a path separator) gets a clear `FontValidationError` instead of
+    writing outside `fonts_dir`.
+    """
     if len(data) > MAX_FONT_UPLOAD_BYTES:
         raise FontValidationError(
             f"Font file is too large ({len(data) / 1_000_000:.1f}MB; max "
@@ -109,6 +127,9 @@ async def process_font_upload(
     if extension not in _ALLOWED_EXTENSIONS:
         raise FontValidationError("Only .ttf and .otf font files are supported.")
     _check_magic_bytes(data)
+    # Computed before any write so a bad preset_name fails fast, before we
+    # ever touch disk with the upload.
+    final_path = font_file_path(fonts_dir, preset_name, extension)
 
     fonts_dir.mkdir(parents=True, exist_ok=True)
     tmp_path = fonts_dir / f".upload-{uuid.uuid4().hex}{extension}"
@@ -119,7 +140,6 @@ async def process_font_upload(
         tmp_path.unlink(missing_ok=True)
         raise
 
-    final_path = font_file_path(fonts_dir, preset_name, extension)
     tmp_path.replace(final_path)
     return FontUploadResult(
         font_path=str(final_path), family=family, missing_punctuation=missing_punctuation
