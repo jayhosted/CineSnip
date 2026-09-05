@@ -1,0 +1,93 @@
+<div id="settings-content">
+  <div class="page-header"><h1>Settings</h1><p>Configuration CineSnip doesn't need to ask for during first-run setup.</p></div>
+  {% include "settings_tabs.html" %}
+
+  {% if error %}<div class="error-banner" style="margin-top:18px;">{{ error }}</div>{% endif %}
+  {% if font_warning %}<div class="error-banner" style="margin-top:18px;">{{ font_warning }}</div>{% endif %}
+
+  <form class="card" style="margin-top:18px; max-width:560px;"
+    hx-post="/settings/styles/save" hx-target="#settings-content" hx-swap="outerHTML"
+    hx-trigger="submit"
+    hx-get="/settings/styles/preview" hx-include="closest form" hx-target-error="#style-preview">
+    <input type="hidden" name="original_name" value="{{ original_name }}">
+
+    <label class="field-label" for="name">NAME</label>
+    <input type="text" id="name" name="name" value="{{ preset.name if preset else '' }}"
+      {% if preset and preset.builtin %}readonly{% endif %} style="margin:6px 0 16px;">
+
+    <div class="field-row" style="margin-bottom:16px;">
+      <div style="flex:1;">
+        <label class="field-label" for="font">FONT</label>
+        <input type="text" id="font" name="font"
+          value="{{ uploaded_font_family or (preset.font if preset else 'Liberation Sans') }}"
+          style="margin-top:6px;">
+      </div>
+      <div style="flex:1;">
+        <label class="field-label" for="font_size">FONT SIZE</label>
+        <input type="text" id="font_size" name="font_size" value="{{ preset.font_size if preset else 26 }}" style="margin-top:6px;">
+      </div>
+    </div>
+
+    <label class="field-label" style="display:block; margin-bottom:6px;">UPLOAD CUSTOM FONT (.ttf/.otf)</label>
+    <div class="field-row" style="margin-bottom:16px;">
+      <input type="file" name="font_file" accept=".ttf,.otf">
+      <button class="btn btn-secondary" type="submit"
+        hx-post="/settings/styles/{{ original_name }}/font" hx-target="#settings-content" hx-swap="outerHTML"
+        hx-encoding="multipart/form-data">Upload font</button>
+    </div>
+
+    <div class="field-row" style="margin-bottom:16px;">
+      <div style="flex:1;">
+        <label class="field-label" for="primary_color">TEXT COLOR (ASS &amp;HAABBGGRR)</label>
+        <input type="text" id="primary_color" name="primary_color" value="{{ preset.primary_color if preset else '&H00FFFFFF' }}" style="margin-top:6px;">
+      </div>
+      <div style="flex:1;">
+        <label class="field-label" for="outline_color">OUTLINE COLOR</label>
+        <input type="text" id="outline_color" name="outline_color" value="{{ preset.outline_color if preset else '&H00000000' }}" style="margin-top:6px;">
+      </div>
+    </div>
+
+    <div class="field-row" style="margin-bottom:16px;">
+      <div style="flex:1;">
+        <label class="field-label" for="back_color">BOX COLOR</label>
+        <input type="text" id="back_color" name="back_color" value="{{ preset.back_color if preset else '&H00000000' }}" style="margin-top:6px;">
+      </div>
+      <div style="flex:1;">
+        <label class="field-label" for="border_style">BORDER STYLE (1=outline, 3=box)</label>
+        <input type="text" id="border_style" name="border_style" value="{{ preset.border_style if preset else 1 }}" style="margin-top:6px;">
+      </div>
+    </div>
+
+    <div class="field-row" style="margin-bottom:16px;">
+      <div style="flex:1;">
+        <label class="field-label" for="outline">OUTLINE WIDTH</label>
+        <input type="text" id="outline" name="outline" value="{{ preset.outline if preset else 2.0 }}" style="margin-top:6px;">
+      </div>
+      <div style="flex:1;">
+        <label class="field-label" for="shadow">SHADOW</label>
+        <input type="text" id="shadow" name="shadow" value="{{ preset.shadow if preset else 0.0 }}" style="margin-top:6px;">
+      </div>
+    </div>
+
+    <div class="field-row" style="margin-bottom:16px;">
+      <label><input type="checkbox" name="bold" {% if preset and preset.bold %}checked{% endif %}> Bold</label>
+      <label><input type="checkbox" name="uppercase" {% if preset and preset.uppercase %}checked{% endif %}> Uppercase</label>
+    </div>
+
+    <div class="field-row" style="margin-bottom:20px;">
+      <div style="flex:1;">
+        <label class="field-label" for="margin_v">BOTTOM MARGIN (px)</label>
+        <input type="text" id="margin_v" name="margin_v" value="{{ preset.margin_v if preset else 24 }}" style="margin-top:6px;">
+      </div>
+      <div style="flex:1;">
+        <label class="field-label" for="alignment">ALIGNMENT (ASS numpad code)</label>
+        <input type="text" id="alignment" name="alignment" value="{{ preset.alignment if preset else 2 }}" style="margin-top:6px;">
+      </div>
+    </div>
+
+    <div id="style-preview" style="margin-bottom:20px;"></div>
+
+    <button class="btn btn-primary" type="submit">Save</button>
+    <a href="/settings/styles" class="btn btn-secondary">Cancel</a>
+  </form>
+</div>
