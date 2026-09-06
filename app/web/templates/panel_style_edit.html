@@ -40,18 +40,27 @@
     <div class="field-row" style="margin-bottom:16px;">
       <div style="flex:1;">
         <label class="field-label" for="primary_color">TEXT COLOR (ASS &amp;HAABBGGRR)</label>
-        <input type="text" id="primary_color" name="primary_color" value="{{ preset.primary_color if preset else '&H00FFFFFF' }}" style="margin-top:6px;">
+        <div style="display:flex; gap:8px; margin-top:6px;">
+          <input type="color" class="color-swatch" data-color-picker-for="primary_color" aria-label="Pick text color">
+          <input type="text" id="primary_color" name="primary_color" value="{{ preset.primary_color if preset else '&H00FFFFFF' }}" style="flex:1;">
+        </div>
       </div>
       <div style="flex:1;">
         <label class="field-label" for="outline_color">OUTLINE COLOR</label>
-        <input type="text" id="outline_color" name="outline_color" value="{{ preset.outline_color if preset else '&H00000000' }}" style="margin-top:6px;">
+        <div style="display:flex; gap:8px; margin-top:6px;">
+          <input type="color" class="color-swatch" data-color-picker-for="outline_color" aria-label="Pick outline color">
+          <input type="text" id="outline_color" name="outline_color" value="{{ preset.outline_color if preset else '&H00000000' }}" style="flex:1;">
+        </div>
       </div>
     </div>
 
     <div class="field-row" style="margin-bottom:16px;">
       <div style="flex:1;">
         <label class="field-label" for="back_color">BOX COLOR</label>
-        <input type="text" id="back_color" name="back_color" value="{{ preset.back_color if preset else '&H00000000' }}" style="margin-top:6px;">
+        <div style="display:flex; gap:8px; margin-top:6px;">
+          <input type="color" class="color-swatch" data-color-picker-for="back_color" aria-label="Pick box color">
+          <input type="text" id="back_color" name="back_color" value="{{ preset.back_color if preset else '&H00000000' }}" style="flex:1;">
+        </div>
       </div>
       <div style="flex:1;">
         <label class="field-label" for="border_style">BORDER STYLE (1=outline, 3=box)</label>
@@ -95,3 +104,53 @@
     <a href="/styles" class="btn btn-secondary">Cancel</a>
   </form>
 </div>
+
+<script>
+(function () {
+  // ASS colours are &HAABBGGRR (alpha-blue-green-red, alpha 00=opaque) —
+  // a different byte order and alpha convention from the #RRGGBB a native
+  // <input type="color"> speaks, so each picker is paired with its text
+  // field via conversion here rather than binding the picker directly to
+  // the form value. The text field stays the source of truth (still
+  // editable by hand for an exact hex/alpha value); the picker is a
+  // convenience that reads from and writes back into it.
+  function assToRgbHex(ass) {
+    var m = /^&H([0-9A-Fa-f]{8})$/.exec((ass || '').trim());
+    if (!m) return null;
+    var hex = m[1];
+    return '#' + hex.slice(6, 8) + hex.slice(4, 6) + hex.slice(2, 4);
+  }
+  function assAlpha(ass) {
+    var m = /^&H([0-9A-Fa-f]{8})$/.exec((ass || '').trim());
+    return m ? m[1].slice(0, 2) : '00';
+  }
+  function rgbHexToAss(hex, alpha) {
+    var m = /^#([0-9A-Fa-f]{6})$/.exec(hex || '');
+    if (!m) return null;
+    var rr = m[1].slice(0, 2), gg = m[1].slice(2, 4), bb = m[1].slice(4, 6);
+    return ('&H' + alpha + bb + gg + rr).toUpperCase();
+  }
+
+  document.querySelectorAll('[data-color-picker-for]').forEach(function (picker) {
+    var textInput = document.getElementById(picker.getAttribute('data-color-picker-for'));
+    if (!textInput) return;
+
+    var initial = assToRgbHex(textInput.value);
+    if (initial) picker.value = initial;
+
+    picker.addEventListener('input', function () {
+      var newAss = rgbHexToAss(picker.value, assAlpha(textInput.value));
+      if (!newAss) return;
+      textInput.value = newAss;
+      // A real 'input' event so htmx's existing "input from:closest form"
+      // trigger on #style-preview picks this up like any typed change.
+      textInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    textInput.addEventListener('input', function () {
+      var hex = assToRgbHex(textInput.value);
+      if (hex) picker.value = hex;
+    });
+  });
+})();
+</script>

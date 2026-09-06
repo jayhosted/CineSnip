@@ -223,6 +223,21 @@ form.htmx-request [type="submit"] .btn-label-idle { display: none; }
 }
 .btn-restore-row:hover { color: var(--accent); border-color: var(--accent); }
 
+/* Subtitle style editor: pencil-edit reuses .btn-remove-row's exact shape
+   (26x26 icon button, neutral by default) with an accent hover instead of
+   danger — and a paired native colour-picker swatch alongside each ASS
+   colour text field. */
+.btn-edit-row {
+  flex-shrink: 0; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+  background: none; border: none; color: var(--text-tertiary); cursor: pointer;
+  border-radius: 6px; transition: color 0.15s ease, background-color 0.15s ease; text-decoration: none;
+}
+.btn-edit-row:hover { color: var(--accent); background: var(--accent-soft); }
+.color-swatch {
+  flex-shrink: 0; width: 36px; height: 32px; padding: 2px; border: 1px solid var(--border);
+  border-radius: 6px; background: none; cursor: pointer;
+}
+
 .check-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border-subtle); font-size: 13.5px; }
 .check-row:last-child { border-bottom: none; }
 .check-row .icon { flex-shrink: 0; }
