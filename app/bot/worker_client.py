@@ -48,6 +48,12 @@ RANDOM_LINE_SHOW_TIMEOUT_SECONDS = 900.0
 # A single PNG frame, not a real clip — far cheaper than RENDER_TIMEOUT_SECONDS.
 PREVIEW_STYLE_TIMEOUT_SECONDS = 30.0
 
+# Involves a real ffprobe duration check + a seek+decode of one frame from
+# a real movie file (possibly a slow network mount) — more generous than
+# PREVIEW_STYLE_TIMEOUT_SECONDS's flat-color-source render, but still a
+# single frame, not a whole clip.
+PREVIEW_BACKGROUND_TIMEOUT_SECONDS = 60.0
+
 
 @dataclass
 class MovieResult:
@@ -361,3 +367,15 @@ class WorkerClient:
         )
         response.raise_for_status()
         return response.content
+
+    async def preview_background(self) -> dict | None:
+        # A 404 means no cached movie currently resolves to a real file
+        # (empty cache, or every path mapping stale) — not an error the
+        # caller needs to see, just "no real-movie backdrop this time".
+        response = await self._client.get(
+            "/style-presets/preview-background", timeout=PREVIEW_BACKGROUND_TIMEOUT_SECONDS,
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return response.json()

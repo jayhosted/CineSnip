@@ -315,3 +315,25 @@ def test_preview_style_returns_raw_bytes():
 
     assert png_bytes == b"\x89PNG\r\n\x1a\nfakepngbytes"
     assert png_bytes.startswith(b"\x89PNG")
+
+
+def test_preview_background_parses_worker_response():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/style-presets/preview-background"
+        assert request.method == "GET"
+        return httpx.Response(200, json={"background_id": "abc123", "title": "A Movie"})
+
+    client = _client_with_mock(handler)
+    result = asyncio.run(client.preview_background())
+
+    assert result == {"background_id": "abc123", "title": "A Movie"}
+
+
+def test_preview_background_returns_none_on_404():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"detail": "no cached movie"})
+
+    client = _client_with_mock(handler)
+    result = asyncio.run(client.preview_background())
+
+    assert result is None

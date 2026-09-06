@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -26,7 +27,13 @@ from app.worker.media_client import (
 )
 from app.worker.quote_index import CachedTitle
 from app.worker.quotes import find_quote_matches
-from app.worker.style_preview import render_style_preview
+from app.worker.style_preview import (
+    BACKGROUND_ID_PATTERN,
+    background_frame_path,
+    extract_background_frame,
+    pick_random_movie_frame_source,
+    render_style_preview,
+)
 from app.worker.subprocess_utils import SubprocessTimeoutError
 from app.worker.subtitle_render import StylePreset, style_options
 from app.worker.subtitles import (
@@ -201,6 +208,18 @@ class PreviewStyleRequest(BaseModel):
     uppercase: bool
     margin_v: int
     alignment: int = 2
+    # Id of a background frame already extracted via
+    # /style-presets/preview-background (see that route) — None falls back
+    # to the flat-color background. Validated against BACKGROUND_ID_PATTERN
+    # before ever touching a filesystem path, the same defensive posture as
+    # font_upload.py's preset_name sanitization for any client-echoed
+    # string that ends up in a path.
+    background_id: str | None = None
+
+
+class PreviewBackgroundResponse(BaseModel):
+    background_id: str
+    title: str
 
 
 class RandomQuoteResponse(BaseModel):
@@ -582,6 +601,25 @@ def create_app(settings: Settings) -> FastAPI:
         options = style_options(settings.style_presets())
         return [StylePresetOut(name=name, label=label) for name, label in options]
 
+    @app.get("/style-presets/preview-background", response_model=PreviewBackgroundResponse)
+    async def preview_background() -> PreviewBackgroundResponse:
+        picked = await pick_random_movie_frame_source(
+            app.state.media, settings, settings.quote_index_db_path,
+        )
+        if picked is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No cached movie currently resolves to a real file — "
+                "sync your library or check path mappings.",
+            )
+        movie, container_path = picked
+        try:
+            frame_path = await extract_background_frame(container_path, settings.scratch_dir)
+        except (SubprocessTimeoutError, RuntimeError) as exc:
+            raise _safe_runtime_error(exc) from exc
+        background_id = frame_path.stem.removeprefix("style-preview-bg-")
+        return PreviewBackgroundResponse(background_id=background_id, title=movie.title)
+
     @app.post("/style-presets/preview")
     async def preview_style(req: PreviewStyleRequest) -> Response:
         style = StylePreset(
@@ -591,8 +629,14 @@ def create_app(settings: Settings) -> FastAPI:
             outline=req.outline, shadow=req.shadow, bold=req.bold,
             uppercase=req.uppercase, margin_v=req.margin_v, alignment=req.alignment,
         )
+        background_path = None
+        if req.background_id and re.fullmatch(BACKGROUND_ID_PATTERN, req.background_id):
+            candidate = background_frame_path(settings.scratch_dir, req.background_id)
+            if candidate.exists():
+                background_path = candidate
         png_bytes = await render_style_preview(
             style, fonts_dir=settings.cache_dir / "fonts", scratch_dir=settings.scratch_dir,
+            background_path=background_path,
         )
         return Response(content=png_bytes, media_type="image/png")
 

@@ -75,13 +75,33 @@ def register_styles_routes(
         write_config_yaml(new_settings)
         await on_setup_complete()
 
+    async def _preview_background_context() -> dict:
+        # Picked once per edit-page load, not per debounced preview request
+        # (that would mean a fresh Plex/ffmpeg round trip on every
+        # keystroke) — the resulting background_id is carried in a hidden
+        # form field and reused for every /styles/preview call during this
+        # editing session. None/None (silent, no error banner) is a normal
+        # outcome, not a failure: an empty library cache or a worker that
+        # isn't up yet just means the flat-color background is used instead.
+        worker = client_cache.get(settings_holder)
+        if worker is None:
+            return {"background_id": None, "background_title": None}
+        try:
+            result = await worker.preview_background()
+        except Exception:
+            return {"background_id": None, "background_title": None}
+        if result is None:
+            return {"background_id": None, "background_title": None}
+        return {"background_id": result["background_id"], "background_title": result["title"]}
+
     @app.get("/styles", response_class=HTMLResponse)
     async def styles_index(request: Request):
         return render_page(request, "panel_styles.html")
 
     @app.get("/styles/new", response_class=HTMLResponse)
     async def styles_new(request: Request):
-        return render_page(request, "panel_style_edit.html", preset=None, original_name="")
+        background = await _preview_background_context()
+        return render_page(request, "panel_style_edit.html", preset=None, original_name="", **background)
 
     @app.get("/styles/{name}/edit", response_class=HTMLResponse)
     async def styles_edit(request: Request, name: str):
@@ -89,7 +109,8 @@ def register_styles_routes(
         preset = next((cfg for cfg in settings.subtitle_styles if cfg.name == name), None)
         if preset is None:
             return render_page(request, "panel_styles.html", error=f"No such style preset: '{name}'.")
-        return render_page(request, "panel_style_edit.html", preset=preset, original_name=name)
+        background = await _preview_background_context()
+        return render_page(request, "panel_style_edit.html", preset=preset, original_name=name, **background)
 
     @app.post("/styles/save", response_class=HTMLResponse)
     async def styles_save(request: Request):
@@ -217,6 +238,10 @@ def register_styles_routes(
             style_fields = _style_fields_from_form(form)
         except (KeyError, ValueError):
             return HTMLResponse('<div class="error-banner">Fill in the style fields to preview.</div>')
+
+        background_id = str(form.get("background_id", "")).strip()
+        if background_id:
+            style_fields["background_id"] = background_id
 
         worker = client_cache.get(settings_holder)
         if worker is None:

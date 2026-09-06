@@ -326,6 +326,101 @@ def test_styles_preview_proxies_the_worker_and_embeds_base64(client, monkeypatch
     assert "data:image/png;base64," in response.text
 
 
+def test_edit_page_fetches_a_preview_background_and_embeds_the_hidden_field(client, monkeypatch):
+    async def fake_preview_background(self):
+        return {"background_id": "deadbeefdeadbeefdeadbeefdeadbeef", "title": "A Popular Movie"}
+
+    monkeypatch.setattr(
+        "app.bot.worker_client.WorkerClient.preview_background", fake_preview_background
+    )
+    response = client.get("/styles/classic/edit")
+    assert response.status_code == 200
+    assert 'name="background_id" value="deadbeefdeadbeefdeadbeefdeadbeef"' in response.text
+    assert "A Popular Movie" in response.text
+
+
+def test_edit_page_degrades_silently_when_no_background_is_available(client, monkeypatch):
+    async def fake_preview_background(self):
+        return None
+
+    monkeypatch.setattr(
+        "app.bot.worker_client.WorkerClient.preview_background", fake_preview_background
+    )
+    response = client.get("/styles/classic/edit")
+    assert response.status_code == 200
+    assert 'name="background_id" value=""' in response.text
+
+
+def test_styles_preview_forwards_background_id_to_the_worker(client, monkeypatch):
+    captured = {}
+
+    async def fake_preview_style(self, style):
+        captured["style"] = style
+        return b"\x89PNG\r\n\x1a\nfakepngbytes"
+
+    monkeypatch.setattr("app.bot.worker_client.WorkerClient.preview_style", fake_preview_style)
+
+    response = client.post(
+        "/styles/preview",
+        data={
+            "font": "Liberation Sans", "font_size": "26",
+            "primary_color": "&H00FFFFFF", "outline_color": "&H00000000",
+            "back_color": "&H00000000", "border_style": "1",
+            "outline": "2.0", "shadow": "0.0", "margin_v": "24", "alignment": "2",
+            "background_id": "deadbeefdeadbeefdeadbeefdeadbeef",
+        },
+    )
+    assert response.status_code == 200
+    assert captured["style"]["background_id"] == "deadbeefdeadbeefdeadbeefdeadbeef"
+
+
+def test_styles_preview_omits_background_id_when_blank(client, monkeypatch):
+    captured = {}
+
+    async def fake_preview_style(self, style):
+        captured["style"] = style
+        return b"\x89PNG\r\n\x1a\nfakepngbytes"
+
+    monkeypatch.setattr("app.bot.worker_client.WorkerClient.preview_style", fake_preview_style)
+
+    response = client.post(
+        "/styles/preview",
+        data={
+            "font": "Liberation Sans", "font_size": "26",
+            "primary_color": "&H00FFFFFF", "outline_color": "&H00000000",
+            "back_color": "&H00000000", "border_style": "1",
+            "outline": "2.0", "shadow": "0.0", "margin_v": "24", "alignment": "2",
+            "background_id": "",
+        },
+    )
+    assert response.status_code == 200
+    assert "background_id" not in captured["style"]
+
+
+def test_styles_list_uses_edit_and_delete_icon_buttons(client):
+    # A custom preset is needed to see the delete button at all — a
+    # builtin correctly has none, so the list-only fixture can't tell
+    # "delete button absent because no custom presets exist yet" apart
+    # from "delete button broken".
+    client.post(
+        "/styles/save",
+        data={
+            "original_name": "", "name": "simpsons", "font": "Simpsonfont",
+            "font_size": "28", "primary_color": "&H0000FFFF",
+            "outline_color": "&H00000000", "back_color": "&H00000000",
+            "border_style": "1", "outline": "2.0", "shadow": "0.0",
+            "margin_v": "24", "alignment": "2",
+        },
+    )
+    response = client.get("/styles")
+    assert response.status_code == 200
+    assert "btn-edit-row" in response.text
+    assert "btn-remove-row" in response.text
+    # Old stacked text buttons must be gone, not just supplemented.
+    assert ">Edit<" not in response.text
+    assert ">Delete<" not in response.text
+
+
 def test_styles_edit_form_does_not_race_save_and_preview_on_one_element(client):
     # Regression: hx-post and hx-get used to both live on the <form>, so
     # clicking Save fired a POST and a GET concurrently, racing to swap
