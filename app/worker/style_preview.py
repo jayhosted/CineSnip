@@ -59,7 +59,23 @@ async def pick_random_movie_frame_source(
     (movie, container_path), or None if no cached movie currently resolves
     (empty cache, or every sampled title's file/path-mapping is gone)."""
     cached = search_index.list_titles(quote_index_db_path)
-    candidates = [c for c in cached if c.library_name in media.movie_library_names]
+    candidates = []
+    for c in cached:
+        if c.library_name not in media.movie_library_names:
+            continue
+        try:
+            # extract_background_frame skips this project's 3D crop handling
+            # (a disposable preview backdrop doesn't need it) — a 3D
+            # library's side-by-side/over-under frame would come out
+            # squished/doubled, so it's excluded from the pick entirely
+            # rather than mis-rendered. SettingsError means a stale cache
+            # entry whose library was since removed from config.yaml —
+            # skip it like any other stale entry, don't crash the pick.
+            if settings.three_d_format_for(c.library_name) != "none":
+                continue
+        except SettingsError:
+            continue
+        candidates.append(c)
     if not candidates:
         return None
 
