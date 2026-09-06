@@ -345,3 +345,17 @@ def test_styles_edit_form_does_not_race_save_and_preview_on_one_element(client):
     preview_match = re.search(r'<div id="style-preview"[^>]*>', response.text)
     assert preview_match, "expected #style-preview element"
     assert "delay:500ms" in preview_match.group(0)
+
+
+def test_style_preview_fires_on_load_not_only_on_field_change(client):
+    # Regression: the preview div only triggered on change/input, so opening
+    # Edit (or the outerHTML swap right after a font upload) showed a blank
+    # preview until the user happened to touch another field afterward —
+    # reported as "upload doesn't preview it, even after saving and editing".
+    response = client.get("/styles/classic/edit")
+    assert response.status_code == 200
+    import re
+
+    preview_match = re.search(r'<div id="style-preview"[^>]*>', response.text)
+    assert preview_match, "expected #style-preview element"
+    assert "load" in preview_match.group(0).split('hx-trigger="')[1].split('"')[0]

@@ -88,7 +88,7 @@
 
     <div id="style-preview" style="margin-bottom:20px;"
       hx-post="/styles/preview"
-      hx-trigger="change from:closest form delay:500ms, input from:closest form delay:500ms"
+      hx-trigger="load, change from:closest form delay:500ms, input from:closest form delay:500ms"
       hx-target="#style-preview" hx-swap="innerHTML" hx-include="closest form"></div>
 
     <button class="btn btn-primary" type="submit">Save</button>

@@ -30,7 +30,15 @@ FROM python:3.12-slim-bookworm
 # actually get an Arial-like face burned in instead of silently falling
 # back to the base image's only font (DejaVu Sans) — confirmed via
 # `fc-match` and a real burned-in test frame during development.
-RUN apt-get update && apt-get install -y --no-install-recommends fonts-liberation \
+#
+# fontconfig is listed explicitly, not assumed transitive: libass links
+# against libfontconfig1 (which some other package here does pull in as a
+# shared library), but that's a different thing from the `fontconfig`
+# *package*'s CLI tools (fc-scan, fc-list, fc-cache) — those were missing
+# from the image despite an earlier assumption they'd "already be there for
+# libass," which broke the style editor's font-upload validation
+# (app/worker/font_upload.py's fc-scan calls) with a bare FileNotFoundError.
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-liberation fontconfig \
     && rm -rf /var/lib/apt/lists/*
 
 # Static ffmpeg/ffprobe binaries instead of Debian's apt package — the apt
