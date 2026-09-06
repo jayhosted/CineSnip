@@ -397,6 +397,28 @@ def test_styles_preview_omits_background_id_when_blank(client, monkeypatch):
     assert "background_id" not in captured["style"]
 
 
+def test_shuffle_fragment_returns_a_fresh_background(client, monkeypatch):
+    calls = []
+
+    async def fake_preview_background(self):
+        calls.append(1)
+        return {"background_id": f"id-{len(calls)}", "title": f"Movie {len(calls)}"}
+
+    monkeypatch.setattr(
+        "app.bot.worker_client.WorkerClient.preview_background", fake_preview_background
+    )
+    response = client.get("/styles/preview-background-fragment")
+    assert response.status_code == 200
+    assert 'id="preview-block"' in response.text
+    assert 'name="background_id" value="id-1"' in response.text
+    assert "Movie 1" in response.text
+    # The swapped-in block must carry its own #style-preview with a load
+    # trigger — htmx fires "load" again for freshly-inserted content, which
+    # is what makes shuffling actually re-render the preview image.
+    assert 'id="style-preview"' in response.text
+    assert "load" in response.text
+
+
 def test_styles_list_uses_edit_and_delete_icon_buttons(client):
     # A custom preset is needed to see the delete button at all — a
     # builtin correctly has none, so the list-only fixture can't tell

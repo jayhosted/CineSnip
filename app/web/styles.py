@@ -94,6 +94,15 @@ def register_styles_routes(
             return {"background_id": None, "background_title": None}
         return {"background_id": result["background_id"], "background_title": result["title"]}
 
+    @app.get("/styles/preview-background-fragment", response_class=HTMLResponse)
+    async def styles_preview_background_fragment(request: Request):
+        # The shuffle button's own target — always an htmx partial swap of
+        # #preview-block, never a full page, so it renders the block
+        # template directly rather than going through render_page.
+        background = await _preview_background_context()
+        template = templates.env.get_template("panel_style_preview_block.html")
+        return HTMLResponse(template.render(background))
+
     @app.get("/styles", response_class=HTMLResponse)
     async def styles_index(request: Request):
         return render_page(request, "panel_styles.html")

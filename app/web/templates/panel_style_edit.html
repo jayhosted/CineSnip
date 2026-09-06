@@ -95,14 +95,7 @@
       </div>
     </div>
 
-    <input type="hidden" id="background_id" name="background_id" value="{{ background_id or '' }}">
-    {% if background_title %}
-    <p class="footnote" style="text-align:left; max-width:none; margin:0 0 6px;">Preview background: {{ background_title }}</p>
-    {% endif %}
-    <div id="style-preview" style="margin-bottom:20px;"
-      hx-post="/styles/preview"
-      hx-trigger="load, change from:closest form delay:500ms, input from:closest form delay:500ms"
-      hx-target="#style-preview" hx-swap="innerHTML" hx-include="closest form"></div>
+    {% include "panel_style_preview_block.html" %}
 
     <button class="btn btn-primary" type="submit">Save</button>
     <a href="/styles" class="btn btn-secondary">Cancel</a>
