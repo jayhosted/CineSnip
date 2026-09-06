@@ -1,6 +1,5 @@
-<div id="settings-content">
-  <div class="page-header"><h1>Settings</h1><p>Configuration CineSnip doesn't need to ask for during first-run setup.</p></div>
-  {% include "settings_tabs.html" %}
+<div id="styles-content">
+  <div class="page-header"><h1>Subtitle Styles</h1><p>Edit built-in presets or add your own, including a custom font.</p></div>
 
   <div class="card" style="margin-top:18px; max-width:640px;">
     {% if saved %}<div class="save-banner">Saved — applied without a restart.</div>{% endif %}
@@ -12,9 +11,9 @@
     <div class="field-row" style="justify-content:space-between; align-items:center; margin-bottom:10px;">
       <span>{{ preset.name }}{% if preset.builtin %} <em>(built-in)</em>{% endif %}</span>
       <span>
-        <a href="/settings/styles/{{ preset.name }}/edit" class="btn btn-secondary">Edit</a>
+        <a href="/styles/{{ preset.name }}/edit" class="btn btn-secondary">Edit</a>
         {% if not preset.builtin %}
-        <form method="post" action="/settings/styles/{{ preset.name }}/delete" style="display:inline;">
+        <form method="post" action="/styles/{{ preset.name }}/delete" style="display:inline;">
           <button class="btn btn-secondary" type="submit">Delete</button>
         </form>
         {% endif %}
@@ -22,6 +21,6 @@
     </div>
     {% endfor %}
 
-    <a href="/settings/styles/new" class="btn btn-primary" style="margin-top:10px;">Add preset</a>
+    <a href="/styles/new" class="btn btn-primary" style="margin-top:10px;">Add preset</a>
   </div>
 </div>

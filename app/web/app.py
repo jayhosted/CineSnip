@@ -32,6 +32,7 @@ from app.web.csrf import CSRFMiddleware
 from app.web.dashboard import register_dashboard_routes
 from app.web.generate import register_generate_routes
 from app.web.settings import register_settings_routes
+from app.web.styles import register_styles_routes
 from app.web.state import LibraryChoice, MappingRow, WizardState, media_mount_candidates
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 
@@ -526,6 +527,7 @@ def create_web_app(
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
     register_generate_routes(app, templates, settings_holder)
     register_settings_routes(app, templates, settings_holder, on_setup_complete)
+    register_styles_routes(app, templates, settings_holder, on_setup_complete)
     register_dashboard_routes(app, templates, settings_holder)
 
     def render(request: Request, panel: str, **ctx) -> HTMLResponse:

@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.runtime import SettingsHolder
 from app.settings import Settings
-from app.web.settings import register_settings_routes
+from app.web.styles import register_styles_routes
 
 _TEMPLATES_DIR = "app/web/templates"
 
@@ -27,17 +27,17 @@ def client(settings_holder, monkeypatch):
     def fake_write_config_yaml(new_settings, config_path=None):
         settings_holder.settings = new_settings
 
-    monkeypatch.setattr("app.web.settings.write_config_yaml", fake_write_config_yaml)
+    monkeypatch.setattr("app.web.styles.write_config_yaml", fake_write_config_yaml)
 
     async def on_setup_complete():
         return None
 
-    register_settings_routes(app, templates, settings_holder, on_setup_complete)
+    register_styles_routes(app, templates, settings_holder, on_setup_complete)
     return TestClient(app)
 
 
 def test_styles_list_shows_all_builtins(client):
-    response = client.get("/settings/styles")
+    response = client.get("/styles")
     assert response.status_code == 200
     for name in ("classic", "boxed", "cinematic", "meme"):
         assert name in response.text.lower()
@@ -45,7 +45,7 @@ def test_styles_list_shows_all_builtins(client):
 
 def test_styles_save_creates_a_new_custom_preset(client, settings_holder):
     response = client.post(
-        "/settings/styles/save",
+        "/styles/save",
         data={
             "original_name": "", "name": "simpsons", "font": "Simpsonfont",
             "font_size": "28", "primary_color": "&H0000FFFF",
@@ -60,7 +60,7 @@ def test_styles_save_creates_a_new_custom_preset(client, settings_holder):
 
 def test_styles_save_edits_a_builtin_field_without_renaming(client, settings_holder):
     response = client.post(
-        "/settings/styles/save",
+        "/styles/save",
         data={
             "original_name": "classic", "name": "classic", "font": "Liberation Sans",
             "font_size": "32", "primary_color": "&H00FFFFFF",
@@ -75,7 +75,7 @@ def test_styles_save_edits_a_builtin_field_without_renaming(client, settings_hol
 
 def test_styles_save_rejects_renaming_a_builtin(client, settings_holder):
     response = client.post(
-        "/settings/styles/save",
+        "/styles/save",
         data={
             "original_name": "classic", "name": "classic2", "font": "Liberation Sans",
             "font_size": "26", "primary_color": "&H00FFFFFF",
@@ -90,14 +90,14 @@ def test_styles_save_rejects_renaming_a_builtin(client, settings_holder):
 
 
 def test_styles_delete_rejects_a_builtin(client, settings_holder):
-    response = client.post("/settings/styles/classic/delete")
+    response = client.post("/styles/classic/delete")
     assert response.status_code == 200
     assert "classic" in {cfg.name for cfg in settings_holder.settings.subtitle_styles}
 
 
 def test_styles_delete_removes_a_custom_preset(client, settings_holder):
     client.post(
-        "/settings/styles/save",
+        "/styles/save",
         data={
             "original_name": "", "name": "simpsons", "font": "Simpsonfont",
             "font_size": "28", "primary_color": "&H0000FFFF",
@@ -106,7 +106,7 @@ def test_styles_delete_removes_a_custom_preset(client, settings_holder):
             "margin_v": "24", "alignment": "2",
         },
     )
-    response = client.post("/settings/styles/simpsons/delete")
+    response = client.post("/styles/simpsons/delete")
     assert response.status_code == 200
     assert "simpsons" not in {cfg.name for cfg in settings_holder.settings.subtitle_styles}
 
@@ -130,10 +130,10 @@ def test_styles_upload_font_then_save_does_not_wipe_the_preset(client, settings_
         path.write_bytes(data)
         return FontUploadResult(font_path=str(path), family="Simpsonfont", missing_punctuation="")
 
-    monkeypatch.setattr("app.web.settings.process_font_upload", fake_process_font_upload)
+    monkeypatch.setattr("app.web.styles.process_font_upload", fake_process_font_upload)
 
     create_response = client.post(
-        "/settings/styles/save",
+        "/styles/save",
         data={
             "original_name": "", "name": "simpsons", "font": "Simpsonfont",
             "font_size": "28", "primary_color": "&H0000FFFF",
@@ -147,7 +147,7 @@ def test_styles_upload_font_then_save_does_not_wipe_the_preset(client, settings_
     assert after_create.font_path is None
 
     upload_response = client.post(
-        "/settings/styles/simpsons/font",
+        "/styles/simpsons/font",
         files={"font_file": ("simpsons.ttf", _valid_font_bytes(), "font/ttf")},
     )
     assert upload_response.status_code == 200
@@ -160,7 +160,7 @@ def test_styles_upload_font_then_save_does_not_wipe_the_preset(client, settings_
     assert 'value="simpsons"' in upload_response.text
 
     save_response = client.post(
-        "/settings/styles/save",
+        "/styles/save",
         data={
             "original_name": "simpsons", "name": "simpsons", "font": "Simpsonfont",
             "font_size": "28", "primary_color": "&H0000FFFF",
@@ -188,10 +188,10 @@ def test_styles_delete_removes_the_uploaded_font_file(client, settings_holder, m
         font_file.write_bytes(data)
         return FontUploadResult(font_path=str(font_file), family="Simpsonfont", missing_punctuation="")
 
-    monkeypatch.setattr("app.web.settings.process_font_upload", fake_process_font_upload)
+    monkeypatch.setattr("app.web.styles.process_font_upload", fake_process_font_upload)
 
     client.post(
-        "/settings/styles/save",
+        "/styles/save",
         data={
             "original_name": "", "name": "simpsons", "font": "Simpsonfont",
             "font_size": "28", "primary_color": "&H0000FFFF",
@@ -201,18 +201,18 @@ def test_styles_delete_removes_the_uploaded_font_file(client, settings_holder, m
         },
     )
     client.post(
-        "/settings/styles/simpsons/font",
+        "/styles/simpsons/font",
         files={"font_file": ("simpsons.ttf", _valid_font_bytes(), "font/ttf")},
     )
     assert font_file.exists()
 
-    client.post("/settings/styles/simpsons/delete")
+    client.post("/styles/simpsons/delete")
     assert not font_file.exists()
 
 
 def test_styles_upload_font_rejects_when_preset_not_yet_saved(client):
     response = client.post(
-        "/settings/styles/not-yet-saved/font",
+        "/styles/not-yet-saved/font",
         files={"font_file": ("simpsons.ttf", _valid_font_bytes(), "font/ttf")},
     )
     assert response.status_code == 200
@@ -220,21 +220,21 @@ def test_styles_upload_font_rejects_when_preset_not_yet_saved(client):
 
 
 def test_new_style_form_hides_font_upload_control(client):
-    response = client.get("/settings/styles/new")
+    response = client.get("/styles/new")
     assert response.status_code == 200
     assert "Upload font" not in response.text
     assert "Save the preset first" in response.text
 
 
 def test_edit_style_form_shows_font_upload_control(client):
-    response = client.get("/settings/styles/classic/edit")
+    response = client.get("/styles/classic/edit")
     assert response.status_code == 200
     assert "Upload font" in response.text
 
 
 def test_styles_save_rejects_a_blank_name(client, settings_holder):
     response = client.post(
-        "/settings/styles/save",
+        "/styles/save",
         data={
             "original_name": "", "name": "", "font": "Simpsonfont",
             "font_size": "28", "primary_color": "&H0000FFFF",
@@ -250,7 +250,7 @@ def test_styles_save_rejects_a_blank_name(client, settings_holder):
 
 def test_styles_save_rejects_reserved_name_none(client, settings_holder):
     response = client.post(
-        "/settings/styles/save",
+        "/styles/save",
         data={
             "original_name": "", "name": "none", "font": "Simpsonfont",
             "font_size": "28", "primary_color": "&H0000FFFF",
@@ -290,8 +290,8 @@ def test_worker_client_cache_returns_same_instance_across_preview_calls(client, 
         "back_color": "&H00000000", "border_style": "1",
         "outline": "2.0", "shadow": "0.0", "margin_v": "24", "alignment": "2",
     }
-    client.post("/settings/styles/preview", data=data)
-    client.post("/settings/styles/preview", data=data)
+    client.post("/styles/preview", data=data)
+    client.post("/styles/preview", data=data)
 
     assert len(seen_clients) == 2
     assert seen_clients[0] is seen_clients[1]
@@ -299,7 +299,7 @@ def test_worker_client_cache_returns_same_instance_across_preview_calls(client, 
 
 def test_styles_font_upload_rejects_a_non_font_file(client):
     response = client.post(
-        "/settings/styles/classic/font",
+        "/styles/classic/font",
         files={"font_file": ("not-a-font.ttf", b"definitely not a font", "font/ttf")},
     )
     assert response.status_code == 200
@@ -314,7 +314,7 @@ def test_styles_preview_proxies_the_worker_and_embeds_base64(client, monkeypatch
         "app.bot.worker_client.WorkerClient.preview_style", fake_preview_style
     )
     response = client.post(
-        "/settings/styles/preview",
+        "/styles/preview",
         data={
             "font": "Liberation Sans", "font_size": "26",
             "primary_color": "&H00FFFFFF", "outline_color": "&H00000000",
@@ -329,9 +329,9 @@ def test_styles_preview_proxies_the_worker_and_embeds_base64(client, monkeypatch
 def test_styles_edit_form_does_not_race_save_and_preview_on_one_element(client):
     # Regression: hx-post and hx-get used to both live on the <form>, so
     # clicking Save fired a POST and a GET concurrently, racing to swap
-    # #settings-content. The form must carry only its save POST; the live
+    # the content div. The form must carry only its save POST; the live
     # preview trigger belongs on #style-preview instead.
-    response = client.get("/settings/styles/classic/edit")
+    response = client.get("/styles/classic/edit")
     assert response.status_code == 200
     import re
 
