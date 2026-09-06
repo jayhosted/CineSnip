@@ -9,17 +9,33 @@
 
     {% for preset in settings.subtitle_styles %}
     <div class="field-row" style="justify-content:space-between; align-items:center; margin-bottom:10px;">
-      <span>{{ preset.name }}{% if preset.builtin %} <em>(built-in)</em>{% endif %}</span>
+      <span>{{ preset.name }}{% if preset.builtin %} <em>(built-in — can't be deleted)</em>{% endif %}</span>
       <span style="display:flex; gap:6px;">
         <a href="/styles/{{ preset.name }}/edit" class="btn-edit-row" title="Edit {{ preset.name }}">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
         </a>
         {% if not preset.builtin %}
         <button type="button" class="btn-remove-row" title="Delete {{ preset.name }}"
-          hx-post="/styles/{{ preset.name }}/delete" hx-target="#styles-content" hx-swap="outerHTML"
-          hx-confirm="Delete the '{{ preset.name }}' style preset?">
+          onclick="document.getElementById('delete-dialog-{{ loop.index }}').showModal()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1V7m2 0-.8 12.4a2 2 0 0 1-2 1.6H9.8a2 2 0 0 1-2-1.6L7 7"/><path d="M10 11v6M14 11v6"/></svg>
         </button>
+        <dialog id="delete-dialog-{{ loop.index }}" class="confirm-dialog">
+          <h2>Delete "{{ preset.name }}"?</h2>
+          <p>This can't be undone. Type the preset name to confirm.</p>
+          <form method="dialog">
+            <div class="field-row">
+              <input type="text" class="delete-confirm-input" data-confirm-name="{{ preset.name }}"
+                autocomplete="off" aria-label="Type &quot;{{ preset.name }}&quot; to confirm deletion">
+            </div>
+            <div class="dialog-actions">
+              <button type="button" class="btn btn-ghost" onclick="this.closest('dialog').close()">Cancel</button>
+              <button type="button" class="btn btn-danger delete-confirm-submit" disabled
+                hx-post="/styles/{{ preset.name }}/delete" hx-target="#styles-content" hx-swap="outerHTML">
+                Delete style
+              </button>
+            </div>
+          </form>
+        </dialog>
         {% endif %}
       </span>
     </div>
@@ -28,3 +44,15 @@
     <a href="/styles/new" class="btn btn-primary" style="margin-top:10px;">Add preset</a>
   </div>
 </div>
+
+<script>
+// Delete-preset dialogs: the Delete button stays disabled until the typed
+// name matches exactly — real friction for an irreversible action, in
+// place of the old bare hx-confirm() browser dialog.
+document.querySelectorAll('.delete-confirm-input').forEach(function (input) {
+  var submit = input.closest('.confirm-dialog').querySelector('.delete-confirm-submit');
+  input.addEventListener('input', function () {
+    submit.disabled = input.value !== input.dataset.confirmName;
+  });
+});
+</script>

@@ -245,6 +245,52 @@ form.htmx-request [type="submit"] .btn-label-idle { display: none; }
 .check-ok { color: var(--accent); }
 .check-fail { color: var(--danger); }
 
+/* Subtitle style editor: groups a long flat field list under labeled
+   sections (Typography / Color / Box & Border / Position) — Title-sm
+   weight, a hairline rule below, generous space above (more than below,
+   per spacing convention) since it opens a new group rather than closing
+   the last one. */
+.form-section-label {
+  font-family: var(--font-display); font-size: 13.5px; font-weight: 600; color: var(--text-secondary);
+  margin: 28px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border-subtle);
+}
+.form-section-label:first-child { margin-top: 0; }
+
+/* A soft-fact banner, distinct from .error-banner — the font-upload
+   "missing characters, falling back" notice isn't an error, so it must
+   not borrow the danger hue (DESIGN.md reserves red-orange for errors
+   only, and forbids a second/third accent for anything else). Neutral
+   surface-2/text-secondary instead. */
+.warning-banner {
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text-secondary);
+  border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 18px;
+}
+
+input[type="number"] {
+  width: 100%; background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px; font-family: var(--font-body); font-size: 16px; color: var(--text);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+input[type="number"]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* Delete-preset confirmation — a native <dialog> rather than a hand-rolled
+   overlay (real focus trap, Esc-to-close, and ::backdrop for free); themed
+   to the chassis since the browser default is a plain white box. Typed-name
+   confirmation replaces the old bare hx-confirm() for this irreversible
+   action (Priority Issue: destructive delete needs real friction). */
+.confirm-dialog {
+  background: var(--surface); color: var(--text); border: 1px solid var(--border-subtle);
+  border-radius: 14px; padding: 24px; width: 100%; max-width: 380px;
+  box-shadow: 0 20px 60px -20px rgb(0 0 0 / 0.5);
+}
+.confirm-dialog::backdrop { background: rgb(0 0 0 / 0.6); }
+.confirm-dialog h2 { font-family: var(--font-display); font-size: 16px; font-weight: 600; margin: 0 0 8px; }
+.confirm-dialog p { font-size: 13.5px; color: var(--text-secondary); line-height: 1.6; margin: 0 0 16px; }
+.confirm-dialog .field-row { margin-bottom: 20px; }
+.confirm-dialog .dialog-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.confirm-dialog .btn-danger { background: var(--danger); color: var(--bg); }
+.confirm-dialog .btn-danger:disabled { opacity: 0.4; cursor: not-allowed; transform: none; filter: none; }
+
 /* App shell (Section 13 V3 Phase 3 / the sidebar-nav redesign) — the
    persistent chrome for /generate and /settings. The wizard keeps its own
    centered-card look (page.html) untouched; this is a second, separate

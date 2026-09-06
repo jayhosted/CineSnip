@@ -49,17 +49,17 @@ class StylePresetConfig(BaseModel):
 
     name: str
     font: str
-    font_size: int
+    font_size: int = Field(ge=8, le=120)
     primary_color: str
     outline_color: str
     back_color: str
-    border_style: int
-    outline: float
-    shadow: float
+    border_style: Literal[1, 3]  # 1 = outline + shadow, 3 = opaque box
+    outline: float = Field(ge=0, le=20)
+    shadow: float = Field(ge=0, le=20)
     bold: bool
     uppercase: bool
-    margin_v: int
-    alignment: int = 2
+    margin_v: int = Field(ge=0, le=500)
+    alignment: int = Field(default=2, ge=1, le=9)  # ASS numpad code
     font_path: str | None = None
     # True for the 4 presets CineSnip ships with (classic/boxed/cinematic/
     # meme) — these can have every visual field edited but never renamed or
