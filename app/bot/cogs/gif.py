@@ -2485,6 +2485,13 @@ class GifCog(commands.Cog):
             # audio-only render (issue #6), which has no frame to burn
             # subtitles into at all.
             default_style = "classic" if kind == "clip" else "none"
+            if kind == "clip":
+                try:
+                    default_style = await self.bot.worker.default_style_for(
+                        resolved.title, default_style
+                    )
+                except httpx.HTTPError:
+                    pass  # keep the plain per-branch default set above
             await interaction.edit_original_response(
                 content="Generating…", embed=None, view=None
             )
@@ -2495,8 +2502,16 @@ class GifCog(commands.Cog):
             # filename falls back to a generic name in this case).
             subtitle_text = None
             # A bare timecode has no known subtitle availability — default
-            # to off rather than guessing at burn-in the user didn't ask for.
+            # to off rather than guessing at burn-in the user didn't ask for,
+            # unless this title has a manual style override configured.
             default_style = "none"
+            if kind == "clip":
+                try:
+                    default_style = await self.bot.worker.default_style_for(
+                        resolved.title, default_style
+                    )
+                except httpx.HTTPError:
+                    pass  # keep "none"
             await interaction.edit_original_response(
                 content=f"Generating a clip from {resolved.title}{library_note}…"
             )
@@ -2748,7 +2763,6 @@ class GifCog(commands.Cog):
         # Post) only ever talks to `fetch`, never to a specific worker
         # endpoint. Audio (issue #6) has no burn-in to default to, so style
         # is forced to "none" rather than the video path's "classic".
-        style = "classic" if kind == "clip" else "none"
         try:
             picked = await fetch(frozenset(), None)
         except httpx.HTTPError as exc:
@@ -2756,6 +2770,13 @@ class GifCog(commands.Cog):
                 content=f"Couldn't find a match: {_error_detail(exc)}"
             )
             return
+
+        style = "classic" if kind == "clip" else "none"
+        if kind == "clip":
+            try:
+                style = await self.bot.worker.default_style_for(picked.title, style)
+            except httpx.HTTPError:
+                pass  # keep "classic"
 
         try:
             render_result = await self.bot.worker.render(

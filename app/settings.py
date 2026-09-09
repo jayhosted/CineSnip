@@ -177,6 +177,80 @@ def delete_style_preset(settings: Settings, name: str) -> Settings:
     return updated
 
 
+class TitleStyleOverride(BaseModel):
+    """A manual title -> style default (e.g. "South Park" -> a South Park
+    font preset), checked before the bot/web app's normal per-branch style
+    default (CLAUDE.md Section 7). `match` is a case-insensitive substring
+    matched against the resolved title — for a TV episode that title is
+    Plex's "Show — S02E01 — Episode Title" format (Section 4), so matching
+    the show name alone still hits every episode. First entry in the list
+    whose `match` is found wins; still fully overridable via the style
+    select menu / pill grid, this only changes what's picked before anyone
+    touches it."""
+
+    match: str
+    style: str
+
+    @field_validator("match")
+    @classmethod
+    def _validate_match(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Title match text can't be blank.")
+        return stripped
+
+
+class TitleStyleOverrideError(RuntimeError):
+    pass
+
+
+def resolve_style_for_title(settings: "Settings", title: str, fallback: str) -> str:
+    lowered = title.lower()
+    for override in settings.title_style_overrides:
+        if override.match.lower() in lowered:
+            return override.style
+    return fallback
+
+
+def upsert_title_override(
+    settings: "Settings", original_match: str | None, override: TitleStyleOverride
+) -> "Settings":
+    valid_styles = {cfg.name for cfg in settings.subtitle_styles} | {"none"}
+    if override.style not in valid_styles:
+        raise TitleStyleOverrideError(f"No such style preset: '{override.style}'.")
+
+    existing_by_match = {o.match: o for o in settings.title_style_overrides}
+    if original_match and original_match not in existing_by_match:
+        raise TitleStyleOverrideError(f"No such title override: '{original_match}'.")
+    if (
+        override.match in existing_by_match
+        and override.match != original_match
+    ):
+        raise TitleStyleOverrideError(
+            f"A title override for '{override.match}' already exists."
+        )
+
+    updated = settings.model_copy(deep=True)
+    if original_match:
+        updated.title_style_overrides = [
+            override if o.match == original_match else o
+            for o in updated.title_style_overrides
+        ]
+    else:
+        updated.title_style_overrides = [*updated.title_style_overrides, override]
+    return updated
+
+
+def delete_title_override(settings: "Settings", match: str) -> "Settings":
+    if not any(o.match == match for o in settings.title_style_overrides):
+        raise TitleStyleOverrideError(f"No such title override: '{match}'.")
+    updated = settings.model_copy(deep=True)
+    updated.title_style_overrides = [
+        o for o in updated.title_style_overrides if o.match != match
+    ]
+    return updated
+
+
 class RenderDefaults(BaseModel):
     duration_seconds: float = 4.0
     fps: int = 15
@@ -344,6 +418,7 @@ class Settings(BaseModel):
     library_sync: LibrarySyncDefaults = Field(default_factory=LibrarySyncDefaults)
     worker: WorkerConfig = Field(default_factory=WorkerConfig)
     subtitle_styles: list[StylePresetConfig] = Field(default_factory=_default_subtitle_styles)
+    title_style_overrides: list[TitleStyleOverride] = Field(default_factory=list)
     scratch_dir: Path = Path("scratch")
     cache_dir: Path = Path("cache")
     dev_guild_id: int | None = None
@@ -398,6 +473,7 @@ def write_config_yaml(settings: Settings, config_path: Path = Path("config.yaml"
         "worker": settings.worker.model_dump(),
         "library_sync": settings.library_sync.model_dump(),
         "subtitle_styles": [cfg.model_dump() for cfg in settings.subtitle_styles],
+        "title_style_overrides": [o.model_dump() for o in settings.title_style_overrides],
     }
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
 
@@ -496,6 +572,10 @@ def load_settings(
                 if has_subtitle_styles
                 else {}
             ),
+            title_style_overrides=[
+                TitleStyleOverride(**o)
+                for o in raw_config.get("title_style_overrides", [])
+            ],
         )
     except Exception as exc:
         raise SettingsError(f"Invalid config.yaml: {exc}") from exc

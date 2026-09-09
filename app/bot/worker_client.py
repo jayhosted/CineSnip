@@ -361,6 +361,13 @@ class WorkerClient:
         response.raise_for_status()
         return [(item["name"], item["label"]) for item in response.json()]
 
+    async def default_style_for(self, title: str, fallback: str) -> str:
+        response = await self._client.get(
+            "/default-style", params={"title": title, "fallback": fallback},
+        )
+        response.raise_for_status()
+        return response.json()["style"]
+
     async def preview_style(self, style: dict) -> bytes:
         response = await self._client.post(
             "/style-presets/preview", json=style, timeout=PREVIEW_STYLE_TIMEOUT_SECONDS,

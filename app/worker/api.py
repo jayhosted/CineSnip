@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.settings import Settings, SettingsError
+from app.settings import Settings, SettingsError, resolve_style_for_title
 from app.worker import quote_index, search_index
 from app.worker.ffmpeg import ClipRenderer, RenderTimeoutError, parse_timecode
 from app.worker.gif_optimize import GifOptimizeError, optimize_gif as _real_optimize_gif
@@ -220,6 +220,10 @@ class PreviewStyleRequest(BaseModel):
 class PreviewBackgroundResponse(BaseModel):
     background_id: str
     title: str
+
+
+class DefaultStyleResponse(BaseModel):
+    style: str
 
 
 class RandomQuoteResponse(BaseModel):
@@ -600,6 +604,17 @@ def create_app(settings: Settings) -> FastAPI:
         # of one, so it stays included rather than filtered out.
         options = style_options(settings.style_presets())
         return [StylePresetOut(name=name, label=label) for name, label in options]
+
+    @app.get("/default-style", response_model=DefaultStyleResponse)
+    def get_default_style(title: str, fallback: str) -> DefaultStyleResponse:
+        # Manual title -> style defaults (e.g. "South Park" always opening
+        # with its own font) live in config.yaml's title_style_overrides,
+        # edited via the /styles page. The bot/web app never read
+        # config.yaml directly (Section 9), so they ask the worker for the
+        # resolved default instead of duplicating the match logic.
+        return DefaultStyleResponse(
+            style=resolve_style_for_title(settings, title, fallback)
+        )
 
     @app.get("/style-presets/preview-background", response_model=PreviewBackgroundResponse)
     async def preview_background() -> PreviewBackgroundResponse:

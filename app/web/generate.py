@@ -142,6 +142,15 @@ def register_generate_routes(
         except httpx.HTTPError:
             return _FALLBACK_STYLE_OPTIONS
 
+    async def _default_style_for(title: str) -> str:
+        worker = client_cache.get(settings_holder)
+        if worker is None:
+            return "classic"
+        try:
+            return await worker.default_style_for(title, "classic")
+        except httpx.HTTPError:
+            return "classic"
+
     async def do_render(
         worker: WorkerClient,
         media_id: str,
@@ -224,7 +233,7 @@ def register_generate_routes(
         return fragment(
             "panel_generate_left.html",
             kind=kind, query=query, results=results[:25], selected=None,
-            style_options=await _style_options(),
+            style_options=await _style_options(), default_style="classic",
         )
 
     @app.get("/generate/select", response_class=HTMLResponse)
@@ -245,7 +254,7 @@ def register_generate_routes(
         return fragment(
             "panel_generate_left.html",
             kind=kind, query=None, results=None, selected=selected,
-            style_options=await _style_options(),
+            style_options=await _style_options(), default_style=await _default_style_for(title),
         )
 
     @app.get("/generate/reset", response_class=HTMLResponse)
@@ -253,7 +262,7 @@ def register_generate_routes(
         return fragment(
             "panel_generate_left.html",
             kind=kind, query="", results=None, selected=None,
-            style_options=await _style_options(),
+            style_options=await _style_options(), default_style="classic",
         )
 
     @app.post("/generate/render", response_class=HTMLResponse)

@@ -1,16 +1,27 @@
 <div id="styles-content">
   <div class="page-header"><h1>Subtitle Styles</h1><p>Edit built-in presets or add your own, including a custom font.</p></div>
 
-  <div class="card" style="margin-top:18px; max-width:640px;">
+  {% set align_labels = {7: 'Top left', 8: 'Top center', 9: 'Top right', 4: 'Middle left', 5: 'Middle center', 6: 'Middle right', 1: 'Bottom left', 2: 'Bottom center', 3: 'Bottom right'} %}
+
+  <div class="card" style="margin-top:18px; max-width:640px; padding:24px 32px;">
     {% if saved %}<div class="save-banner">Saved — applied without a restart.</div>{% endif %}
     {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
 
-    <label class="field-label" style="display:block; margin-bottom:10px;">SUBTITLE STYLE PRESETS</label>
+    <div class="field-row" style="justify-content:space-between; align-items:baseline; margin-bottom:14px;">
+      <label class="field-label" style="margin-bottom:0;">Subtitle style presets</label>
+      <span class="style-preset-count">{{ settings.subtitle_styles|length }} preset{{ '' if settings.subtitle_styles|length == 1 else 's' }}</span>
+    </div>
 
     {% for preset in settings.subtitle_styles %}
     <div class="field-row" style="justify-content:space-between; align-items:center; margin-bottom:10px;">
-      <span>{{ preset.name }}{% if preset.builtin %} <em>(built-in — can't be deleted)</em>{% endif %}</span>
-      <span style="display:flex; gap:6px;">
+      <span style="min-width:0;">
+        <span style="display:flex; align-items:center; gap:8px;">
+          {{ preset.name }}
+          <span class="badge{{ '' if preset.builtin else ' badge-accent' }}" style="margin-left:0; white-space:nowrap;">{{ 'Built-in' if preset.builtin else 'Custom' }}</span>
+        </span>
+        <div class="style-row-meta">{{ preset.font }} · {{ preset.font_size }}px · {{ align_labels[preset.alignment] }}</div>
+      </span>
+      <span style="display:flex; gap:6px; flex-shrink:0;">
         <a href="/styles/{{ preset.name }}/edit" class="btn-edit-row" title="Edit {{ preset.name }}">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
         </a>
@@ -42,6 +53,40 @@
     {% endfor %}
 
     <a href="/styles/new" class="btn btn-primary" style="margin-top:10px;">Add preset</a>
+  </div>
+
+  <div class="card" style="margin-top:18px; max-width:640px; padding:24px 32px;">
+    <div class="field-row" style="justify-content:space-between; align-items:baseline; margin-bottom:14px;">
+      <label class="field-label" style="margin-bottom:0;">Title style defaults</label>
+      <span class="style-preset-count">
+        {{ settings.title_style_overrides|length }} override{{ '' if settings.title_style_overrides|length == 1 else 's' }}
+      </span>
+    </div>
+    <p class="footnote" style="text-align:left; margin:0 0 14px; max-width:none;">
+      Always start a title matching this text with a specific style — e.g. "South Park" always opens with its own font.
+      Still fully changeable per-clip afterward.
+    </p>
+
+    {% for override in settings.title_style_overrides %}
+    <div class="field-row" style="justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <span style="min-width:0;">"{{ override.match }}" → {{ override.style }}</span>
+      <button type="button" class="btn-remove-row" title="Remove"
+        hx-post="/styles/overrides/{{ loop.index0 }}/delete" hx-target="#styles-content" hx-swap="outerHTML">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1V7m2 0-.8 12.4a2 2 0 0 1-2 1.6H9.8a2 2 0 0 1-2-1.6L7 7"/><path d="M10 11v6M14 11v6"/></svg>
+      </button>
+    </div>
+    {% endfor %}
+
+    <form hx-post="/styles/overrides/add" hx-target="#styles-content" hx-swap="outerHTML" class="field-row" style="margin-top:10px;">
+      <input type="text" name="match" placeholder="Show or movie title" required style="flex:1;">
+      <select name="style">
+        {% for preset in settings.subtitle_styles %}
+        <option value="{{ preset.name }}">{{ preset.name }}</option>
+        {% endfor %}
+        <option value="none">No Subtitles</option>
+      </select>
+      <button type="submit" class="btn btn-primary">Add</button>
+    </form>
   </div>
 </div>
 

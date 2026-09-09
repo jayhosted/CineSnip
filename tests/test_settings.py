@@ -11,9 +11,14 @@ from app.settings import (
     SettingsError,
     StylePresetConfig,
     StylePresetError,
+    TitleStyleOverride,
+    TitleStyleOverrideError,
     delete_style_preset,
+    delete_title_override,
     load_settings,
+    resolve_style_for_title,
     upsert_style_preset,
+    upsert_title_override,
     write_config_yaml,
 )
 
@@ -392,3 +397,69 @@ def test_style_preset_config_accepts_valid_names(good_name):
 def test_style_preset_config_rejects_newlines_in_style_fields(field):
     with pytest.raises(ValidationError):
         StylePresetConfig(**_style_kwargs(**{field: "line1\nline2"}))
+
+
+def _settings_with_overrides(*overrides: TitleStyleOverride) -> Settings:
+    return Settings(
+        discord_token="x", plex_url="http://x", plex_token="x",
+        title_style_overrides=list(overrides),
+    )
+
+
+def test_resolve_style_for_title_matches_case_insensitive_substring():
+    settings = _settings_with_overrides(TitleStyleOverride(match="South Park", style="classic"))
+    assert resolve_style_for_title(settings, "south park — s01e01 — cartman gets an anal probe", "none") == "classic"
+
+
+def test_resolve_style_for_title_falls_back_when_no_match():
+    settings = _settings_with_overrides(TitleStyleOverride(match="South Park", style="classic"))
+    assert resolve_style_for_title(settings, "The Matrix", "none") == "none"
+
+
+def test_resolve_style_for_title_first_match_in_list_order_wins():
+    settings = _settings_with_overrides(
+        TitleStyleOverride(match="South Park", style="classic"),
+        TitleStyleOverride(match="Park", style="boxed"),
+    )
+    assert resolve_style_for_title(settings, "South Park", "none") == "classic"
+
+
+def test_upsert_title_override_rejects_unknown_style():
+    settings = _settings_with_overrides()
+    with pytest.raises(TitleStyleOverrideError):
+        upsert_title_override(settings, None, TitleStyleOverride(match="South Park", style="nope"))
+
+
+def test_upsert_title_override_adds_a_new_entry():
+    settings = _settings_with_overrides()
+    updated = upsert_title_override(settings, None, TitleStyleOverride(match="South Park", style="classic"))
+    assert [o.match for o in updated.title_style_overrides] == ["South Park"]
+
+
+def test_upsert_title_override_rejects_duplicate_match():
+    settings = _settings_with_overrides(TitleStyleOverride(match="South Park", style="classic"))
+    with pytest.raises(TitleStyleOverrideError):
+        upsert_title_override(settings, None, TitleStyleOverride(match="South Park", style="boxed"))
+
+
+def test_delete_title_override_removes_the_entry():
+    settings = _settings_with_overrides(TitleStyleOverride(match="South Park", style="classic"))
+    updated = delete_title_override(settings, "South Park")
+    assert updated.title_style_overrides == []
+
+
+def test_delete_title_override_rejects_unknown_match():
+    settings = _settings_with_overrides()
+    with pytest.raises(TitleStyleOverrideError):
+        delete_title_override(settings, "South Park")
+
+
+def test_title_style_overrides_round_trip_through_config_yaml(tmp_path):
+    settings = _settings_with_overrides(TitleStyleOverride(match="South Park", style="classic"))
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    env_path.write_text("DISCORD_TOKEN=x\nPLEX_URL=http://x\nPLEX_TOKEN=x\n")
+    write_config_yaml(settings, config_path)
+
+    reloaded = load_settings(env_path=env_path, config_path=config_path)
+    assert [o.match for o in reloaded.title_style_overrides] == ["South Park"]

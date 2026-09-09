@@ -90,7 +90,7 @@
       <div class="style-pill-grid">
         {% for value, label in style_options %}
         <label class="style-pill">
-          <input type="radio" name="style" value="{{ value }}" class="visually-hidden-input" {% if value == "classic" %}checked{% endif %}>
+          <input type="radio" name="style" value="{{ value }}" class="visually-hidden-input" {% if value == default_style %}checked{% endif %}>
           {{ label.split(" (")[0] }}
         </label>
         {% endfor %}

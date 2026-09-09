@@ -12,8 +12,12 @@ from app.settings import (
     Settings,
     StylePresetConfig,
     StylePresetError,
+    TitleStyleOverride,
+    TitleStyleOverrideError,
     delete_style_preset,
+    delete_title_override,
     upsert_style_preset,
+    upsert_title_override,
     write_config_yaml,
 )
 from app.web.generate import _WorkerClientCache
@@ -237,6 +241,36 @@ def register_styles_routes(
             request, "panel_style_edit.html",
             preset=updated_config, original_name=name, font_warning=warning,
         )
+
+    @app.post("/styles/overrides/add", response_class=HTMLResponse)
+    async def styles_override_add(request: Request):
+        settings = settings_holder.settings
+        form = await request.form()
+        match = str(form.get("match", "")).strip()
+        style = str(form.get("style", "")).strip()
+
+        try:
+            override = TitleStyleOverride(match=match, style=style)
+            updated = upsert_title_override(settings, None, override)
+        except (ValidationError, TitleStyleOverrideError) as exc:
+            messages = (
+                "; ".join(err["msg"].removeprefix("Value error, ") for err in exc.errors())
+                if isinstance(exc, ValidationError) else str(exc)
+            )
+            return render_page(request, "panel_styles.html", error=f"Couldn't add — {messages}")
+
+        await apply(updated)
+        return render_page(request, "panel_styles.html", saved=True)
+
+    @app.post("/styles/overrides/{index}/delete", response_class=HTMLResponse)
+    async def styles_override_delete(request: Request, index: int):
+        settings = settings_holder.settings
+        if not 0 <= index < len(settings.title_style_overrides):
+            return render_page(request, "panel_styles.html", error="No such title override.")
+        match = settings.title_style_overrides[index].match
+        updated = delete_title_override(settings, match)
+        await apply(updated)
+        return render_page(request, "panel_styles.html", saved=True)
 
     @app.post("/styles/preview", response_class=HTMLResponse)
     async def styles_preview(request: Request):
