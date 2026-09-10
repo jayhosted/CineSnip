@@ -93,6 +93,16 @@ input[type="text"], input[type="password"], input[type="url"] {
 }
 input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
+/* The bare <input type="file"> (font upload) otherwise renders the
+   browser's own default file-picker button — themed to match every other
+   button on the page instead. */
+input[type="file"]::file-selector-button, input[type="file"]::-webkit-file-upload-button {
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 14px; font-family: var(--font-body);
+  font-size: 13px; cursor: pointer; margin-right: 10px;
+}
+input[type="file"] { color: var(--text-secondary); font-size: 13px; }
+
 .select-field {
   width: 100%; background: var(--surface-2); border: 1px solid var(--border);
   border-radius: 8px; padding: 10px 12px; font-family: var(--font-body); font-size: 16px; color: var(--text);
@@ -232,7 +242,7 @@ form.htmx-request [type="submit"] .btn-label-idle { display: none; }
   background: none; border: none; color: var(--text-tertiary); cursor: pointer;
   border-radius: 6px; transition: color 0.15s ease, background-color 0.15s ease; text-decoration: none;
 }
-.btn-edit-row:hover { color: var(--accent); background: var(--accent-soft); }
+.btn-edit-row:hover { color: var(--accent); background: var(--surface-2); }
 .color-swatch {
   flex-shrink: 0; width: 36px; height: 32px; padding: 2px; border: 1px solid var(--border);
   border-radius: 6px; background: none; cursor: pointer;
@@ -255,6 +265,37 @@ form.htmx-request [type="submit"] .btn-label-idle { display: none; }
   margin: 28px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border-subtle);
 }
 .form-section-label:first-child { margin-top: 0; }
+
+/* Subtitle style list rows: preset name + built-in/custom badge + a meta
+   line (font, size, alignment) so a row is identifiable without opening
+   the editor. Reuses .badge/.badge-accent, but a plain .badge sits on the
+   same surface tone as the card behind it here — lifted one surface step
+   so it stays legible (scoped to this page since .badge is shared with
+   /generate's library chips, which don't have this contrast problem). */
+#styles-content .badge:not(.badge-accent) { background: var(--surface-2); color: var(--text-secondary); }
+#styles-content .btn-remove-row:hover { background: var(--surface-2); }
+.style-row-meta { font-size: 11px; color: var(--text-tertiary); font-family: var(--font-mono); margin-top: 2px; }
+.style-preset-count { font-size: 11px; color: var(--text-tertiary); }
+
+/* Caption-position picker: a 3x3 grid of mini alignment previews (a frame
+   with a dot at the chosen corner/edge) rather than a plain text pill —
+   the one control a linear row of labels can't represent honestly. Same
+   selected/unselected token language as .style-pill. */
+.align-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; margin-top: 10px; }
+.align-cell {
+  display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 8px 4px;
+  border-radius: 8px; cursor: pointer; background: var(--surface-2); border: 1px solid var(--border-subtle);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.align-cell:hover { border-color: var(--accent); }
+.align-cell:has(input:checked) { background: var(--accent-soft); border: 1.5px solid var(--accent); }
+.align-cell:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.align-frame { width: 30px; height: 18px; border: 1px solid var(--border); border-radius: 3px; padding: 2px; display: flex; }
+.align-cell:has(input:checked) .align-frame { border-color: var(--accent); }
+.align-dot { width: 4px; height: 4px; border-radius: 999px; background: var(--text-tertiary); }
+.align-cell:has(input:checked) .align-dot { background: var(--accent); }
+.align-label { font-size: 11px; color: var(--text-secondary); font-weight: 500; }
+.align-cell:has(input:checked) .align-label { color: var(--accent); font-weight: 600; }
 
 /* A soft-fact banner, distinct from .error-banner — the font-upload
    "missing characters, falling back" notice isn't an error, so it must

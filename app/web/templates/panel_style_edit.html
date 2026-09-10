@@ -9,24 +9,24 @@
   {% set current_alignment = preset.alignment if preset else 2 %}
   {% set current_border_style = preset.border_style if preset else 1 %}
 
-  <form class="card" style="margin-top:18px; max-width:560px;"
+  <form class="card" style="margin-top:18px; max-width:560px; padding:32px;"
     hx-post="/styles/save" hx-target="#styles-content" hx-swap="outerHTML">
     <input type="hidden" name="original_name" value="{{ original_name }}">
 
-    <label class="field-label" for="name">NAME</label>
+    <label class="field-label" for="name">Name</label>
     <input type="text" id="name" name="name" value="{{ preset.name if preset else '' }}"
       {% if preset and preset.builtin %}readonly{% endif %} style="margin:6px 0 16px;">
 
     <p class="form-section-label">Typography</p>
     <div class="field-row" style="margin-bottom:16px;">
       <div style="flex:1;">
-        <label class="field-label" for="font">FONT</label>
+        <label class="field-label" for="font">Font</label>
         <input type="text" id="font" name="font"
           value="{{ uploaded_font_family or (preset.font if preset else 'Liberation Sans') }}"
           style="margin-top:6px;">
       </div>
       <div style="flex:1;">
-        <label class="field-label" for="font_size">FONT SIZE (px)</label>
+        <label class="field-label" for="font_size">Font size (px)</label>
         <input type="number" id="font_size" name="font_size" min="8" max="120" step="1"
           value="{{ preset.font_size if preset else 26 }}" style="margin-top:6px;">
       </div>
@@ -38,7 +38,7 @@
 
     {% if original_name %}
     <div class="lib-block">
-      <label class="field-label" style="display:block; margin-bottom:10px;">UPLOAD CUSTOM FONT (OPTIONAL)</label>
+      <label class="field-label" style="display:block; margin-bottom:10px;">Upload custom font (optional)</label>
       <div class="field-row">
         <input type="file" name="font_file" accept=".ttf,.otf" aria-label="Choose a .ttf or .otf font file">
         <button class="btn btn-secondary" type="submit"
@@ -53,14 +53,14 @@
     <p class="form-section-label">Color</p>
     <div class="field-row" style="margin-bottom:16px;">
       <div style="flex:1;" role="group" aria-labelledby="primary_color-label">
-        <label class="field-label" id="primary_color-label" for="primary_color">TEXT COLOR (ASS &amp;HAABBGGRR)</label>
+        <label class="field-label" id="primary_color-label" for="primary_color">Text color (ASS &amp;HAABBGGRR)</label>
         <div style="display:flex; gap:8px; margin-top:6px;">
           <input type="color" class="color-swatch" data-color-picker-for="primary_color" aria-label="Pick text color">
           <input type="text" id="primary_color" name="primary_color" value="{{ preset.primary_color if preset else '&H00FFFFFF' }}" style="flex:1;">
         </div>
       </div>
       <div style="flex:1;" role="group" aria-labelledby="outline_color-label">
-        <label class="field-label" id="outline_color-label" for="outline_color">OUTLINE COLOR</label>
+        <label class="field-label" id="outline_color-label" for="outline_color">Outline color</label>
         <div style="display:flex; gap:8px; margin-top:6px;">
           <input type="color" class="color-swatch" data-color-picker-for="outline_color" aria-label="Pick outline color">
           <input type="text" id="outline_color" name="outline_color" value="{{ preset.outline_color if preset else '&H00000000' }}" style="flex:1;">
@@ -71,14 +71,14 @@
     <p class="form-section-label">Box &amp; border</p>
     <div class="field-row" style="margin-bottom:16px;">
       <div style="flex:1;" role="group" aria-labelledby="back_color-label">
-        <label class="field-label" id="back_color-label" for="back_color">BOX COLOR</label>
+        <label class="field-label" id="back_color-label" for="back_color">Box color</label>
         <div style="display:flex; gap:8px; margin-top:6px;">
           <input type="color" class="color-swatch" data-color-picker-for="back_color" aria-label="Pick box color">
           <input type="text" id="back_color" name="back_color" value="{{ preset.back_color if preset else '&H00000000' }}" style="flex:1;">
         </div>
       </div>
       <div style="flex:1;">
-        <label class="field-label" id="border_style-label">BORDER STYLE</label>
+        <label class="field-label" id="border_style-label">Border style</label>
         <div class="kind-toggle" role="radiogroup" aria-labelledby="border_style-label" style="margin-top:6px;">
           <label>
             <input class="visually-hidden-input" type="radio" name="border_style" value="1" {% if current_border_style == 1 %}checked{% endif %}>
@@ -94,12 +94,12 @@
 
     <div class="field-row" style="margin-bottom:20px;">
       <div style="flex:1;">
-        <label class="field-label" for="outline">OUTLINE WIDTH (px)</label>
+        <label class="field-label" for="outline">Outline width (px)</label>
         <input type="number" id="outline" name="outline" min="0" max="20" step="0.5"
           value="{{ preset.outline if preset else 2.0 }}" style="margin-top:6px;">
       </div>
       <div style="flex:1;">
-        <label class="field-label" for="shadow">SHADOW (px)</label>
+        <label class="field-label" for="shadow">Shadow (px)</label>
         <input type="number" id="shadow" name="shadow" min="0" max="20" step="0.5"
           value="{{ preset.shadow if preset else 0.0 }}" style="margin-top:6px;">
       </div>
@@ -107,18 +107,21 @@
 
     <p class="form-section-label">Position</p>
     <div style="margin-bottom:16px;">
-      <label class="field-label" for="margin_v">BOTTOM MARGIN (px)</label>
+      <label class="field-label" for="margin_v">Bottom margin (px)</label>
       <input type="number" id="margin_v" name="margin_v" min="0" max="500" step="1"
         value="{{ preset.margin_v if preset else 24 }}" style="margin-top:6px;">
     </div>
     <div style="margin-bottom:20px;">
-      <label class="field-label" id="alignment-label">CAPTION POSITION</label>
-      <div class="style-pill-grid" role="radiogroup" aria-labelledby="alignment-label">
+      <label class="field-label" id="alignment-label">Caption position</label>
+      <div class="align-grid" role="radiogroup" aria-labelledby="alignment-label">
         {% for pos in align_positions %}
-        <label class="style-pill" title="{{ align_labels[pos] }}">
+        {% set vertical = 'flex-end' if pos <= 3 else ('center' if pos <= 6 else 'flex-start') %}
+        {% set horizontal = 'flex-start' if pos in [1, 4, 7] else ('flex-end' if pos in [3, 6, 9] else 'center') %}
+        <label class="align-cell" title="{{ align_labels[pos] }}">
           <input class="visually-hidden-input" type="radio" name="alignment" value="{{ pos }}"
             {% if current_alignment == pos %}checked{% endif %}>
-          {{ align_labels[pos] }}
+          <span class="align-frame" style="align-items:{{ vertical }}; justify-content:{{ horizontal }};"><span class="align-dot"></span></span>
+          <span class="align-label">{{ align_labels[pos] }}</span>
         </label>
         {% endfor %}
       </div>
