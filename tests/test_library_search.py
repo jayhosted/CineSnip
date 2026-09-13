@@ -1,6 +1,7 @@
 from app.worker import search_index
 from app.worker.library_search import (
     _diversify_and_rank,
+    _fts_match_tokens,
     _merge_ranges,
     pick_random_quote,
     search_cached_library,
@@ -621,3 +622,22 @@ def test_pick_random_quote_without_quote_applies_min_words_filter(tmp_path):
         assert result is not None
         assert result.pick.match.text == "This is a much longer line of dialogue."
         assert result.pool_size == 1
+
+
+def test_fts_match_tokens_drops_stopwords_but_never_empties():
+    assert _fts_match_tokens("hold the fort") == ["hold", "fort"]
+    # An all-stopword quote must still search for something.
+    assert _fts_match_tokens("to be or not to be") == ["to", "be", "or", "not", "to", "be"]
+
+
+def test_search_cached_library_finds_match_despite_common_word_in_quote(tmp_path):
+    db_path = _db_path(tmp_path)
+    _write_title(db_path, "guid-1", "1", "Show", "TV", ["Somebody has to hold the fort while I'm gone."])
+    cached_titles = [CachedTitle(guid="guid-1", media_id="1", title="Show", library_name="TV")]
+
+    matches = search_cached_library(
+        db_path, cached_titles, "hold the fort", result_limit=10, min_score=50,
+        max_window_gap_seconds=3.0, context_lines=1,
+    )
+    assert len(matches) == 1
+    assert "hold the fort" in matches[0].match.text.lower()

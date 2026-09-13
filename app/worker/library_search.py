@@ -29,6 +29,31 @@ _DEFAULT_ENTRY_SCAN_LIMIT = 4000
 
 _EXACT_PHRASE_QUOTE_CHARS = '"“”'
 
+# Ultra-common words dropped from the FTS5 pre-filter's OR-query before it
+# ever hits search_entry_ids. FTS5's MATCH is OR'd across query tokens, so a
+# single stopword (e.g. "the") can appear in a huge fraction of a corpus's
+# entries and blow past the entry-level LIMIT on its own — confirmed on a
+# real 39-episode show: "hold the fort" saturated the 4000-entry cap with
+# "the" hits alone (1844 resulting fuzzy-scoring windows, 24.6s), vs. 21
+# windows/0.2s for "holocaust" alone. These words add no discriminating
+# power to the pre-filter — find_quote_matches' own fuzzy scoring downstream
+# still sees the full, unfiltered quote text, so dropping them here only
+# affects which entries get *considered*, never how a match is *scored*.
+_FTS_STOPWORDS = frozenset(
+    "a an the and or but of to in on at is was were be been am are "
+    "it its i you he she we they this that with for as so if not do "
+    "did does have has had my your his her our their".split()
+)
+
+
+def _fts_match_tokens(normalized_quote: str) -> list[str]:
+    """Tokens for the FTS5 pre-filter's OR-query: normalized_quote's words
+    minus _FTS_STOPWORDS, unless that would leave nothing (a stopword-only
+    quote, e.g. "to be or not to be", must still search for something)."""
+    tokens = normalized_quote.split()
+    filtered = [t for t in tokens if t not in _FTS_STOPWORDS]
+    return filtered or tokens
+
 
 def _strip_exact_phrase_quotes(quote: str) -> tuple[str, bool]:
     """A query wrapped in "double quotes" (straight or curly) requests
@@ -250,7 +275,7 @@ def search_cached_library(
 
     hits = search_index.search_entry_ids(
         db_path,
-        normalized_quote.split(),
+        _fts_match_tokens(normalized_quote),
         limit=_DEFAULT_ENTRY_SCAN_LIMIT,
         title_ids=scope_title_ids,
     )
@@ -473,7 +498,7 @@ def pick_random_quote(
 
     hits = search_index.search_entry_ids(
         db_path,
-        normalized_quote.split(),
+        _fts_match_tokens(normalized_quote),
         limit=_DEFAULT_ENTRY_SCAN_LIMIT,
         title_ids=scope_title_ids,
     )
