@@ -263,10 +263,15 @@ class RenderDefaults(BaseModel):
     # silently couple two unrelated tuning knobs and let worst-case gifsicle
     # latency roughly double whenever someone raises the ffmpeg timeout.
     gifsicle_timeout_seconds: float = 60.0
-    # GIF by default: mp4/webm are smaller but Discord renders them as a
-    # real video player (no autoplay/loop, no GIF-picker favoriting) —
-    # see CLAUDE.md decision #1. format:mp4/webm remain explicit opt-ins.
-    format: Literal["gif", "mp4", "webm"] = "gif"
+    # AVIF by default: measured 3-90x smaller than GIF and never slower to
+    # render across grainy/dark/HDR/clean content, with no visible quality
+    # regression, and (unlike WebP, tried and rejected first) Discord's
+    # media proxy doesn't re-encode it for inline preview — see CLAUDE.md
+    # decision #1 and docs/build-notes/avif-output.md. mp4/webm are
+    # smaller still but Discord renders them as a real video player (no
+    # autoplay/loop, no GIF-picker favoriting). gif/mp4/webm all remain
+    # explicit opt-ins via format:gif/mp4/webm.
+    format: Literal["gif", "mp4", "webm", "avif"] = "avif"
     # A quote-driven clip uses the matched subtitle line's own start/end
     # instead of duration_seconds (so the clip is exactly that line, no
     # more), but that raw span still needs bounds: a one-word cue is too

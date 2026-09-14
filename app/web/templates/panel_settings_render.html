@@ -28,7 +28,7 @@
       <div style="flex:1;">
         <label class="field-label" for="format">DEFAULT FORMAT</label>
         <select id="format" name="format" class="select-field" style="margin-top:6px;">
-          {% for value in ["gif", "mp4", "webm"] %}
+          {% for value in ["avif", "gif", "mp4", "webm"] %}
           <option value="{{ value }}" {% if settings.render_defaults.format == value %}selected{% endif %}>{{ value | upper }}</option>
           {% endfor %}
         </select>

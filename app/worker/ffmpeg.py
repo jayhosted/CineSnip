@@ -85,18 +85,28 @@ def build_seek_args(start: float, duration: float) -> list[str]:
     return ["-ss", _format_timecode(start), "-t", _format_timecode(duration)]
 
 
-# No audio in any clip format (CLAUDE.md Section 6). mp4/webm are
+# No audio in any clip format (CLAUDE.md Section 6). mp4/webm/avif are
 # single-pass encodes to a scratch file rather than pipe:1 — mp4 in
 # particular needs +faststart for Discord/browsers to play it inline
 # progressively, which requires seeking back to rewrite the moov atom
-# after encoding, something a stdout pipe can't do. webm doesn't strictly
-# need this, but a scratch file keeps both non-GIF formats on one path.
+# after encoding, something a stdout pipe can't do. webm/avif don't
+# strictly need this, but a scratch file keeps all non-GIF formats on one
+# path.
 _VIDEO_CODEC_ARGS: dict[str, list[str]] = {
     "mp4": ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
     "webm": [
         "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "32",
         "-deadline", "realtime", "-cpu-used", "5",
     ],
+    # SVT-AV1, not libaom-av1 — measured faster AND smaller at identical
+    # crf on every content type tested (grainy film, 4K HDR, clean
+    # digital, high motion): see docs/build-notes/avif-output.md.
+    # crf=1 (near-lossless) + preset=8 (fast) was the sweet spot found by
+    # visual comparison against GIF across that same content range —
+    # still 3-90x smaller than GIF depending on content. preset=0
+    # (slowest) looked identical in every comparison but took 10-20x
+    # longer, so isn't worth it.
+    "avif": ["-c:v", "libsvtav1", "-crf", "1", "-preset", "8", "-pix_fmt", "yuv420p"],
 }
 
 # Audio-only clips (issue #6) — no video stream, so none of _VIDEO_CODEC_ARGS'

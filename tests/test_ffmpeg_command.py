@@ -6,6 +6,7 @@ import pytest
 from app.worker import ffmpeg as ffmpeg_module
 from app.worker.ffmpeg import (
     _AUDIO_CODEC_ARGS,
+    _VIDEO_CODEC_ARGS,
     AudioStreamInfo,
     ClipRenderer,
     _crop_adjusted_dims,
@@ -359,6 +360,14 @@ def test_write_ass_file_applies_subtitle_overrides(tmp_path):
 def test_audio_codec_args_cover_both_supported_formats():
     assert _AUDIO_CODEC_ARGS["mp3"] == ["-c:a", "libmp3lame", "-q:a", "2"]
     assert _AUDIO_CODEC_ARGS["ogg"] == ["-c:a", "libvorbis", "-q:a", "4"]
+
+
+def test_avif_codec_args_use_svtav1_not_libaom():
+    # SVT-AV1 measured faster AND smaller than libaom-av1 at identical crf
+    # across every content type tested — see docs/build-notes/avif-output.md.
+    assert _VIDEO_CODEC_ARGS["avif"] == [
+        "-c:v", "libsvtav1", "-crf", "1", "-preset", "8", "-pix_fmt", "yuv420p",
+    ]
 
 
 @pytest.mark.parametrize("fmt", ["mp3", "ogg"])

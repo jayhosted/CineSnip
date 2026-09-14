@@ -1,7 +1,7 @@
 <div id="generate-right" class="card preview-card">
 
   <div class="clip-media-box">
-    {% if render.format == "gif" %}
+    {% if render.format in ("gif", "avif") %}
       <img id="clip-media" src="{{ clip_url }}" alt="Generated clip">
     {% else %}
       <video id="clip-media" controls>
@@ -38,7 +38,8 @@
         {% if caption %}<input type="hidden" name="caption" value="{{ caption }}">{% endif %}
         <select name="format" class="select-field" style="width:auto;" title="Change format"
           hx-post="/generate/render" hx-target="#generate-right" hx-swap="outerHTML" hx-trigger="change">
-          <option value="" {% if render.format == "gif" %}selected{% endif %}>GIF</option>
+          <option value="avif" {% if render.format == "avif" %}selected{% endif %}>AVIF</option>
+          <option value="gif" {% if render.format == "gif" %}selected{% endif %}>GIF</option>
           <option value="mp4" {% if render.format == "mp4" %}selected{% endif %}>MP4</option>
           <option value="webm" {% if render.format == "webm" %}selected{% endif %}>WebM</option>
         </select>

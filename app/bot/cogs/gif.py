@@ -2655,7 +2655,8 @@ class GifCog(commands.Cog):
         "random line",
         timecode="Timestamp, e.g. 1:23:45 or 1h23m45s (requires a `film`)",
         end_timecode="Custom clip end (timecode only, not quote) — same formats as timecode",
-        format="Output format (default: gif — mp4/webm are smaller but do not autoplay in Discord)",
+        format="Output format (default: avif — smaller/faster than gif with the same "
+        "autoplay/favoriting; mp4/webm are smaller still but do not autoplay in Discord)",
     )
     @app_commands.autocomplete(film=film_autocomplete)
     async def snip_movie(
@@ -2665,7 +2666,7 @@ class GifCog(commands.Cog):
         quote: str | None = None,
         timecode: str | None = None,
         end_timecode: str | None = None,
-        format: Literal["gif", "mp4", "webm"] | None = None,
+        format: Literal["gif", "mp4", "webm", "avif"] | None = None,
     ) -> None:
         if film is None:
             if quote is None:
@@ -2856,7 +2857,8 @@ class GifCog(commands.Cog):
         "show; omit quote and timecode entirely for a random line",
         timecode="Timestamp, e.g. 1:23:45 or 1h23m45s — requires season/episode",
         end_timecode="Custom clip end (timecode only, not quote) — same formats as timecode",
-        format="Output format (default: gif — mp4/webm are smaller but do not autoplay in Discord)",
+        format="Output format (default: avif — smaller/faster than gif with the same "
+        "autoplay/favoriting; mp4/webm are smaller still but do not autoplay in Discord)",
     )
     @app_commands.autocomplete(show=show_autocomplete)
     async def snip_tv(
@@ -2868,7 +2870,7 @@ class GifCog(commands.Cog):
         quote: str | None = None,
         timecode: str | None = None,
         end_timecode: str | None = None,
-        format: Literal["gif", "mp4", "webm"] | None = None,
+        format: Literal["gif", "mp4", "webm", "avif"] | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 

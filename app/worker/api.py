@@ -109,7 +109,7 @@ class RenderRequest(BaseModel):
     # the bot always sends one of those explicitly for /snip audio, never
     # None, so an audio request never falls through to render_defaults.format
     # (which stays video-only, see Settings.render_defaults).
-    format: Literal["gif", "mp4", "webm", "mp3", "ogg"] | None = None
+    format: Literal["gif", "mp4", "webm", "avif", "mp3", "ogg"] | None = None
     # None/"none" means no subtitle burn-in. A style requested on a title
     # with no usable subtitles for the clip's own window degrades to plain
     # (no burn-in) rather than erroring — echoed back via X-Clip-Style so
@@ -908,6 +908,7 @@ def create_app(settings: Settings) -> FastAPI:
             "gif": "image/gif",
             "mp4": "video/mp4",
             "webm": "video/webm",
+            "avif": "image/avif",
             "mp3": "audio/mpeg",
             "ogg": "audio/ogg",
         }[clip_format]

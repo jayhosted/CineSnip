@@ -39,18 +39,21 @@ libraries:
 # [min_duration_seconds, max_duration_seconds] — duration_seconds itself
 # is clamped to that same range too.
 # format is the default output when the user doesn't pick one via
-# /cinesnip's format: option ("gif", "mp4", or "webm"). gif is the default
-# because it's the only one of the three Discord actually autoplays/loops
-# inline and lets you "Add to Favorites" in the GIF picker — mp4/webm are
-# much smaller but show as a real video player (play button, volume
-# slider) instead, confirmed against real Discord behavior.
+# /cinesnip's format: option ("gif", "mp4", "webm", or "avif"). avif is
+# the default: confirmed against real Discord behavior to autoplay/loop
+# inline and support "Add to Favorites" in the GIF picker exactly like
+# GIF does, while rendering 3-90x smaller and never slower depending on
+# content — see docs/build-notes/avif-output.md. mp4/webm are smaller
+# still but show as a real video player (play button, volume slider)
+# instead of autoplaying. Set this to "gif" to revert to the original
+# pipeline (kept fully intact, not just a legacy path).
 render_defaults:
   duration_seconds: 4
   fps: 15
   width: 480
   min_duration_seconds: 1
   max_duration_seconds: 30
-  format: gif
+  format: avif
   # A render exceeding this gets retried at progressively smaller fps/
   # width until it fits. 10MB is empirically confirmed (not just assumed)
   # against a real non-boosted Discord guild — a raw 10MB upload

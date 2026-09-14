@@ -196,12 +196,17 @@ shown beyond just you. If you ask for a style on a title with no usable
 subtitles, CineSnip still renders the clip, just without burned-in text, and
 says so.
 
-Add `format:gif`/`format:mp4`/`format:webm` to pick the output — gif is the
-default (`render_defaults.format` in `config.yaml`) because it's the only
-one of the three that actually autoplays/loops inline in Discord and can be
-added to the GIF picker's favorites; mp4/webm are much smaller but show up
-as a real video player (play button, volume slider) instead, so they're
-worth picking only if you specifically want the smaller file and don't mind
+Add `format:avif`/`format:gif`/`format:mp4`/`format:webm` to pick the
+output — avif is the default (`render_defaults.format` in `config.yaml`)
+because it autoplays/loops inline and can be added to the GIF picker's
+favorites exactly like gif does, while rendering 3-90x smaller and never
+slower to encode (see `docs/build-notes/avif-output.md`). gif remains
+available if you prefer its look on very grainy/dark source or just want
+the original pipeline back — set `render_defaults.format: gif` in
+`config.yaml` to make it the default again, no code change needed.
+mp4/webm are smaller still but show up as a real video player (play
+button, volume slider) instead of autoplaying, so they're worth picking
+only if you specifically want the smallest possible file and don't mind
 clicking play.
 
 ### Searching without picking a film first
@@ -328,7 +333,7 @@ access.
 - **"No path mapping configured for ..." / "File not found on disk"** — that library's `path_mappings` in `config.yaml` don't match what your media server reports or what's actually bind-mounted. Re-check step 5, and confirm the corresponding volume in `docker-compose.yml` points at the right host folder.
 - **"'X' is not a configured library"** — a title resolved to a library that isn't listed under `libraries` in `config.yaml`. Add an entry for it (step 5).
 - **ffmpeg errors** — check the container logs for the actual ffmpeg stderr output; this usually means the source file is a format ffmpeg can't read directly, or the mapped path is wrong.
-- **"Couldn't generate the GIF: ... timed out"** — the source file is unusually slow for ffmpeg to seek/decode near that timestamp (raise `render_defaults.timeout_seconds` in `config.yaml` if this happens on files that should be fine), or something is stuck — check `docker compose logs`.
+- **"Couldn't generate the clip: ... timed out"** — the source file is unusually slow for ffmpeg to seek/decode near that timestamp (raise `render_defaults.timeout_seconds` in `config.yaml` if this happens on files that should be fine), or something is stuck — check `docker compose logs`.
 - **Permission denied writing to `/app/scratch` or `/app/cache`** — the host `scratch/`/`cache/` directory got created by Docker (as `root`) instead of by you before first run. Stop the container, `rm -rf scratch cache && mkdir scratch cache`, then start it again. (Unlike `scratch/`, it's safe to leave `cache/` in place across restarts — only delete it if you actually want to force re-extraction of all subtitles.)
 - **Command doesn't show up (or a renamed command still shows its old name) in Discord** — without `DEV_GUILD_ID` set, commands sync globally on every startup, and Discord can take up to an **hour** to propagate a global slash command change to clients, not just a minute. To skip the wait while developing, set `DEV_GUILD_ID` in `.env` to your test server's ID — the bot then syncs only to that one server instead, which applies near-instantly (deliberately *not* global sync too, since both together left two copies of the same command visible side by side once the global one also propagated). **`DEV_GUILD_ID` is a local-dev-only setting — leave it unset once you're done iterating.** Left populated, it silently blocks commands from ever syncing to *any* other server the bot is invited to, including production servers; the bot logs a warning on startup whenever it's set as a reminder.
 - **"No usable subtitles for ..."** — the film has neither a sidecar `.srt` next to the video file nor a text-based embedded subtitle stream (bitmap formats like PGS aren't extractable). Use `timecode:` for this title instead — there's no transcription fallback for this by design.

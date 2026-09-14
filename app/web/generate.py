@@ -24,7 +24,7 @@ _FALLBACK_STYLE_OPTIONS: list[tuple[str, str]] = [
 ]
 _STYLE_LABELS = {value: label.split(" (")[0] for value, label in _FALLBACK_STYLE_OPTIONS}
 
-_MEDIA_TYPES = {"gif": "image/gif", "mp4": "video/mp4", "webm": "video/webm"}
+_MEDIA_TYPES = {"gif": "image/gif", "mp4": "video/mp4", "webm": "video/webm", "avif": "image/avif"}
 
 
 def _style_label(value: str) -> str:

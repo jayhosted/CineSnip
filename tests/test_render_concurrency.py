@@ -237,7 +237,7 @@ def test_render_output_and_headers_unchanged_with_semaphore_in_place(tmp_path, m
             response = await _render(client, timecode="62")
             assert response.status_code == 200
             assert response.content == b"clip-bytes"
-            assert response.headers["X-Clip-Format"] == "gif"
+            assert response.headers["X-Clip-Format"] == "avif"  # render_defaults.format
             assert response.headers["X-Clip-Start"] == "62.0"
 
     asyncio.run(scenario())
