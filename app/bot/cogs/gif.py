@@ -926,6 +926,11 @@ class _DurationMergeMixin:
         entry = _find_merge_previous(entries, self._clip_start)
         if entry is None:
             return
+        # Keep _last_merge_previous_count in sync so a later _MergeCountModal
+        # submit (which always recomputes from _merge_origin_start) starts
+        # from how many lines are *actually* merged in right now, instead of
+        # overwriting button-driven progress it doesn't know about.
+        self._last_merge_previous_count += 1
         await self._re_render(interaction, entry.start, self._clip_end)
 
     async def _on_merge_next(self, interaction: discord.Interaction) -> None:
@@ -934,6 +939,7 @@ class _DurationMergeMixin:
         entry = _find_merge_next(entries, self._clip_end)
         if entry is None:
             return
+        self._last_merge_next_count += 1
         await self._re_render(interaction, self._clip_start, entry.end)
 
     async def _on_unmerge_previous(self, interaction: discord.Interaction) -> None:
@@ -942,6 +948,7 @@ class _DurationMergeMixin:
         entry = _find_unmerge_previous(entries, self._clip_start, self._clip_end)
         if entry is None:
             return
+        self._last_merge_previous_count = max(0, self._last_merge_previous_count - 1)
         await self._re_render(interaction, entry.start, self._clip_end)
 
     async def _on_unmerge_next(self, interaction: discord.Interaction) -> None:
@@ -950,6 +957,7 @@ class _DurationMergeMixin:
         entry = _find_unmerge_next(entries, self._clip_start, self._clip_end)
         if entry is None:
             return
+        self._last_merge_next_count = max(0, self._last_merge_next_count - 1)
         await self._re_render(interaction, self._clip_start, entry.end)
 
     async def _on_merge_count(self, interaction: discord.Interaction) -> None:

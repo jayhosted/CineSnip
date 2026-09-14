@@ -11,6 +11,7 @@ from app.bot.cogs.gif import (
     ClipResultView,
     QuoteMatchView,
     RandomResultView,
+    _MergeCountModal,
 )
 from app.bot.worker_client import QuoteMatchResult, RandomQuoteResult, SubtitleEntryResult
 
@@ -984,6 +985,80 @@ def test_audio_clip_result_view_merge_previous_extends_start_to_adjacent_entry()
     _, kwargs = view._worker.render.await_args
     assert kwargs["start"] == 5.0
     assert kwargs["end"] == 14.0
+
+
+def _echoing_edit_worker(entries: list[SubtitleEntryResult]) -> "_FakeEditWorker":
+    # Unlike _FakeEditWorker's fixed 10.0/4.0 return value, this echoes back
+    # whatever start/end the caller actually requested — needed to exercise
+    # more than one merge/render round-trip in sequence, since _clip_start
+    # is only ever updated from render_result.start (_apply_render_result).
+    worker = _FakeEditWorker(entries=entries)
+
+    async def _render(*args, start, end, **kwargs):
+        return _FakeRenderResult2(start=start, duration=end - start)
+
+    worker.render = AsyncMock(side_effect=_render)
+    return worker
+
+
+def test_clip_edit_view_merge_previous_buttons_keep_last_merge_count_in_sync():
+    # Regression: _MergeCountModal always recomputes from the fixed
+    # _merge_origin_start/_end anchor, so if button-driven merges don't
+    # update _last_merge_previous_count/_last_merge_next_count, a later
+    # modal submit silently overwrites whatever the buttons already did.
+    async def run():
+        entries = [
+            _entry(0, 2.0, 4.0, "further back"),
+            _entry(1, 5.0, 8.0, "previous line"),
+        ]
+        view = _make_clip_edit_view(_echoing_edit_worker(entries))
+
+        await view._on_merge_previous(_fake_interaction())
+        await view._on_merge_previous(_fake_interaction())
+        return view
+
+    view = asyncio.run(run())
+
+    assert view._last_merge_previous_count == 2
+    _, kwargs = view._worker.render.await_args
+    assert kwargs["start"] == 2.0
+
+
+def test_clip_edit_view_unmerge_previous_decrements_last_merge_count_floored_at_zero():
+    async def run():
+        entries = [
+            _entry(0, 5.0, 8.0, "previous line"),
+            _entry(1, 11.0, 13.0, "main line"),
+        ]
+        view = _make_clip_edit_view(_echoing_edit_worker(entries))
+
+        await view._on_merge_previous(_fake_interaction())
+        assert view._last_merge_previous_count == 1
+        await view._on_unmerge_previous(_fake_interaction())
+        await view._on_unmerge_previous(_fake_interaction())
+        return view
+
+    view = asyncio.run(run())
+
+    assert view._last_merge_previous_count == 0
+
+
+def test_merge_count_modal_prefills_from_button_driven_merges_not_zero():
+    async def run():
+        entries = [
+            _entry(0, 2.0, 4.0, "further back"),
+            _entry(1, 5.0, 8.0, "previous line"),
+        ]
+        view = _make_clip_edit_view(_echoing_edit_worker(entries))
+
+        await view._on_merge_previous(_fake_interaction())
+        await view._on_merge_previous(_fake_interaction())
+        return view
+
+    view = asyncio.run(run())
+    modal = _MergeCountModal(view)
+
+    assert modal.previous_input.default == "2"
 
 
 def test_audio_clip_result_view_merge_open_uses_embed_footer_like_clip_edit_view():
