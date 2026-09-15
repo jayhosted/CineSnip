@@ -120,13 +120,22 @@ def find_sidecar_subtitle(video_path: Path) -> Path | None:
     if exact_upper.exists():
         return exact_upper
 
+    # Name-match before is_file(): a whole-show search calls this once per
+    # episode with no cross-episode cache, and is_file() is a real stat()
+    # syscall on the Windows-drive-via-WSL2-via-Docker-Desktop bind mounts
+    # this project targets — measured ~1.5ms each, so stat-ing every file in
+    # a season folder (not just the ones whose name could possibly match)
+    # was costing ~70ms/folder and ~2s across a 279-episode show. Cheap
+    # string checks first narrows candidates to the (usually 1-2) real
+    # matches before paying for any stat.
     stem = video_path.stem
+    stem_lower = stem.lower()
     candidates = [
         p
         for p in folder.iterdir()
-        if p.is_file()
-        and p.name.lower().startswith(f"{stem.lower()}.")
+        if p.name.lower().startswith(f"{stem_lower}.")
         and p.name.lower().endswith(".srt")
+        and p.is_file()
     ]
     if not candidates:
         return None
