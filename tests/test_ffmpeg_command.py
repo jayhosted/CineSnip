@@ -19,6 +19,7 @@ from app.worker.ffmpeg import (
     parse_cropdetect_output,
     parse_timecode,
     probe_audio_streams,
+    probe_sample_aspect_ratio,
 )
 from app.worker.subtitle_render import STYLE_PRESETS
 from app.worker.subtitles import SubtitleEntry
@@ -112,9 +113,12 @@ def test_seek_and_duration_are_input_options_before_the_video_input():
     assert duration_index < first_i_index
 
 
+_SAR_FIX = "scale=iw*sar:ih:flags=lanczos,setsar=1"
+
+
 def test_scale_filter_has_no_prefix_for_flat_video():
     renderer = ClipRenderer(fps=15, width=480)
-    assert renderer._scale_and_subtitle_filter(480, None, None) == "scale=480:-2:flags=lanczos"
+    assert renderer._scale_and_subtitle_filter(480, None, None) == f"{_SAR_FIX},scale=480:-2:flags=lanczos"
 
 
 def test_scale_filter_puts_three_d_prefix_before_scale_and_subtitles():
@@ -124,12 +128,14 @@ def test_scale_filter_puts_three_d_prefix_before_scale_and_subtitles():
     filt = renderer._scale_and_subtitle_filter(
         480, Path("/tmp/subs.ass"), "crop=iw:ih/2:0:0,setsar=1"
     )
-    assert filt == "crop=iw:ih/2:0:0,setsar=1,scale=480:-2:flags=lanczos,subtitles='/tmp/subs.ass'"
+    assert filt == (
+        f"crop=iw:ih/2:0:0,setsar=1,{_SAR_FIX},scale=480:-2:flags=lanczos,subtitles='/tmp/subs.ass'"
+    )
 
 
 def test_scale_filter_uses_the_given_width_not_the_renderer_default():
     renderer = ClipRenderer(fps=15, width=480)
-    assert renderer._scale_and_subtitle_filter(240, None, None) == "scale=240:-2:flags=lanczos"
+    assert renderer._scale_and_subtitle_filter(240, None, None) == f"{_SAR_FIX},scale=240:-2:flags=lanczos"
 
 
 # HDR tonemap: ffmpeg's plain `scale` filter doesn't tonemap, so an
@@ -156,7 +162,7 @@ def test_scale_filter_has_no_tonemap_for_sdr_video():
     renderer = ClipRenderer(fps=15, width=480)
     filt = renderer._scale_and_subtitle_filter(480, None, None, is_hdr=False)
     assert "tonemap" not in filt
-    assert filt == "scale=480:-2:flags=lanczos"
+    assert filt == f"{_SAR_FIX},scale=480:-2:flags=lanczos"
 
 
 def test_scale_filter_inserts_tonemap_before_scale_for_hdr_video():
@@ -292,7 +298,7 @@ def test_scale_filter_has_no_crop_by_default():
 def test_scale_filter_inserts_content_crop_before_scale():
     renderer = ClipRenderer(fps=15, width=480)
     filt = renderer._scale_and_subtitle_filter(480, None, None, crop_box=(3840, 1604, 0, 278))
-    assert filt == "crop=3840:1604:0:278,scale=480:-2:flags=lanczos"
+    assert filt == f"crop=3840:1604:0:278,{_SAR_FIX},scale=480:-2:flags=lanczos"
 
 
 def test_scale_filter_puts_content_crop_after_three_d_prefix_and_before_tonemap():
@@ -321,6 +327,64 @@ def test_crop_adjusted_dims_is_a_noop_without_a_crop_box():
 
 def test_crop_adjusted_dims_uses_the_cropped_size():
     assert _crop_adjusted_dims((1920, 800, 0, 140), 1920, 1080) == (1920, 800)
+
+
+# Anamorphic sources (non-square pixels, common on DVD rips — reproduced on
+# a real "That Mitchell and Webb Look" episode: 704x560 stored, SAR
+# 249:176) squished visibly in every output format once rendered, since
+# GIF/AVIF/WebP carry no aspect-ratio metadata to preserve the squeeze the
+# way a DAR-aware video player would. probe_sample_aspect_ratio() feeds the
+# scale=iw*sar:ih correction filter and the out_height math below.
+
+
+@pytest.mark.parametrize(
+    "sar_tag,expected",
+    [
+        ("249:176", 249 / 176),
+        ("1:1", 1.0),
+        (None, 1.0),
+        ("", 1.0),
+        ("0:1", 1.0),
+        ("1:0", 1.0),
+        ("garbage", 1.0),
+    ],
+)
+def test_probe_sample_aspect_ratio(monkeypatch, sar_tag, expected):
+    async def fake_run_and_capture(args, timeout_seconds, error_prefix, capture_stdout=False):
+        stream = {"sample_aspect_ratio": sar_tag} if sar_tag is not None else {}
+        return json.dumps({"streams": [stream]}).encode()
+
+    monkeypatch.setattr(ffmpeg_module, "run_and_capture", fake_run_and_capture)
+
+    assert asyncio.run(probe_sample_aspect_ratio("input.mkv")) == pytest.approx(expected)
+
+
+def test_write_ass_file_accounts_for_sar_in_out_height(tmp_path):
+    # Same 704x560/SAR 249:176 real file: the correct display shape is
+    # 249:140 (~1.779), not the raw 704:560 (~1.257) a naive calculation
+    # would use — PlayResY must match what the SAR-corrected scale filter
+    # actually produces, or burned-in subtitle text is sized for the wrong
+    # frame.
+    renderer = ClipRenderer(fps=15, width=480)
+    entries = [SubtitleEntry(index=1, start=1.0, end=3.0, text="line")]
+
+    ass_path = asyncio.run(
+        renderer._write_ass_file(
+            "unused-input-path.mkv",
+            start=0.0,
+            duration=4.0,
+            entries=entries,
+            style=STYLE_PRESETS["classic"],
+            scratch_dir=tmp_path,
+            width=480,
+            eye_width=704,
+            eye_height=560,
+            sar=249 / 176,
+        )
+    )
+
+    doc = ass_path.read_text(encoding="utf-8")
+    assert "PlayResY: 270" in doc
 
 
 def test_write_ass_file_applies_subtitle_overrides(tmp_path):
@@ -379,6 +443,7 @@ def test_render_clip_skips_video_probing_for_audio_formats(monkeypatch, tmp_path
     monkeypatch.setattr(ffmpeg_module, "probe_video_dimensions", _boom)
     monkeypatch.setattr(ffmpeg_module, "probe_color_transfer", _boom)
     monkeypatch.setattr(ffmpeg_module, "probe_crop", _boom)
+    monkeypatch.setattr(ffmpeg_module, "probe_sample_aspect_ratio", _boom)
 
     async def fake_render_audio(self, input_path, start, duration, scratch_dir, fmt_arg, audio_language="eng"):
         return b"audio-bytes"
@@ -567,4 +632,4 @@ def test_scale_and_subtitle_filter_omits_fontsdir_with_no_ass_path():
 
     renderer = ClipRenderer(fps=15, width=480, fonts_dir=Path("/app/cache/fonts"))
     filter_str = renderer._scale_and_subtitle_filter(480, None)
-    assert filter_str == "scale=480:-2:flags=lanczos"
+    assert filter_str == f"{_SAR_FIX},scale=480:-2:flags=lanczos"

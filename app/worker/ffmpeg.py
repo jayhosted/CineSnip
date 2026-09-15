@@ -408,6 +408,45 @@ async def probe_video_dimensions(input_path: str) -> tuple[int, int]:
     return int(stream["width"]), int(stream["height"])
 
 
+async def probe_sample_aspect_ratio(input_path: str) -> float:
+    """Anamorphic sources (common on DVD rips) store non-square pixels —
+    e.g. this project's `That Mitchell and Webb Look` rips are 704x560 with
+    SAR 249:176. `scale=width:-2` alone only preserves this via an SAR/DAR
+    metadata tag, never by resampling to square pixels; GIF/AVIF/WebP carry
+    no such tag, so the output squeeze becomes visibly baked-in for anyone
+    viewing it. Returns the width multiplier (1.0 for square pixels or a
+    missing/malformed tag) needed to correct for it before final scaling."""
+    stdout = await run_and_capture(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=sample_aspect_ratio",
+            "-of",
+            "json",
+            input_path,
+        ],
+        _PROBE_TIMEOUT_SECONDS,
+        error_prefix="ffprobe sample aspect ratio",
+        capture_stdout=True,
+    )
+    streams = json.loads(stdout or b"{}").get("streams", [])
+    sar = streams[0].get("sample_aspect_ratio") if streams else None
+    if not sar or ":" not in sar:
+        return 1.0
+    num, _, den = sar.partition(":")
+    try:
+        num_val, den_val = int(num), int(den)
+    except ValueError:
+        return 1.0
+    if num_val <= 0 or den_val <= 0:
+        return 1.0
+    return num_val / den_val
+
+
 @dataclass
 class AudioStreamInfo:
     relative_index: int
@@ -561,6 +600,13 @@ class ClipRenderer:
         # and there's no equivalent per-library signal to gate it on.
         is_hdr = is_hdr_transfer(await probe_color_transfer(input_path))
 
+        # Same "every source" treatment — anamorphic (non-square pixel)
+        # sources are common on DVD rips and unrelated to 3D. Skipped for a
+        # 3D source: _three_d_plan()'s crop already ends in setsar=1, which
+        # normalizes the eye frame to square pixels before this point, so a
+        # 3D file's own raw SAR tag no longer describes what's on screen.
+        sar = 1.0 if three_d_format != "none" else await probe_sample_aspect_ratio(input_path)
+
         # Same "every source" treatment as HDR above — a baked-in
         # letterbox/pillarbox bar (issue #14) is unrelated to 3D and has no
         # per-library signal to gate on either.
@@ -576,6 +622,7 @@ class ClipRenderer:
             ass_path = await self._write_ass_file(
                 input_path, start, duration, subtitle_entries, style, scratch_dir,
                 width, frame_width, frame_height, subtitle_overrides=subtitle_overrides,
+                sar=sar,
             )
 
         try:
@@ -633,6 +680,7 @@ class ClipRenderer:
         eye_width: int | None = None,
         eye_height: int | None = None,
         subtitle_overrides: dict[int, str | None] | None = None,
+        sar: float = 1.0,
     ) -> Path:
         # A 3D source's *encoded* frame packs both eyes together — the
         # single-eye frame the crop (and, for a squeezed pack, unsqueeze)
@@ -643,8 +691,12 @@ class ClipRenderer:
         # pre-computed dimensions, so probe directly.
         if eye_width is None or eye_height is None:
             eye_width, eye_height = await probe_video_dimensions(input_path)
+        # Must mirror the scale=iw*sar:ih SAR-correction filter in
+        # _scale_and_subtitle_filter(), or burned-in text is sized against a
+        # frame shape that isn't the one actually rendered (same class of
+        # bug as the 3D squeeze/crop sizing issues above).
         out_width = width
-        out_height = round(out_width * eye_height / eye_width)
+        out_height = round(out_width * eye_height / (eye_width * sar))
         out_height -= out_height % 2  # matches the -2 (even-height) scale filter below
 
         window = entries_in_window(entries, start, start + duration)
@@ -677,6 +729,13 @@ class ClipRenderer:
             filters.append(f"crop={w}:{h}:{x}:{y}")
         if is_hdr:
             filters.append(_HDR_TONEMAP_FILTER)
+        # Anamorphic sources (non-square pixels, e.g. DVD rips) need their
+        # SAR baked into real pixel width before the final scale — GIF/
+        # AVIF/WebP have no aspect-ratio metadata to carry the squeeze
+        # correction the way a DAR-aware video player would. `sar` here is
+        # ffmpeg's own filter-graph variable, evaluated at this point in the
+        # chain, so it stays correct regardless of any crop/3D filters above.
+        filters.append("scale=iw*sar:ih:flags=lanczos,setsar=1")
         filters.append(f"scale={width}:-2:flags=lanczos")
         if ass_path is not None:
             subs_filter = f"subtitles={escape_filter_path(ass_path)}"
