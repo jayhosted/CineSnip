@@ -70,7 +70,13 @@ class PlexClient:
             return [self._to_result(m) for m in section.search(libtype="movie")]
         results: list[MovieResult] = []
         for show in section.search(libtype="show"):
-            results.extend(self._to_result(ep) for ep in show.episodes())
+            # library_name=section.title, not per-episode item.librarySectionTitle
+            # — same reload-storm fix as list_episodes() above, but here it's
+            # library_sync scanning the WHOLE library (thousands of episodes),
+            # so it matters even more.
+            results.extend(
+                self._to_result(ep, library_name=section.title) for ep in show.episodes()
+            )
         return results
 
     def current_section_updated_ats(self) -> dict[str, int]:
@@ -173,14 +179,24 @@ class PlexClient:
         except (NotFound, ValueError) as exc:
             raise ShowNotFoundError(show_media_id) from exc
 
-        results = [self._to_result(ep) for ep in episodes]
+        # Pass the show's own librarySectionTitle down rather than letting
+        # _to_result read item.librarySectionTitle per episode: show.episodes()
+        # returns partial objects whose XML omits that attribute entirely, and
+        # plexapi's __getattribute__ silently does a full individual reload()
+        # (a real GET /library/metadata/<ratingKey>) the first time any
+        # None-valued attribute is read on a partial object. Measured: this
+        # alone was ~1.6s of live Plex round-trips across a 279-episode show
+        # (the dominant cost previously attributed to "the Plex fetch" for
+        # whole-show search) — every episode already belongs to this show, so
+        # there's nothing to actually look up.
+        results = [self._to_result(ep, library_name=show.librarySectionTitle) for ep in episodes]
         now = time.monotonic()
         for result in results:
             self._movie_cache[result.media_id] = (now, result)
         return results
 
     @staticmethod
-    def _to_result(item) -> MovieResult:
+    def _to_result(item, library_name: str | None = None) -> MovieResult:
         # First media/part only for MVP — an item with multiple Plex media
         # versions (e.g. a remux + a mobile version) or multi-part files
         # would need explicit version selection; not handled here.
@@ -210,7 +226,7 @@ class PlexClient:
             thumb_url=thumb_url,
             source_path=part.file,
             guid=item.guid,
-            library_name=item.librarySectionTitle,
+            library_name=library_name if library_name is not None else item.librarySectionTitle,
         )
 
     @staticmethod
