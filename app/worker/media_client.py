@@ -8,13 +8,13 @@ from app.settings import Settings
 
 class MovieNotFoundError(RuntimeError):
     def __init__(self, media_id: str):
-        super().__init__(f"No film found with media_id {media_id}.")
+        super().__init__(f"No film found with media_id {media_id}. Pick the film from the autocomplete list, not typed text.")
         self.media_id = media_id
 
 
 class ShowNotFoundError(RuntimeError):
     def __init__(self, media_id: str):
-        super().__init__(f"No show found with media_id {media_id}.")
+        super().__init__(f"No show found with media_id {media_id}. Pick the show from the autocomplete list, not typed text.")
         self.media_id = media_id
 
 
