@@ -25,9 +25,6 @@ class CineSnipBot(commands.Bot):
         soundboard_replace_scope: Callable[[], str] | None = None,
     ):
         intents = discord.Intents.default()
-        # Privileged intent — must also be enabled in the Developer Portal
-        # (Bot → Privileged Gateway Intents), only used for the easter egg.
-        intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
         self.worker = WorkerClient(worker_base_url)
         self._dev_guild_id = dev_guild_id
@@ -48,10 +45,6 @@ class CineSnipBot(commands.Bot):
         self._soundboard_replace_scope = soundboard_replace_scope or (
             lambda: _DEFAULT_SOUNDBOARD_REPLACE_SCOPE
         )
-
-    async def on_message(self, message: discord.Message) -> None:
-        if not message.author.bot and "hello i am celina" in message.content.lower():
-            await message.reply("Hello Celina! 👋 I'm Mechanism!")
 
     def soundboard_replace_scope(self) -> str:
         return self._soundboard_replace_scope()
