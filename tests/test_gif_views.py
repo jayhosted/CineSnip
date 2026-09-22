@@ -11,7 +11,9 @@ from app.bot.cogs.gif import (
     ClipResultView,
     QuoteMatchView,
     RandomResultView,
+    _EditSubsModal,
     _MergeCountModal,
+    _edit_window,
 )
 from app.bot.worker_client import QuoteMatchResult, RandomQuoteResult, SubtitleEntryResult
 
@@ -734,8 +736,10 @@ def test_clip_edit_view_edit_subs_opens_modal_directly_when_entries_cached():
     asyncio.run(run())
 
 
-def test_clip_edit_view_edit_subs_no_window_sends_ephemeral_notice_when_cached():
+def test_clip_edit_view_edit_subs_no_window_still_opens_an_empty_caption_block():
     async def run():
+        # No line overlaps this clip's span — it used to refuse to open,
+        # leaving no way to put text on a bare-timecode clip at all.
         view = _make_clip_edit_view(_FakeEditWorker())
         view._all_entries = [_entry(0, 100.0, 103.0, "far away line")]
         interaction = _fake_interaction()
@@ -744,9 +748,30 @@ def test_clip_edit_view_edit_subs_no_window_sends_ephemeral_notice_when_cached()
 
         await view._on_edit_subs_entry(interaction)
 
-        interaction.response.send_modal.assert_not_called()
-        interaction.response.send_message.assert_awaited_once()
-        assert interaction.response.send_message.call_args.kwargs.get("ephemeral") is True
+        interaction.response.send_message.assert_not_called()
+        interaction.response.send_modal.assert_awaited_once()
+        modal = interaction.response.send_modal.call_args.args[0]
+        assert [e.text for e in modal._window] == [""]
+
+    asyncio.run(run())
+
+
+def test_clip_edit_view_caption_on_a_no_subtitles_clip_switches_to_a_real_style():
+    async def run():
+        view = _make_clip_edit_view(_FakeEditWorker())
+        view.style = "none"
+        view._all_entries = []
+        window = _edit_window([], view._clip_start, view._clip_end)
+        modal = _EditSubsModal(view, window)
+        modal.text_input._value = "hello there"
+        interaction = _fake_interaction()
+        interaction.response.send_modal = AsyncMock()
+
+        await modal.on_submit(interaction)
+
+        assert view.overrides == {-1: "hello there"}
+        # Left on "none" the caption would never be burned in at all.
+        assert view.style != "none"
 
     asyncio.run(run())
 

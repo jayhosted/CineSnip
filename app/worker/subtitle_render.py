@@ -128,13 +128,22 @@ def entries_in_window(
 
 
 def apply_overrides(
-    entries: list[SubtitleEntry], overrides: dict[int, str | None]
+    entries: list[SubtitleEntry],
+    overrides: dict[int, str | None],
+    clip_duration: float | None = None,
 ) -> list[SubtitleEntry]:
     """Apply per-entry text overrides/suppressions (keyed by SubtitleEntry.index,
     from a Discord clip-edit session) to an already-windowed entry list, just
     before it's burned into an ASS document. An index with no key in
     `overrides` passes its entry through unchanged; a value of None
-    suppresses the line entirely; any other string replaces its text."""
+    suppresses the line entirely; any other string replaces its text.
+
+    An override key matching *no* entry in the window is an added caption:
+    a clip whose span has no subtitle line of its own (a silent scene, or a
+    title with no subtitles at all) still gets to have text burned in. It
+    spans the whole clip, since there's no source line to take timing from.
+    Needs `clip_duration` for that span; without it, added captions are
+    dropped rather than rendered with a bogus one."""
     result: list[SubtitleEntry] = []
     for entry in entries:
         if entry.index not in overrides:
@@ -144,6 +153,14 @@ def apply_overrides(
         if override is None:
             continue
         result.append(SubtitleEntry(index=entry.index, start=entry.start, end=entry.end, text=override))
+    if clip_duration is None:
+        return result
+    present = {e.index for e in entries}
+    for index in sorted(overrides):
+        text = overrides[index]
+        if index in present or not text:
+            continue
+        result.append(SubtitleEntry(index=index, start=0.0, end=clip_duration, text=text))
     return result
 
 

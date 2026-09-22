@@ -2,6 +2,7 @@ from app.bot.cogs.gif import (
     _CustomDurationModal,
     _EditSubsModal,
     _MergeCountModal,
+    _edit_window,
     _entries_in_window,
     _find_merge_next,
     _find_merge_previous,
@@ -301,3 +302,23 @@ def test_merge_context_block_collapses_embedded_newlines_in_subtitle_text():
     block = _merge_context_block(entries, clip_start=5.0, clip_end=7.0)
     assert "\n- " not in block
     assert "» - Yes. - Many questions remain. (2.0s)" in block
+
+
+# --- _edit_window (added captions) -------------------------------------------
+
+
+def test_edit_window_falls_back_to_an_empty_caption_block_with_no_lines():
+    # A clip with no subtitles at all was the one case Edit Subs refused to
+    # open for, so there was no way to caption it.
+    window = _edit_window([], clip_start=10.0, clip_end=14.0)
+    assert [(e.index, e.start, e.end, e.text) for e in window] == [(-1, 10.0, 14.0, "")]
+
+
+def test_edit_window_uses_real_entries_when_the_span_has_them():
+    entries = [_entry(3, 10.0, 12.0, "during")]
+    assert _edit_window(entries, clip_start=9.0, clip_end=13.0) == entries
+
+
+def test_parse_edit_blocks_turns_a_caption_block_into_an_added_override():
+    window = _edit_window([], clip_start=10.0, clip_end=14.0)
+    assert _parse_edit_blocks("hello there", window, {}) == {-1: "hello there"}

@@ -123,7 +123,10 @@ class RenderRequest(BaseModel):
     # Per-line text overrides/suppressions for a clip-edit session, keyed by
     # the subtitle entry's own index (SubtitleEntry.index / GET /subtitles'
     # entries[].index) — JSON object keys are always strings on the wire,
-    # converted to int below. A value of None suppresses that line.
+    # converted to int below. A value of None suppresses that line. A key
+    # matching no entry in the clip's window is an *added* caption spanning
+    # the whole clip (see apply_overrides) — that's how a clip whose span
+    # has no dialogue, or a title with no subtitles at all, still gets text.
     subtitle_overrides: dict[str, str | None] | None = None
 
 
@@ -861,6 +864,12 @@ def create_app(settings: Settings) -> FastAPI:
             # still gets *a* clip, just without burn-in text.
             if subtitle_result.source is not SubtitleSource.NONE and subtitle_result.entries:
                 subtitle_entries = subtitle_result.entries
+                style_preset = style_presets[requested_style]
+            elif subtitle_overrides:
+                # No source lines, but the caller supplied caption text of
+                # its own (an override index matching no entry) — that
+                # still needs a style to render with, so don't degrade to
+                # "none" here the way a genuinely text-less clip does.
                 style_preset = style_presets[requested_style]
 
         resolved_style = requested_style if style_preset is not None else "none"

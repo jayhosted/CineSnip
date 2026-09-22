@@ -148,3 +148,24 @@ def test_apply_overrides_preserves_entry_order():
     entries = [_entry(1, 0.0, 2.0, "a"), _entry(2, 2.0, 4.0, "b"), _entry(3, 4.0, 6.0, "c")]
     result = apply_overrides(entries, {2: "B"})
     assert [e.text for e in result] == ["a", "B", "c"]
+
+
+def test_apply_overrides_adds_a_caption_for_an_index_not_in_the_window():
+    # The whole point of the added-caption path: a clip whose span has no
+    # subtitle line of its own still gets burned-in text, spanning the clip.
+    result = apply_overrides([], {-1: "hello there"}, clip_duration=4.0)
+    assert result == [_entry(-1, 0.0, 4.0, "hello there")]
+
+
+def test_apply_overrides_adds_a_caption_alongside_existing_lines():
+    entries = [_entry(1, 0.0, 2.0, "hello")]
+    result = apply_overrides(entries, {-1: "added"}, clip_duration=4.0)
+    assert result == [_entry(1, 0.0, 2.0, "hello"), _entry(-1, 0.0, 4.0, "added")]
+
+
+def test_apply_overrides_drops_an_added_caption_without_a_clip_duration():
+    assert apply_overrides([], {-1: "hello"}) == []
+
+
+def test_apply_overrides_skips_an_added_caption_suppressed_to_none_or_blank():
+    assert apply_overrides([], {-1: None, -2: ""}, clip_duration=4.0) == []

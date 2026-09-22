@@ -618,9 +618,12 @@ class ClipRenderer:
         frame_width, frame_height = _crop_adjusted_dims(crop_box, eye_width, eye_height)
 
         ass_path: Path | None = None
-        if subtitle_entries and style is not None:
+        # subtitle_overrides alone is enough: an added caption (an override
+        # index matching no source line) is the whole point of the caption
+        # path, and it has to work on a clip with no subtitle entries at all.
+        if style is not None and (subtitle_entries or subtitle_overrides):
             ass_path = await self._write_ass_file(
-                input_path, start, duration, subtitle_entries, style, scratch_dir,
+                input_path, start, duration, subtitle_entries or [], style, scratch_dir,
                 width, frame_width, frame_height, subtitle_overrides=subtitle_overrides,
                 sar=sar,
             )
@@ -701,7 +704,7 @@ class ClipRenderer:
 
         window = entries_in_window(entries, start, start + duration)
         if subtitle_overrides:
-            window = apply_overrides(window, subtitle_overrides)
+            window = apply_overrides(window, subtitle_overrides, clip_duration=duration)
         doc = build_ass_document(window, style, out_width, out_height)
 
         scratch_dir.mkdir(parents=True, exist_ok=True)

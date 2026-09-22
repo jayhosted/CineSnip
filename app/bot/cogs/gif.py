@@ -457,6 +457,32 @@ def _entries_in_window(
 
 _EDIT_BLOCK_SEPARATOR = "\n---\n"
 
+# Index for the Edit Subs block offered when the clip's span has no
+# subtitle line of its own. It deliberately matches no real
+# SubtitleEntry.index, which is exactly what makes the worker treat its
+# override as an *added* caption spanning the whole clip
+# (app/worker/subtitle_render.py's apply_overrides).
+_CAPTION_INDEX = -1
+
+
+def _caption_placeholder(clip_start: float, clip_end: float) -> SubtitleEntryResult:
+    """Empty stand-in entry so Edit Subs can open on a clip with nothing to
+    edit — a silent scene, or a title with no subtitles at all. Without it
+    those clips were the one case you couldn't put text on: a clip that
+    already had subtitles could be re-captioned by editing them, but one
+    with none had no block to type into."""
+    return SubtitleEntryResult(index=_CAPTION_INDEX, start=clip_start, end=clip_end, text="")
+
+
+def _edit_window(
+    entries: list[SubtitleEntryResult], clip_start: float, clip_end: float
+) -> list[SubtitleEntryResult]:
+    """The entries the Edit Subs modal edits: the clip's own in-window
+    lines, or a single empty caption block if it has none."""
+    return _entries_in_window(entries, clip_start, clip_end) or [
+        _caption_placeholder(clip_start, clip_end)
+    ]
+
 
 def _format_edit_blocks(
     entries: list[SubtitleEntryResult], overrides: dict[int, str | None]
@@ -1575,7 +1601,7 @@ class _MergeCountModal(discord.ui.Modal, title="Merge N lines"):
 class _EditSubsModal(discord.ui.Modal, title="Edit subtitles"):
     text_input = discord.ui.TextInput(
         label="Subtitle lines",
-        placeholder="Separate entries with a line of just ---; blank a block to hide that line",
+        placeholder="Type a caption here. Separate entries with a line of just ---; blank a block to hide it",
         style=discord.TextStyle.paragraph,
         required=False,
     )
@@ -1590,6 +1616,13 @@ class _EditSubsModal(discord.ui.Modal, title="Edit subtitles"):
         self._view.overrides = _parse_edit_blocks(
             str(self.text_input.value), self._window, self._view.overrides
         )
+        # A bare-timecode clip renders with "No Subtitles" by default, so
+        # typing a caption into it would otherwise be a silent no-op —
+        # there'd be no style to burn it with. Switch to a real style for
+        # them rather than making them find the dropdown first.
+        if self._view.style == "none" and any(self._view.overrides.values()):
+            self._view.style = self._view._caption_style()
+            self._view._sync_style_select()
         await interaction.response.defer()
         await self._view._re_render(interaction, self._view._clip_start, self._view._clip_end)
 
@@ -1648,6 +1681,24 @@ class ClipEditView(ClipResultView, _DurationMergeMixin):
         self.add_item(duration_button)
         self.add_item(subtitles_button)
         self.add_item(merge_button)
+
+    def _caption_style(self) -> str:
+        """First real (non-"none") style — what a clip currently rendered
+        with No Subtitles switches to when Edit Subs adds a caption."""
+        for value, _label in self._style_options:
+            if value != "none":
+                return value
+        return "classic"
+
+    def _sync_style_select(self) -> None:
+        """Rebuild the style dropdown so its shown selection matches
+        self.style — the SelectOption defaults are baked in at creation, so
+        changing style outside _on_style_change needs this."""
+        for item in list(self.children):
+            if isinstance(item, discord.ui.Select):
+                self.remove_item(item)
+                break
+        self._add_select()
 
     async def _on_style_change(self, interaction: discord.Interaction) -> None:
         # Overrides ClipResultView._on_style_change: the parent re-renders
@@ -1717,11 +1768,8 @@ class ClipEditView(ClipResultView, _DurationMergeMixin):
         entirely and opens the modal directly."""
         self._clear_category_rows()
         self._open_category = "subtitles"
-        entries = self._all_entries or []
-        window = _entries_in_window(entries, self._clip_start, self._clip_end)
         open_button = discord.ui.Button(
             label="Open Edit Subs", style=discord.ButtonStyle.secondary, row=2,
-            disabled=not window,
         )
         open_button.callback = self._on_open_edit_subs_fallback
         self._category_buttons.append(open_button)
@@ -1734,17 +1782,12 @@ class ClipEditView(ClipResultView, _DurationMergeMixin):
         # only be sent as an interaction's initial response, so this must
         # not defer.
         if self._all_entries is not None:
-            window = _entries_in_window(self._all_entries, self._clip_start, self._clip_end)
+            window = _edit_window(self._all_entries, self._clip_start, self._clip_end)
             # Mutating view state (no interaction response involved) so any
             # leftover fallback row from an earlier cold click is gone next
             # time the message is redrawn.
             self._clear_category_rows()
             self._open_category = None
-            if not window:
-                await interaction.response.send_message(
-                    "No subtitles available for this clip's span.", ephemeral=True
-                )
-                return
             await interaction.response.send_modal(_EditSubsModal(self, window))
             return
 
@@ -1767,15 +1810,9 @@ class ClipEditView(ClipResultView, _DurationMergeMixin):
         await interaction.edit_original_response(content=None, embed=None, view=self)
 
     async def _on_open_edit_subs_fallback(self, interaction: discord.Interaction) -> None:
-        entries = self._all_entries or []
-        window = _entries_in_window(entries, self._clip_start, self._clip_end)
+        window = _edit_window(self._all_entries or [], self._clip_start, self._clip_end)
         self._clear_category_rows()
         self._open_category = None
-        if not window:
-            await interaction.response.edit_message(
-                content="No subtitles available for this clip's span.", embed=None, view=self
-            )
-            return
         await interaction.response.send_modal(_EditSubsModal(self, window))
 
     async def _re_render(
