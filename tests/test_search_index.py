@@ -14,7 +14,6 @@ from app.worker.search_index import (
     get_fingerprint,
     get_title_ids_by_guid,
     has_title,
-    iter_all_entries,
     list_entry_rows_for_titles,
     list_titles,
     list_titles_for_library,
@@ -22,6 +21,7 @@ from app.worker.search_index import (
     remove_title,
     search_entry_ids,
     upsert_title,
+    vocabulary,
 )
 from app.worker.subtitles import SubtitleEntry
 
@@ -371,38 +371,19 @@ def test_search_title_ids_handles_single_character_and_digit_tokens(tmp_path):
     assert _search_title_ids(db_path, ["007"]) != []
 
 
-def test_iter_all_entries(tmp_path):
+def test_vocabulary_lists_tokens_and_refreshes_after_writes(tmp_path):
     db_path = tmp_path / "quote_index.db"
     _populate_small_corpus(db_path)
 
-    result = dict(iter_all_entries(db_path))
+    assert "zephyr" in vocabulary(db_path)
 
-    assert set(result.keys()) == {"guid-1", "guid-2"}
-    assert [e.text for e in result["guid-1"]] == ["the quick brown fox", "jumps over the lazy dog"]
-    assert [e.text for e in result["guid-2"]] == ["a completely different sentence", "with unique zephyr word"]
-
-
-def test_iter_all_entries_on_missing_db_yields_nothing(tmp_path):
-    assert list(iter_all_entries(tmp_path / "does-not-exist.db")) == []
+    remove_title(db_path, "guid-2")
+    assert "zephyr" not in vocabulary(db_path)
+    assert "fox" in vocabulary(db_path)
 
 
-def test_iter_all_entries_scoped_to_title_ids_excludes_others(tmp_path):
-    db_path = tmp_path / "quote_index.db"
-    _populate_small_corpus(db_path)
-    guid_to_id = {t.guid: t.media_id for t in list_titles(db_path)}
-    with _connect(db_path) as conn:
-        rows = conn.execute("SELECT guid, title_id FROM titles").fetchall()
-    guid_to_title_id = dict(rows)
-
-    result = dict(iter_all_entries(db_path, title_ids=[guid_to_title_id["guid-1"]]))
-
-    assert set(result.keys()) == {"guid-1"}
-
-
-def test_iter_all_entries_empty_scope_yields_nothing(tmp_path):
-    db_path = tmp_path / "quote_index.db"
-    _populate_small_corpus(db_path)
-    assert list(iter_all_entries(db_path, title_ids=[])) == []
+def test_vocabulary_on_missing_db_is_empty(tmp_path):
+    assert vocabulary(tmp_path / "does-not-exist.db") == []
 
 
 def test_get_title_ids_by_guid(tmp_path):

@@ -502,7 +502,8 @@ async def _library_matches(
     ]
     qm = settings.quote_match
     # Runs sqlite FTS5 queries + rapidfuzz scoring, which can take several
-    # seconds (up to ~9.6s in a full-scan fallback per search_cached_library's
+    # seconds (a zero-hit query also loads the FTS5 vocabulary for typo
+    # correction, ~5s on first use after a write — see search_cached_library's
     # docstring). Must go through to_thread: bot and worker share one process
     # and one event loop (CLAUDE.md Section 8), so a synchronous call here
     # freezes Discord's own interaction dispatch for the same duration —

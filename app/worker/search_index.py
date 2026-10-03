@@ -133,6 +133,7 @@ def upsert_title(
     FTS index rows) in one transaction. Existing entries for the title are
     replaced wholesale rather than diffed, since a title's subtitles are
     only ever re-parsed as a unit."""
+    _vocabulary_cache.pop(db_path, None)
     from app.worker.quotes import normalize_for_match
 
     fingerprint_mtime, fingerprint_size = fingerprint if fingerprint else (None, None)
@@ -313,6 +314,7 @@ def has_title(db_path: Path, guid: str) -> bool:
 
 
 def remove_title(db_path: Path, guid: str) -> None:
+    _vocabulary_cache.pop(db_path, None)
     with _connect(db_path) as conn:
         title_row = conn.execute(
             "SELECT title_id FROM titles WHERE guid = ?", (guid,)
@@ -329,7 +331,7 @@ def get_title_ids_by_guid(db_path: Path, guids: list[str]) -> dict[str, int]:
     caller-supplied list[CachedTitle] (which carries no title_id of its own
     — a CachedTitle built synthetically for a request, e.g. TV whole-show
     search, has no such field) down to a title_id scope for
-    search_entry_ids()/iter_all_entries(). Guids with no matching title row
+    search_entry_ids(). Guids with no matching title row
     (not yet cached) are simply absent from the result, not an error."""
     if not guids:
         return {}
@@ -539,40 +541,25 @@ def coverage_counts(db_path: Path, library_name: str) -> dict[str, int]:
     return {"sidecar": counts.get("sidecar", 0), "embedded": counts.get("embedded", 0)}
 
 
-def iter_all_entries(
-    db_path: Path, title_ids: list[int] | None = None
-) -> Iterator[tuple[str, list[SubtitleEntry]]]:
-    """Full scan of every cached title's entries, used as the fallback when
-    the FTS5 pre-filter finds nothing (e.g. a typo'd query). `title_ids`,
-    when given, scopes the scan to just those titles — without it, a
-    narrow-scoped caller (e.g. /snip tv's whole-show search) would fall
-    back to streaming the ENTIRE corpus (measured: ~9.6s over 7.5M entries)
-    instead of just its own handful of episodes."""
-    from app.worker.subtitles import SubtitleEntry
+# Per-process cache of every distinct FTS5 token, for library_search's
+# typo correction. Reading it costs ~5s on a real ~7.5M-entry corpus
+# (~200k terms), so it's loaded once and dropped by any write
+# (upsert_title/remove_title) — the next zero-hit search reloads it.
+_vocabulary_cache: dict[Path, list[str]] = {}
 
+
+def vocabulary(db_path: Path) -> list[str]:
+    """Every distinct token in entries_fts (via FTS5's fts5vocab)."""
     if not db_path.exists():
-        return
-    if title_ids is not None and not title_ids:
-        return
+        return []
+    cached = _vocabulary_cache.get(db_path)
+    if cached is not None:
+        return cached
     with _connect(db_path) as conn:
-        if title_ids is None:
-            title_rows = conn.execute(
-                "SELECT title_id, guid FROM titles ORDER BY title_id"
-            ).fetchall()
-        else:
-            placeholders = ",".join("?" for _ in title_ids)
-            title_rows = conn.execute(
-                f"SELECT title_id, guid FROM titles WHERE title_id IN ({placeholders}) "
-                f"ORDER BY title_id",
-                title_ids,
-            ).fetchall()
-        for title_id, guid in title_rows:
-            entry_rows = conn.execute(
-                "SELECT idx, start, end, display_text FROM entries "
-                "WHERE title_id = ? ORDER BY idx",
-                (title_id,),
-            ).fetchall()
-            entries = [
-                SubtitleEntry(index=r[0], start=r[1], end=r[2], text=r[3]) for r in entry_rows
-            ]
-            yield (guid, entries)
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS temp.entries_vocab "
+            "USING fts5vocab(main, entries_fts, 'row')"
+        )
+        terms = [row[0] for row in conn.execute("SELECT term FROM temp.entries_vocab")]
+    _vocabulary_cache[db_path] = terms
+    return terms

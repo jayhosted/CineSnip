@@ -4,6 +4,8 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 
+from rapidfuzz import fuzz, process
+
 from app.worker import search_index
 from app.worker.quote_index import CachedTitle
 from app.worker.quotes import QuoteMatch, find_quote_matches, normalize_for_match, strip_markup
@@ -53,6 +55,29 @@ def _fts_match_tokens(normalized_quote: str) -> list[str]:
     tokens = normalized_quote.split()
     filtered = [t for t in tokens if t not in _FTS_STOPWORDS]
     return filtered or tokens
+
+
+# Typo correction for a zero-hit FTS5 pre-filter: each query token is
+# swapped for up to this many indexed tokens scoring at least this
+# fuzz.ratio against it ("fanook" -> "finook" scores 83). Replaced a full
+# fuzzy scan of every cached entry, which took 317s library-wide.
+_TYPO_CORRECTION_LIMIT = 5
+_TYPO_CORRECTION_MIN_RATIO = 80
+
+
+def _correct_tokens(tokens: list[str], vocabulary: list[str]) -> list[str]:
+    corrected: list[str] = []
+    for token in tokens:
+        for term, _score, _ in process.extract(
+            token,
+            vocabulary,
+            scorer=fuzz.ratio,
+            limit=_TYPO_CORRECTION_LIMIT,
+            score_cutoff=_TYPO_CORRECTION_MIN_RATIO,
+        ):
+            if term not in corrected:
+                corrected.append(term)
+    return corrected
 
 
 def _strip_exact_phrase_quotes(quote: str) -> tuple[str, bool]:
@@ -215,7 +240,7 @@ def search_cached_library(
     not a directory — subtitle text lives in its `entries`/`entries_fts`
     tables, not flat JSON cache files.
 
-    Both the FTS5 pre-filter and the fallback full scan are scoped to just
+    Both the FTS5 pre-filter and its typo-correction retry are scoped to just
     `cached_titles` (resolved to title_ids up front) — never the whole
     corpus. This matters for two reasons: it's what makes /snip tv's
     whole-show search correct (a global top-N cap could otherwise silently
@@ -240,12 +265,12 @@ def search_cached_library(
     See docs/design/fts5-search-migration.md for the full design and
     real-scale numbers.
 
-    FTS5's tokenizer can miss a typo'd or otherwise non-literal query that
-    fuzzy matching would still find, so an empty pre-filter result falls
-    back to a full scan of every cached title in scope via
-    search_index.iter_all_entries rather than silently returning nothing.
-    Both paths funnel through _diversify_and_rank so their result ordering
-    can never silently diverge.
+    FTS5's tokenizer can miss a typo'd query that fuzzy matching would
+    still find, so an empty pre-filter result retries once with each token
+    swapped for its closest indexed tokens (_correct_tokens over
+    search_index.vocabulary) rather than silently returning nothing. This
+    replaced a full fuzzy scan of every in-scope entry, which took 317s
+    library-wide on the real corpus and outlived the bot's 30s timeout.
 
     A query wrapped in "double quotes" requests exact-phrase search (the
     same operator every mainstream search engine uses): only a whole-word
@@ -273,32 +298,20 @@ def search_cached_library(
     }
     scope_title_ids = list(title_id_to_cached.keys())
 
+    tokens = _fts_match_tokens(normalized_quote)
     hits = search_index.search_entry_ids(
-        db_path,
-        _fts_match_tokens(normalized_quote),
-        limit=_DEFAULT_ENTRY_SCAN_LIMIT,
-        title_ids=scope_title_ids,
+        db_path, tokens, limit=_DEFAULT_ENTRY_SCAN_LIMIT, title_ids=scope_title_ids
     )
+    if not hits:
+        corrected = _correct_tokens(tokens, search_index.vocabulary(db_path))
+        if corrected:
+            hits = search_index.search_entry_ids(
+                db_path, corrected, limit=_DEFAULT_ENTRY_SCAN_LIMIT, title_ids=scope_title_ids
+            )
 
     per_title_matches: list[tuple[CachedTitle, list[QuoteMatch]]] = []
 
-    if not hits:
-        # Fallback: full scan, scoped to just this call's title set.
-        for guid, entries in search_index.iter_all_entries(db_path, title_ids=scope_title_ids):
-            cached = guid_to_cached.get(guid)
-            if cached is None or not entries:
-                continue
-            matches = find_quote_matches(
-                entries,
-                quote,
-                limit=per_title_limit,
-                min_score=effective_min_score,
-                max_window_gap_seconds=max_window_gap_seconds,
-                context_lines=context_lines,
-            )
-            if matches:
-                per_title_matches.append((cached, matches))
-    else:
+    if hits:
         # Group hits by title, and — WITHOUT fetching each title's full
         # entry list — turn each title's hit idx values directly into
         # merged (idx_lo, idx_hi) windows. Only those windows' rows are

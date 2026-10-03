@@ -221,9 +221,8 @@ def test_search_cached_library_skips_guid_with_no_matching_cached_title(tmp_path
 def test_search_cached_library_fallback_finds_typo_query(tmp_path):
     # "inquisitoin" is a single-word typo that won't appear as an FTS5
     # token in the index (the indexed text has "inquisition"), so
-    # search_entry_ids returns [] and the fallback full-scan path must run
-    # instead — fuzzy matching (unlike FTS5's exact-token matching) can
-    # still find this.
+    # search_entry_ids returns [] and the typo-correction retry must swap
+    # in the closest indexed token instead.
     db_path = _db_path(tmp_path)
     _write_title(db_path, "guid-1", "1", "Monty Python", "Movies", ["Nobody expects the Spanish Inquisition!"])
     _write_title(db_path, "guid-2", "2", "Terminator", "Movies", ["I'll be back."])
@@ -239,7 +238,7 @@ def test_search_cached_library_fallback_finds_typo_query(tmp_path):
     results = search_cached_library(
         db_path,
         cached_titles,
-        "nobody expects the spanish inquisitoin",
+        "inquisitoin",
         result_limit=8,
         min_score=50.0,
         max_window_gap_seconds=3.0,
@@ -249,54 +248,6 @@ def test_search_cached_library_fallback_finds_typo_query(tmp_path):
     assert len(results) == 1
     assert results[0].media_id == "1"
     assert results[0].title == "Monty Python"
-
-
-def test_fast_path_and_fallback_path_agree_on_ordering(tmp_path, monkeypatch):
-    # Build a corpus where the FTS5 pre-filter genuinely narrows the result
-    # set (so the fast path and fallback path take visibly different code
-    # routes), then force the fallback path to run over the SAME corpus/
-    # query by monkeypatching search_entry_ids to return [] as if nothing
-    # had matched. If _diversify_and_rank is truly shared code (not two
-    # implementations that happen to agree today), both runs must produce
-    # identically ordered results.
-    db_path = _db_path(tmp_path)
-    _write_title(
-        db_path, "guid-1", "1", "Weak Match", "Movies",
-        ["The Force is strong with this one, but not with you."],
-    )
-    _write_title(db_path, "guid-2", "2", "Strong Match", "Movies", ["May the Force be with you."])
-    _write_title(db_path, "guid-3", "3", "No Match", "Movies", ["Nobody expects the Spanish Inquisition!"])
-
-    cached_titles = [
-        CachedTitle(guid="guid-1", media_id="1", title="Weak Match", library_name="Movies"),
-        CachedTitle(guid="guid-2", media_id="2", title="Strong Match", library_name="Movies"),
-        CachedTitle(guid="guid-3", media_id="3", title="No Match", library_name="Movies"),
-    ]
-
-    kwargs = dict(
-        result_limit=8,
-        min_score=1.0,
-        max_window_gap_seconds=3.0,
-        context_lines=1,
-    )
-    query = "Force be with you"
-
-    # Confirm the FTS5 pre-filter actually narrows the set to just the two
-    # titles that share a word with the query (proves the fast path and
-    # fallback path are genuinely different routes here, not the same code
-    # by coincidence — "No Match" shares no token with the query at all).
-    fast_title_ids = search_index.search_entry_ids(db_path, normalize_for_match(query).split())
-    assert len(fast_title_ids) < len(cached_titles)
-
-    fast_results = search_cached_library(db_path, cached_titles, query, **kwargs)
-
-    monkeypatch.setattr(search_index, "search_entry_ids", lambda *a, **kw: [])
-    fallback_results = search_cached_library(db_path, cached_titles, query, **kwargs)
-
-    assert [(r.media_id, r.match.score) for r in fast_results] == [
-        (r.media_id, r.match.score) for r in fallback_results
-    ]
-    assert len(fast_results) > 0
 
 
 def test_merge_ranges_merges_overlapping_and_touching_but_not_disjoint():
@@ -455,37 +406,21 @@ def test_search_cached_library_scopes_fts_prefilter_to_cached_titles(tmp_path, m
     assert other_id not in scoped
 
 
-def test_search_cached_library_fallback_scoped_to_cached_titles(tmp_path, monkeypatch):
-    # Force the fallback path (typo'd query that misses the FTS5
-    # pre-filter entirely) and confirm the full scan is scoped to just the
-    # caller's cached_titles, not the whole DB — an out-of-scope title with
-    # a fuzzy-matchable typo'd quote must not appear in results, and
-    # iter_all_entries must have been called with the scoped title_ids.
+def test_search_cached_library_typo_correction_stays_scoped_to_cached_titles(tmp_path):
+    # The corrected-token retry must keep the caller's scope: an
+    # out-of-scope title with the same line must not leak into results.
     db_path = _db_path(tmp_path)
-    _write_title(db_path, "guid-ep1", "1", "Show S01E01", "TV Shows", ["that's what she saidd"])
-    _write_title(db_path, "guid-other", "99", "Unrelated Movie", "Movies", ["that's what she saidd"])
+    _write_title(db_path, "guid-ep1", "1", "Show S01E01", "TV Shows", ["you fucking finook"])
+    _write_title(db_path, "guid-other", "99", "Unrelated Movie", "Movies", ["you fucking finook"])
 
     cached_titles = [
         CachedTitle(guid="guid-ep1", media_id="1", title="Show S01E01", library_name="TV Shows"),
     ]
 
-    import app.worker.library_search as library_search_module
-
-    real_iter_all_entries = search_index.iter_all_entries
-    seen_title_ids_args = []
-
-    def spy(db_path, **kwargs):
-        seen_title_ids_args.append(kwargs.get("title_ids"))
-        return real_iter_all_entries(db_path, **kwargs)
-
-    monkeypatch.setattr(library_search_module.search_index, "iter_all_entries", spy)
-    # Force the fallback: pretend the FTS5 pre-filter found nothing.
-    monkeypatch.setattr(library_search_module.search_index, "search_entry_ids", lambda *a, **kw: [])
-
     results = search_cached_library(
         db_path,
         cached_titles,
-        "that's what she said",
+        "fanook",
         result_limit=8,
         min_score=50.0,
         max_window_gap_seconds=3.0,
@@ -493,15 +428,6 @@ def test_search_cached_library_fallback_scoped_to_cached_titles(tmp_path, monkey
     )
 
     assert [r.title for r in results] == ["Show S01E01"]
-    assert seen_title_ids_args
-    with search_index._connect(db_path) as conn:
-        ep1_id, other_id = (
-            conn.execute("SELECT title_id FROM titles WHERE guid = ?", (g,)).fetchone()[0]
-            for g in ("guid-ep1", "guid-other")
-        )
-    scoped = seen_title_ids_args[0]
-    assert scoped == [ep1_id]
-    assert other_id not in scoped
 
 
 def test_pick_random_quote_returns_none_for_no_cached_titles(tmp_path):
