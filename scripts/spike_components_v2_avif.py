@@ -11,6 +11,16 @@ the running bot):
   C. Edits B after a pause to swap in a second clip (the style-change flow).
 Then prints cdn vs media-proxy byte counts for every attachment.
 
+VERDICT (2026-10-09): PASSES. Feasible.
+  - Discord accepted the new-format message (flag 32768) and the clip swap on edit.
+  - Proxy bytes for the gallery clip match today's attachment exactly: 100%
+    untouched on the plain and resize-only links, so no re-encode.
+  - Manually confirmed by Jay on Discord: autoplays + loops, looks identical
+    to the baseline, can be added to GIF-picker favourites and plays from
+    there, and the client loads the .avif (not a format=webp variant).
+  Gotcha: in a V2 message the media lives under components[].items[].media,
+  NOT message.attachments (which comes back empty).
+
 Usage:
   .venv/bin/python scripts/spike_components_v2_avif.py CHANNEL_ID CLIP_A.avif CLIP_B.avif
 """
