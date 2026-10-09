@@ -34,6 +34,7 @@ from app.web.generate import register_generate_routes
 from app.web.settings import register_settings_routes
 from app.web.styles import register_styles_routes
 from app.web.state import LibraryChoice, MappingRow, WizardState, media_mount_candidates
+from app.worker.jellyfin_client import auth_headers
 from app.worker.path_mapper import NoPathMappingError, resolve_container_path
 
 logger = logging.getLogger(__name__)
@@ -267,7 +268,7 @@ def _discover_library_choices_sync_jellyfin(
 def _connect_and_discover_sync_jellyfin(jellyfin_url: str, api_key: str) -> tuple[str, list[LibraryChoice]]:
     # Same threading contract as _connect_and_discover_sync: real, blocking
     # network I/O, must run off the event loop via run_in_threadpool.
-    with httpx.Client(base_url=jellyfin_url, headers={"X-Emby-Token": api_key}, timeout=10) as http:
+    with httpx.Client(base_url=jellyfin_url, headers=auth_headers(api_key), timeout=10) as http:
         info_response = http.get("/System/Info")
         if info_response.status_code == 401:
             raise _JellyfinAuthError()
@@ -443,7 +444,7 @@ def _run_validation_sync_jellyfin(state: WizardState) -> list[tuple[str, bool, s
     user_id: str | None = None
     try:
         http = httpx.Client(
-            base_url=state.jellyfin_url, headers={"X-Emby-Token": state.jellyfin_api_key}, timeout=10
+            base_url=state.jellyfin_url, headers=auth_headers(state.jellyfin_api_key), timeout=10
         )
         info_response = http.get("/System/Info")
         info_response.raise_for_status()

@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from app.settings import LibraryConfig, Settings
-from app.worker.jellyfin_client import JellyfinClient, _normalize_path
+from app.worker.jellyfin_client import JellyfinClient, _normalize_path, auth_headers
 from app.worker.media_client import EpisodeNotFoundError, MovieNotFoundError, ShowNotFoundError
 
 
@@ -33,7 +33,7 @@ def _client_with_mock(
     client._api_key = "key123"
     client._http = httpx.Client(
         base_url="http://jf.test",
-        headers={"X-Emby-Token": "key123"},
+        headers=auth_headers("key123"),
         transport=httpx.MockTransport(handler),
     )
     client._user_id = "user-1"
@@ -71,7 +71,8 @@ def test_get_movie_returns_media_result_with_string_id():
         if request.url.path == "/Items/abc-123/Ancestors":
             return _ancestors_response("/media/movies")
         assert request.url.path == "/Users/user-1/Items/abc-123"
-        assert request.headers["X-Emby-Token"] == "key123"
+        assert request.headers["Authorization"] == 'MediaBrowser Token="key123"'
+        assert "X-Emby-Token" not in request.headers
         return httpx.Response(
             200,
             json={
@@ -95,7 +96,7 @@ def test_get_movie_returns_media_result_with_string_id():
     assert result.guid == "abc-123"
 
 
-def test_get_movie_thumb_url_includes_api_key_when_primary_image_present():
+def test_get_movie_thumb_url_omits_api_key_when_primary_image_present():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/Items/abc-123/Ancestors":
             return _ancestors_response("/media/movies")
@@ -115,7 +116,7 @@ def test_get_movie_thumb_url_includes_api_key_when_primary_image_present():
     client = _client_with_mock(handler)
     result = client.get_movie("abc-123")
 
-    assert result.thumb_url == "http://jf.test/Items/abc-123/Images/Primary?api_key=key123"
+    assert result.thumb_url == "http://jf.test/Items/abc-123/Images/Primary"
 
 
 def test_get_movie_thumb_url_is_none_without_primary_image():

@@ -23,13 +23,20 @@ def _normalize_path(path: str) -> str:
     return path.replace("\\", "/").rstrip("/").lower()
 
 
+def auth_headers(api_key: str) -> dict[str, str]:
+    # Jellyfin 12 disables the legacy X-Emby-Token header / api_key query
+    # param by default (existing servers included); this is the scheme that
+    # replaced them.
+    return {"Authorization": f'MediaBrowser Token="{api_key}"'}
+
+
 class JellyfinClient:
     def __init__(self, settings: Settings):
         self._base_url = settings.jellyfin_url
         self._api_key = settings.jellyfin_api_key
         self._http = httpx.Client(
             base_url=self._base_url,
-            headers={"X-Emby-Token": self._api_key},
+            headers=auth_headers(self._api_key),
             timeout=30.0,
         )
         # Several endpoints (/Users/{id}/Items) need a userId in the path —
@@ -299,15 +306,12 @@ class JellyfinClient:
         # downstream arithmetic/formatting. `or default` catches null too.
         media_sources = item.get("MediaSources") or [{}]
         source_path = media_sources[0].get("Path") or ""
-        # Same precedent as PlexClient: plexapi's own thumbUrl embeds the
-        # token as a query param (includeToken=True) rather than requiring a
-        # header, so a bare <img src> can load it — this isn't a new class of
-        # risk, it's matching what this codebase already ships for Plex.
+        # Jellyfin serves item images anonymously, so no key in the URL —
+        # a bare <img src> can load it without leaking the API key.
         # Only set when the item actually has its own primary image (mirrors
-        # PlexClient's `if getattr(item, "thumb", None)` guard) — a bare
-        # ImageTags-less item has nothing to point at.
+        # PlexClient's `if getattr(item, "thumb", None)` guard).
         thumb_url = (
-            f"{self._base_url}/Items/{item['Id']}/Images/Primary?api_key={self._api_key}"
+            f"{self._base_url}/Items/{item['Id']}/Images/Primary"
             if item.get("ImageTags", {}).get("Primary")
             else None
         )
