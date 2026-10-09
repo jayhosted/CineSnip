@@ -162,3 +162,29 @@ def test_list_episodes_outside_configured_show_libraries_raises_not_found():
 
     with pytest.raises(ShowNotFoundError):
         client.list_episodes("7")
+
+
+class _LazySectionTitle(SimpleNamespace):
+    # Stands in for plexapi's lazy reload: any read of librarySectionTitle
+    # off a search result is a per-item Plex round-trip.
+    @property
+    def librarySectionTitle(self):
+        raise AssertionError("librarySectionTitle read per item (reload storm)")
+
+
+def test_search_movies_and_shows_cap_plex_results_and_skip_per_item_section_lookup():
+    seen_kwargs = []
+
+    def _search(**kwargs):
+        seen_kwargs.append(kwargs)
+        movie = _fake_movie()
+        del movie.librarySectionTitle
+        return [_LazySectionTitle(**vars(movie))]
+
+    client = _bare_client()
+    client._movie_sections = [SimpleNamespace(title="Movies", search=_search)]
+    client._show_sections = [SimpleNamespace(title="TV Shows", search=_search)]
+
+    assert client.search_movies("t")[0].library_name == "Movies"
+    assert client.search_shows("t")[0].library_name == "TV Shows"
+    assert all(kw["maxresults"] == 25 for kw in seen_kwargs)

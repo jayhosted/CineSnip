@@ -110,16 +110,21 @@ class PlexClient:
 
     def search_movies(self, query: str, limit: int = 25) -> list[MovieResult]:
         results: list[MovieResult] = []
+        # maxresults: a 1-2 letter autocomplete query matches hundreds of
+        # films, and converting them all just to keep 25 blew Discord's 3s
+        # autocomplete deadline. library_name=section.title: same
+        # librarySectionTitle reload storm as list_episodes() — measured
+        # ~6s -> ~40ms for "t" on a ~1400-film library.
         for section in self._movie_sections:
-            movies = section.search(title=query, libtype="movie")
-            results.extend(self._to_result(m) for m in movies)
+            movies = section.search(title=query, libtype="movie", maxresults=limit)
+            results.extend(self._to_result(m, library_name=section.title) for m in movies)
         return results[:limit]
 
     def search_shows(self, query: str, limit: int = 25) -> list[MovieResult]:
         results: list[MovieResult] = []
         for section in self._show_sections:
-            shows = section.search(title=query, libtype="show")
-            results.extend(self._show_to_result(s) for s in shows)
+            shows = section.search(title=query, libtype="show", maxresults=limit)
+            results.extend(self._show_to_result(s, library_name=section.title) for s in shows)
         return results[:limit]
 
     def get_movie(self, media_id: str) -> MovieResult:
@@ -230,7 +235,7 @@ class PlexClient:
         )
 
     @staticmethod
-    def _show_to_result(show) -> MovieResult:
+    def _show_to_result(show, library_name: str | None = None) -> MovieResult:
         # Used for show_autocomplete only — never fed into /render, so the
         # placeholder duration/path are harmless; only media_id/title/
         # year/library_name are ever read from this result.
@@ -242,5 +247,5 @@ class PlexClient:
             thumb_url=show.thumbUrl if getattr(show, "thumb", None) else None,
             source_path="",
             guid=show.guid,
-            library_name=show.librarySectionTitle,
+            library_name=library_name if library_name is not None else show.librarySectionTitle,
         )
